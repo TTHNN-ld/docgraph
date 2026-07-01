@@ -32,6 +32,24 @@
 
 ## 4. 质量评估
 
+`docgraph doctor` 是分层硬门禁，检查 L0/L1 完整性和 L2 provenance；`docgraph l2-audit` 是 L2 抽取前诊断，不调用 LLM/VLM，用于确认候选覆盖与 schema 路由是否合理。
+
+```bash
+docgraph doctor --strict
+docgraph l2-audit
+docgraph l2-audit --schema register --schema signal
+docgraph l2-audit --json
+```
+
+`l2-audit` 输出：
+
+- L1 chunk 中有多少 table/text/figure candidate。
+- 每个 schema 看到了多少候选、命中了多少候选。
+- 当前库中各 schema 已物化的 L2 节点数量。
+- 哪些文档有 table candidate 但没有 schema 命中。
+
+它回答的是“L2 有没有机会抽到、为什么可能漏抽”；不替代最终 precision/recall 评估。
+
 ```
 examples/golden/                    # 人工标注的"小份 spec + 期望抽取"
 ├── stm32f407-tim1/

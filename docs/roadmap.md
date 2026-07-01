@@ -15,7 +15,8 @@
 - [x] **M7-P2b（P0）L1 检索增强**：L1 chunk 真实语义索引 + hybrid ranking + table profile + 保守 continued/logical-table 归并基础版。向量后端可插拔：默认本地 `sqlite_json`，可配置 LanceDB。
 - [x] **M7-P2c（P0）L0/L1 生产质量门禁**：新增 `docgraph doctor`，校验 L0 block / L1 chunk / block 回溯 / FTS 一致性 / 表格 cell 与原始证据覆盖 / figure image 与 caption-only 证据覆盖；章节树支持 L1 fallback。
 - [x] **M7-P3a（P1）L2 Candidate 输入层**：从 L1 chunk + L0 block 生成 `EntityCandidate`，统一 table/text/table_image/page_image/figure 抽取入口；L2 节点写入 `source_block_ids` / `source_chunk_ids`。
-- [ ] **M7-P3b（P1）L2 生产召回评估**：建立 golden set，统计 candidate 覆盖率、schema 命中率、LLM/VLM 成功率、precision/recall/F1。
+- [x] **M7-P3b-1（P1）L2 候选覆盖审计**：`docgraph l2-audit` 统计 table/text/figure candidate、schema 命中、已物化 L2 节点和未命中文档样例，不调用 LLM/VLM。
+- [ ] **M7-P3b-2（P1）L2 生产召回评估**：建立 golden set，统计 candidate 覆盖率、schema 命中率、LLM/VLM 成功率、precision/recall/F1。
 - [ ] **M7-P3c（P1）L2 schema 校准**：继续收紧 register/pin/timing/signal/interface/requirement/memory_map/interrupt 等 schema 的生产准确率。
 - [ ] **M7-P4（P1）Agent 接口**：新增 `docgraph_blocks` / `docgraph_fetch`，增强 `docgraph_context` 返回可回溯原文片段；"读全文"不再是默认路径
 - [ ] **M7-P5（P2）领域 schema 包**：register/pin/signal/interface/requirement/memory_map/interrupt 的 schema 预设集

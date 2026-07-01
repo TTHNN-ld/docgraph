@@ -23,6 +23,7 @@ from docgraph.embeddings.vector_factory import build_vector_store
 from docgraph.graph.schema import NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.quality.layers import audit_l0_l1
+from docgraph.quality.l2 import audit_l2_candidates
 from docgraph.query.engine import QueryEngine
 from docgraph.version import __version__
 from docgraph.watcher import run_watch_loop
@@ -187,6 +188,69 @@ def doctor(
 ) -> None:
     """Validate DocGraph health. Currently focused on L0/L1 production invariants."""
     _run_layer_doctor(json_output=json_output, strict=strict)
+
+
+@app.command("l2-audit")
+def l2_audit(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+    schema: list[str] = typer.Option(None, "--schema", help="Limit to one or more L2 schemas"),
+    strict: bool = typer.Option(False, "--strict", help="Return non-zero on warnings too"),
+) -> None:
+    """Audit L2 candidate coverage without calling LLM/VLM."""
+    import json
+
+    _root, store, _qe = _open_project()
+    report = audit_l2_candidates(store, schema_names=schema or None)
+    store.close()
+    if json_output:
+        console.print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+    else:
+        totals = report.totals
+        console.print("[bold]L2 candidate audit[/bold] " + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]"))
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("metric")
+        table.add_column("value", justify="right")
+        for key in (
+            "docs", "chunks", "table_chunks", "text_chunks", "figure_chunks",
+            "candidates_total", "table_candidates", "text_candidates",
+            "figure_candidates", "table_schema_hits", "text_schema_hits",
+            "schemas_with_candidates", "l2_nodes",
+        ):
+            table.add_row(key, str(totals.get(key, 0)))
+        console.print(table)
+
+        schema_table = Table(title="Schema candidates", show_header=True, header_style="bold")
+        for col in ("schema", "table_seen", "table_hit", "text_seen", "text_hit", "docs", "l2_nodes"):
+            schema_table.add_column(col)
+        for row in report.by_schema:
+            schema_table.add_row(
+                row["schema"],
+                str(row["table_candidates_seen"]),
+                str(row["table_candidates_matched"]),
+                str(row["text_candidates_seen"]),
+                str(row["text_candidates_matched"]),
+                str(row["candidate_doc_count"]),
+                str(row["l2_nodes"]),
+            )
+        console.print(schema_table)
+
+        if report.issues:
+            issue_table = Table(title="Issues", show_header=True, header_style="bold")
+            for col in ("severity", "code", "doc", "message", "sample"):
+                issue_table.add_column(col)
+            for issue in report.issues:
+                issue_table.add_row(
+                    issue.severity,
+                    issue.code,
+                    issue.doc_id or "",
+                    issue.message,
+                    ", ".join(issue.sample_ids[:3]),
+                )
+            console.print(issue_table)
+    has_errors = any(i.severity == "error" for i in report.issues)
+    has_warnings = any(i.severity == "warning" for i in report.issues)
+    if has_errors or (strict and has_warnings):
+        raise typer.Exit(code=1)
 
 
 def _run_layer_doctor(*, json_output: bool, strict: bool) -> None:

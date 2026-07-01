@@ -51,6 +51,8 @@ L1 chunk + L0 blocks
 
 每个候选必须携带 `chunk_ids` / `block_ids` / page / section / text/table/image。普通表格、文本和图候选通常对应一个 L1 chunk；整页渲染图候选对应同页覆盖到的 L1 chunk 集合。L2 物化出的节点必须写回 `source_chunk_ids`、`source_block_ids` 和节点级 `evidence`。
 
+`docgraph l2-audit` 可在不调用 LLM/VLM 的情况下审计候选覆盖：统计 table/text/figure candidate 数量、schema 命中数量、已物化 L2 节点数量和未命中的文档样例。它用于定位漏抽来自候选层、schema 路由还是后续模型抽取。
+
 ### 3.1 Schema Registry
 
 新增实体类型优先通过 schema registry，而不是新增专用 extractor。
