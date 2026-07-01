@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% set active = 'figures' %}
+{% block title %}图 · DocGraph{% endblock %}
+{% block content %}
+<h1>图 <span class="muted">({{ nodes|length }})</span></h1>
+{% set enriched = nodes | selectattr("attrs.semantic_summary") | list %}
+<p class="muted">
+  已做 VLM 语义抽取 {{ enriched|length }} / {{ nodes|length }} 张。
+  未抽取的图仍保留 L0 图片路径和页码，可以提高 <code>DOCGRAPH_VLM_FIGURE_LIMIT</code> 后继续补跑。
+</p>
+<form method="get" class="filter-bar">
+  <input type="search" name="q" placeholder="按 caption 过滤…" value="{{ q }}">
+  <button type="submit">过滤</button>
+</form>
+
+{% if not nodes %}
+<p class="muted">没有 figure 节点。需要 parser 支持图抽取（marker / mineru）+ VLM 描述。</p>
+{% else %}
+<div class="figure-grid">
+{% for n in nodes %}
+<div class="figure-card">
+  <div class="figure-meta">
+    <span class="tag">{{ n.attrs.get('figure_type','other') }}</span>
+    <span class="muted">p.{{ n.location.page }}</span>
+    {% if n.attrs.get('semantic_node_ids') %}
+      <span class="tag">structured {{ n.attrs.get('semantic_node_ids')|length }}</span>
+    {% elif n.attrs.get('semantic_summary') %}
+      <span class="tag">summary</span>
+    {% else %}
+      <span class="tag">L0 only</span>
+    {% endif %}
+  </div>
+  <h3>{{ n.name | short(60) }}</h3>
+  {% if n.attrs.get('semantic_summary') %}
+  <p>{{ n.attrs.semantic_summary | short(220) }}</p>
+  {% elif n.attrs.get('caption') %}
+  <p class="muted">{{ n.attrs.caption | short(160) }}</p>
+  {% else %}
+  <p class="muted">尚未运行 VLM 语义抽取。</p>
+  {% endif %}
+  {% if n.attrs.get('semantic_entities') %}
+  <details>
+    <summary>结构化 JSON</summary>
+    <pre><code>{{ n.attrs.semantic_entities }}</code></pre>
+  </details>
+  {% endif %}
+  {% if n.attrs.get('mermaid') %}
+  <details><summary>Mermaid</summary><pre><code>{{ n.attrs.mermaid }}</code></pre></details>
+  {% endif %}
+  {% if n.attrs.get('wavejson') %}
+  <details><summary>WaveJSON</summary><pre><code>{{ n.attrs.wavejson }}</code></pre></details>
+  {% endif %}
+</div>
+{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

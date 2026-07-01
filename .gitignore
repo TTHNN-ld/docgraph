@@ -1,0 +1,35 @@
+# Python / packaging
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.DS_Store
+
+# Local project indexes and runtime state
+.docgraph/
+.codegraph/
+.cursor/
+entities/
+history.md
+
+# Local specs, generated parser outputs, and model weights
+case/
+spec/
+reference/
+mineru-models/
+magic-pdf.json
+*.pdf
+
+# Secrets
+.env
+.env.*
+!.env.example

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% set active = 'timing' %}
+{% block title %}时序参数 · DocGraph{% endblock %}
+{% block content %}
+<h1>时序 / 电气参数 <span class="muted">({{ nodes|length }})</span></h1>
+<form method="get" class="filter-bar">
+  <input type="search" name="q" placeholder="按 symbol 过滤…" value="{{ q }}">
+  <button type="submit">过滤</button>
+</form>
+{% if not nodes %}
+<p class="muted">没有参数节点。</p>
+{% else %}
+<table class="grid">
+<thead><tr>
+  <th>symbol</th><th>min</th><th>typ</th><th>max</th><th>unit</th>
+  <th>condition</th><th>page</th>
+</tr></thead>
+<tbody>
+{% for n in nodes %}
+<tr>
+  <td><strong>{{ n.name }}</strong></td>
+  <td>{{ n.attrs.get('min') or '—' }}</td>
+  <td>{{ n.attrs.get('typ') or '—' }}</td>
+  <td>{{ n.attrs.get('max') or '—' }}</td>
+  <td>{{ n.attrs.get('unit') or '—' }}</td>
+  <td>{{ n.attrs.get('condition') | short(80) }}</td>
+  <td>{{ n.location.page or '—' }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
+{% endblock %}

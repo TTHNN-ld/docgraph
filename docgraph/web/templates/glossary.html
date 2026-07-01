@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% set active = 'glossary' %}
+{% block title %}术语 · DocGraph{% endblock %}
+{% block content %}
+<h1>术语 / 缩写 <span class="muted">({{ nodes|length }})</span></h1>
+<form method="get" class="filter-bar">
+  <input type="search" name="q" placeholder="按缩写过滤…" value="{{ q }}">
+  <button type="submit">过滤</button>
+</form>
+{% if not nodes %}
+<p class="muted">没有术语节点。spec 中如有"abbreviations / 缩写"章节会被 GlossaryExtractor 抓出来。</p>
+{% else %}
+<div class="glossary-grid">
+{% for n in nodes %}
+<div class="glossary-item">
+  <code class="abbr">{{ n.name }}</code>
+  <span>{{ n.attrs.get('full') or (n.aliases[0] if n.aliases else '') }}</span>
+</div>
+{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

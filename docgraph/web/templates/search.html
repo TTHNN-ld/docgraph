@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% set active = 'search' %}
+{% block title %}搜索 · DocGraph{% endblock %}
+{% block content %}
+<h1>搜索</h1>
+<p class="muted">
+  搜索用于定位信息入口：先查 L2 图谱节点（寄存器、信号、接口、图等），再查 L1 原文 chunk。
+  适合找寄存器名、信号名、章节主题、中文需求描述；命中后可回到对应页和来源 block。
+</p>
+<form method="get" class="filter-bar">
+  <input type="search" name="q" value="{{ q }}" placeholder="任意关键字 / 寄存器名 / 信号 / 中文短语…" autofocus>
+  <select name="kind">
+    <option value="">所有 kind</option>
+    {% for k in kinds %}
+    <option value="{{ k }}" {% if k==kind %}selected{% endif %}>{{ k }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">搜索</button>
+</form>
+
+{% if q %}
+<p class="muted">图谱节点 {{ nodes|length }} 条 · 原文片段 {{ chunks|length }} 条</p>
+{% endif %}
+
+{% if nodes %}
+<h2>图谱节点</h2>
+<table class="grid">
+<thead><tr><th>kind</th><th>name</th><th>doc</th><th>page</th><th>summary</th></tr></thead>
+<tbody>
+{% for n in nodes %}
+<tr>
+  <td><span class="tag">{{ n.kind.value }}</span></td>
+  <td>
+    {% if n.kind.value == 'register' %}
+      <a href="/registers/{{ n.id | urlencode }}"><strong>{{ n.name }}</strong></a>
+    {% else %}
+      <a href="/nodes/{{ n.id | urlencode }}"><strong>{{ n.name }}</strong></a>
+    {% endif %}
+  </td>
+  <td><code>{{ n.doc_id | short_id }}</code></td>
+  <td>{{ n.location.page or '—' }}</td>
+  <td>{{ n.summary | short(120) }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
+
+{% if chunks %}
+<h2>原文片段</h2>
+<table class="grid">
+<thead><tr><th>kind</th><th>page</th><th>section/chunk</th><th>score</th><th>snippet</th><th></th></tr></thead>
+<tbody>
+{% for c in chunks %}
+<tr>
+  <td><span class="tag">{{ c.kind }}</span></td>
+  <td>
+    {% if c.page_start and c.page_end and c.page_start != c.page_end %}
+      {{ c.page_start }}-{{ c.page_end }}
+    {% else %}
+      {{ c.page or c.page_start or '—' }}
+    {% endif %}
+  </td>
+  <td><code>{{ c.section_id or c.chunk_id | short(40) }}</code></td>
+  <td>
+    {% if c.score is defined %}
+      <code>{{ c.score }}</code>
+      {% for r in c.rank_reasons or [] %}<span class="tag">{{ r }}</span>{% endfor %}
+    {% else %}
+      —
+    {% endif %}
+  </td>
+  <td>{{ c.snippet | safe }}</td>
+  <td><a href="/chunks/{{ c.chunk_id | urlencode }}">证据</a></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
+
+{% if q and not nodes and not chunks %}
+<p class="muted">没有命中。可以试试完整信号名、章节关键词，或中文短语。</p>
+{% elif not q %}
+<section>
+  <h2>可以搜什么</h2>
+  <div class="cards">
+    <div class="card"><strong>实体</strong><br><span class="muted">如 <code>per_vector_misc</code>、<code>PCIe core</code>、<code>AXI</code></span></div>
+    <div class="card"><strong>原文</strong><br><span class="muted">如 <code>ATS Request fail</code>、<code>地址映射</code>、<code>Reset</code></span></div>
+    <div class="card"><strong>图语义</strong><br><span class="muted">如 <code>UPCS PIPE</code>、<code>Cross Die UCIE</code></span></div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

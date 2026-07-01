@@ -1,0 +1,592 @@
+"""MinerU PDF parser adapter.
+
+MinerU (https://github.com/opendatalab/MinerU) 是上海 AI Lab 开源的高精度
+PDF parser，对中文混排、公式、复杂表格识别效果好。
+
+依赖更重（detectron2 / paddle / 模型 ~4GB），按需 import。
+
+安装：
+  pip install magic-pdf[full]
+  # 或参考 https://github.com/opendatalab/MinerU 的最新安装文档
+
+使用：
+  config.yaml:
+    parsers:
+      pdf:
+        primary: mineru
+        fallback: [marker, pymupdf]
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+from docgraph.core.logger import get_logger
+from docgraph.graph.schema import (
+    BBox, Block, BlockKind, ParsedDoc, ParsedFigure, ParsedPage, ParsedTable,
+    TableData, TextBlock, TocEntry,
+)
+from docgraph.parsers.base import ParseContext
+
+log = get_logger(__name__)
+
+
+class MinerUParser:
+    """基于 magic-pdf (MinerU) 的 PDF parser。
+
+    通过当前 magic-pdf API 产出 middle JSON，再归一为 ParsedDoc。
+    """
+    name = "mineru"
+    supports = {".pdf"}
+    version = "0.1"
+
+    def can_parse(self, path: Path) -> bool:
+        return path.suffix.lower() in self.supports
+
+    def parse(self, path: Path, ctx: ParseContext) -> ParsedDoc:
+        mid, image_dir = self._parse_with_current_api(path, ctx)
+        return _middle_json_to_parsed_doc(path, ctx, mid, image_dir=image_dir)
+
+    def _parse_with_current_api(self, path: Path, ctx: ParseContext) -> tuple[dict[str, Any], Path]:
+        cache_dir = Path(ctx.cache_dir) if ctx.cache_dir else path.parent / ".mineru_cache"
+        table_enable = _table_enabled_for_quality(ctx.options.get("quality"))
+        output_dir = cache_dir / ("mineru_table" if table_enable else "mineru_fast")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        models_dir = cache_dir.parent.parent / "mineru-models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        config_path = cache_dir.parent.parent / "magic-pdf.json"
+        config = {
+            "models-dir": str(models_dir),
+            "device-mode": "cpu",
+            "layout-config": {"model": "doclayout_yolo"},
+            "formula-config": {"enable": False},
+            "table-config": {
+                "model": "rapid_table",
+                "enable": table_enable,
+                "max_time": 400,
+            },
+        }
+        if config_path.is_file():
+            try:
+                existing = json.loads(config_path.read_text(encoding="utf-8"))
+                existing.update(config)
+                config = existing
+            except Exception:
+                pass
+        config_path.write_text(
+            json.dumps(config, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.environ["MINERU_TOOLS_CONFIG_JSON"] = str(config_path.resolve())
+
+        try:
+            import magic_pdf.model as model_config  # type: ignore
+            import magic_pdf.pdf_parse_union_core_v2 as parse_core  # type: ignore
+            import magic_pdf.post_proc.para_split_v3 as para_split  # type: ignore
+            from magic_pdf.tools.common import do_parse  # type: ignore
+        except ImportError as e:  # pragma: no cover
+            raise RuntimeError(
+                "magic-pdf not installed. Install: pip install 'magic-pdf[full]'\n"
+                "See https://github.com/opendatalab/MinerU for full setup."
+            ) from e
+
+        log.info(f"[mineru] processing {path.name} with magic-pdf current API ...")
+        _patch_rapid_table_ocr_result()
+
+        # The pip package defaults to external model-list mode; use the bundled model pipeline.
+        model_config.__use_inside_model__ = True
+        model_config.__model_mode__ = "full"
+        # Avoid blocking on the optional hantian/layoutreader download. MinerU's
+        # downstream code falls back to coordinate/xy-cut ordering when this
+        # returns None, which is good enough for local parser evaluation.
+        parse_core.sort_lines_by_model = lambda *args, **kwargs: None
+        original_merge = getattr(para_split, "__merge_2_text_blocks")
+
+        def merge_nonempty_text_blocks(block1, block2):
+            if not block1.get("lines") or not block2.get("lines"):
+                return None
+            return original_merge(block1, block2)
+
+        setattr(para_split, "__merge_2_text_blocks", merge_nonempty_text_blocks)
+        pdf_name = path.stem
+        middle_path = output_dir / pdf_name / "txt" / f"{pdf_name}_middle.json"
+        if middle_path.is_file():
+            log.info(f"[mineru] reusing cached middle json: {middle_path}")
+            with middle_path.open("r", encoding="utf-8") as f:
+                return json.load(f), middle_path.parent
+
+        do_parse(
+            str(output_dir),
+            pdf_name,
+            path.read_bytes(),
+            [],
+            "txt",
+            debug_able=False,
+            f_draw_span_bbox=False,
+            f_draw_layout_bbox=False,
+            f_dump_md=True,
+            f_dump_middle_json=True,
+            f_dump_model_json=False,
+            f_dump_orig_pdf=False,
+            f_dump_content_list=True,
+            formula_enable=False,
+            table_enable=table_enable,
+        )
+
+        if not middle_path.is_file():
+            matches = list(output_dir.rglob(f"{pdf_name}_middle.json"))
+            if not matches:
+                raise RuntimeError(f"MinerU did not produce middle json under {output_dir}")
+            middle_path = matches[0]
+
+        with middle_path.open("r", encoding="utf-8") as f:
+            mid = json.load(f)
+        return mid, middle_path.parent
+
+
+def _table_enabled_for_quality(quality: Any) -> bool:
+    return str(quality or "balanced").strip().lower() != "fast"
+
+
+def _middle_json_to_parsed_doc(
+    path: Path,
+    ctx: ParseContext,
+    mid: dict[str, Any],
+    *,
+    image_dir: Path,
+) -> ParsedDoc:
+    pages_raw = mid.get("pdf_info") or []
+    pages: list[ParsedPage] = []
+    toc: list[TocEntry] = _parse_pdf_outline(path)
+    use_mineru_title_toc = not toc
+    counter = [0] * 6
+    for p in pages_raw:
+        pno = int(p.get("page_idx", 0)) + 1
+        blocks: list[Block] = []
+        text_blocks: list[TextBlock] = []
+        tables: list[ParsedTable] = []
+        figures: list[ParsedFigure] = []
+        order = 0
+
+        for blk in p.get("preproc_blocks", []) or p.get("para_blocks", []):
+            btype = _block_type(blk)
+            bbox = blk.get("bbox") or [0, 0, 0, 0]
+            bb = _bbox(bbox, pno)
+
+            if btype == "title":
+                title = _join_spans(blk)
+                explicit_path, title_without_num = _split_section_number(title)
+                level = int(blk.get("level", 1) or 1)
+                if explicit_path:
+                    level = explicit_path.count(".") + 1
+                level = min(max(level, 1), len(counter))
+                counter[level - 1] += 1
+                for j in range(level, len(counter)):
+                    counter[j] = 0
+                path_str = explicit_path or ".".join(str(c) for c in counter[:level] if c > 0)
+                if use_mineru_title_toc and explicit_path:
+                    toc.append(TocEntry(
+                        level=level,
+                        title=title_without_num or title,
+                        page=pno,
+                        section_path=path_str or None,
+                    ))
+                text_blocks.append(TextBlock(
+                    text=title, bbox=bb, reading_order=order,
+                    is_heading=True, heading_level=level,
+                ))
+                blocks.append(Block(
+                    id=_block_id(ctx.doc_id, pno, order),
+                    doc_id=ctx.doc_id,
+                    page=pno,
+                    kind=BlockKind.HEADING,
+                    reading_order=order,
+                    bbox=bb,
+                    text=title,
+                    section_path=path_str or None,
+                    heading_level=level,
+                    attrs={"parser": MinerUParser.name},
+                ))
+                order += 1
+            elif btype in {"text", "list", "index"}:
+                text = _join_spans(blk)
+                if text:
+                    text_blocks.append(TextBlock(text=text, bbox=bb, reading_order=order))
+                    blocks.append(Block(
+                        id=_block_id(ctx.doc_id, pno, order),
+                        doc_id=ctx.doc_id,
+                        page=pno,
+                        kind=BlockKind.LIST if btype == "list" else BlockKind.PARAGRAPH,
+                        reading_order=order,
+                        bbox=bb,
+                        text=text,
+                        attrs={"parser": MinerUParser.name},
+                    ))
+                    order += 1
+            elif btype in {"table", "table_body"}:
+                headers, rows, html = _extract_table(blk)
+                caption = _caption_from_nested_blocks(blk, {"table_caption"})
+                image_path = _image_path_from_nested_blocks(blk, image_dir)
+                raw_table_text = _join_spans(blk)
+                if _is_decorative_table_image(
+                    image_path=image_path,
+                    caption=caption,
+                    headers=headers,
+                    rows=rows,
+                    html=html,
+                    raw_text=raw_table_text,
+                ):
+                    figures.append(ParsedFigure(
+                        image_path=image_path, bbox=bb, caption=caption,
+                    ))
+                    blocks.append(Block(
+                        id=_block_id(ctx.doc_id, pno, order),
+                        doc_id=ctx.doc_id,
+                        page=pno,
+                        kind=BlockKind.FIGURE,
+                        reading_order=order,
+                        bbox=bb,
+                        image_path=image_path,
+                        text=caption,
+                        attrs={
+                            "parser": MinerUParser.name,
+                            "mineru_type": btype,
+                            "semantic_role": "decoration",
+                        },
+                    ))
+                    order += 1
+                    continue
+
+                tables.append(ParsedTable(
+                    html=html, headers=headers, rows=rows, bbox=bb,
+                    caption=caption,
+                ))
+                blocks.append(Block(
+                    id=_block_id(ctx.doc_id, pno, order),
+                    doc_id=ctx.doc_id,
+                    page=pno,
+                    kind=BlockKind.TABLE,
+                    reading_order=order,
+                    bbox=bb,
+                    table=TableData(
+                        headers=headers,
+                        rows=rows,
+                        n_rows=len(rows),
+                        n_cols=max([len(headers), *(len(r) for r in rows)] or [0]),
+                        caption=caption,
+                        html=html,
+                    ),
+                    image_path=image_path,
+                    attrs={
+                        "parser": MinerUParser.name,
+                        "table_source": "html" if html else ("cells" if headers or rows else "image"),
+                    },
+                ))
+                order += 1
+            elif btype in {"image", "figure", "image_body"}:
+                caption = _caption_from_nested_blocks(blk, {"image_caption"})
+                image_path = _image_path_from_nested_blocks(blk, image_dir)
+                figures.append(ParsedFigure(
+                    image_path=image_path, bbox=bb, caption=caption,
+                ))
+                blocks.append(Block(
+                    id=_block_id(ctx.doc_id, pno, order),
+                    doc_id=ctx.doc_id,
+                    page=pno,
+                    kind=BlockKind.FIGURE,
+                    reading_order=order,
+                    bbox=bb,
+                    image_path=image_path,
+                    text=caption,
+                    attrs={"parser": MinerUParser.name},
+                ))
+                order += 1
+
+        pages.append(ParsedPage(
+            page_no=pno, blocks=blocks, text_blocks=text_blocks,
+            tables=tables, figures=figures,
+        ))
+
+    return ParsedDoc(
+        doc_id=ctx.doc_id,
+        source_path=str(path),
+        pages=pages,
+        metadata=ctx.metadata,
+        toc=toc,
+        parser=MinerUParser.name,
+        parser_version=MinerUParser.version,
+    )
+
+
+def _parse_pdf_outline(path: Path) -> list[TocEntry]:
+    """Read the PDF's embedded outline when available.
+
+    MinerU is still the L0 layout parser. The outline is native PDF metadata,
+    so using it avoids inventing section numbers from visual title order.
+    """
+    try:
+        import fitz  # type: ignore
+    except Exception:
+        try:
+            import pymupdf as fitz  # type: ignore
+        except Exception:
+            return []
+
+    try:
+        doc = fitz.open(path)
+        raw = doc.get_toc()
+    except Exception:
+        return []
+
+    out: list[TocEntry] = []
+    seen: set[tuple[str | None, str, int | None]] = set()
+    for entry in raw:
+        if len(entry) < 3:
+            continue
+        level, title, page = entry[0], str(entry[1]).strip(), entry[2]
+        if not title:
+            continue
+        section_path, clean_title = _split_section_number(title)
+        if section_path and not clean_title:
+            continue
+        if section_path is None:
+            section_path = _outline_path_from_level(len(out), int(level), out)
+        key = (section_path, clean_title, int(page) if page else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(TocEntry(
+            level=int(level),
+            title=clean_title or title,
+            page=int(page) if page else None,
+            section_path=section_path,
+        ))
+    return out
+
+
+def _split_section_number(title: str) -> tuple[str | None, str]:
+    s = " ".join((title or "").split()).strip()
+    match = re.match(r"^(\d+(?:\.\d+){0,5})(?:[.)])?\s*(.*)$", s)
+    if not match:
+        return None, s
+    section_path = match.group(1)
+    clean_title = match.group(2).strip()
+    return section_path, clean_title
+
+
+def _outline_path_from_level(index: int, level: int, entries: list[TocEntry]) -> str | None:
+    """Fallback path for outline entries without visible numbers."""
+    if level <= 0:
+        return None
+    siblings = [
+        e for e in entries
+        if e.level == level and e.section_path and e.section_path.count(".") + 1 == level
+    ]
+    if not siblings and level == 1:
+        return str(index + 1)
+    return None
+
+
+def _block_id(doc_id: str, page_no: int, order: int) -> str:
+    return f"{doc_id}#p{page_no}#b{order}"
+
+
+def _bbox(bbox: list[Any], page_no: int) -> BBox | None:
+    if len(bbox) < 4:
+        return None
+    return BBox(
+        x0=float(bbox[0]), y0=float(bbox[1]),
+        x1=float(bbox[2]), y1=float(bbox[3]),
+        page=page_no,
+    )
+
+
+def _block_type(blk: dict[str, Any]) -> str:
+    return str(blk.get("type") or "").strip().lower()
+
+
+def _caption_from_nested_blocks(blk: dict[str, Any], types: set[str]) -> str | None:
+    captions: list[str] = []
+    for child in blk.get("blocks", []) or []:
+        if _block_type(child) in types:
+            text = _join_spans(child)
+            if text:
+                captions.append(text)
+    return "\n".join(captions).strip() or None
+
+
+def _image_path_from_nested_blocks(blk: dict[str, Any], image_dir: Path) -> str | None:
+    for child in blk.get("blocks", []) or [blk]:
+        for line in child.get("lines", []) or []:
+            for span in line.get("spans", []) or []:
+                raw = span.get("image_path") or span.get("img_path")
+                if raw:
+                    p = Path(str(raw))
+                    return str(_resolve_mineru_asset(image_dir, p))
+    raw = blk.get("image_path") or blk.get("img_path")
+    if raw:
+        p = Path(str(raw))
+        return str(_resolve_mineru_asset(image_dir, p))
+    return None
+
+
+def _resolve_mineru_asset(image_dir: Path, path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    direct = image_dir / path
+    if direct.exists():
+        return direct
+    nested = image_dir / "images" / path
+    if nested.exists():
+        return nested
+    return direct
+
+
+def _iter_spans(blk: dict[str, Any]):
+    for line in blk.get("lines", []) or []:
+        for span in line.get("spans", []) or []:
+            yield span
+    for child in blk.get("blocks", []) or []:
+        yield from _iter_spans(child)
+
+
+def _span_text(span: dict[str, Any]) -> str:
+    return str(span.get("content") or span.get("text") or "").strip()
+
+
+def _span_table_html(span: dict[str, Any]) -> str:
+    return str(
+        span.get("html")
+        or span.get("table_html")
+        or span.get("latex")
+        or ""
+    )
+
+
+def _join_spans(blk: dict) -> str:
+    """递归把 block 内所有 span.text 拼起来。"""
+    out: list[str] = []
+    for span in _iter_spans(blk):
+        text = _span_text(span)
+        if text:
+            out.append(text)
+    return "".join(out).strip()
+
+
+def _extract_table(blk: dict) -> tuple[list[str], list[list[str]], str | None]:
+    """MinerU 表格 → headers + rows。"""
+    html = blk.get("html") or ""
+    if not html:
+        for span in _iter_spans(blk):
+            html = _span_table_html(span)
+            if html:
+                break
+    if html:
+        # 简单 HTML 解析
+        import re
+        rows_raw = re.findall(r"<tr[^>]*>(.*?)</tr>", html, flags=re.S | re.I)
+        rows: list[list[str]] = []
+        for r in rows_raw:
+            cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", r, flags=re.S | re.I)
+            cells = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
+            rows.append(cells)
+        if rows:
+            return rows[0], rows[1:], html
+    return [], [], None
+
+
+def _is_decorative_table_image(
+    *,
+    image_path: str | None,
+    caption: str | None,
+    headers: list[str],
+    rows: list[list[str]],
+    html: str | None,
+    raw_text: str | None,
+) -> bool:
+    """Detect MinerU false-positive tables that are really cover/background art.
+
+    The rule is intentionally conservative: only image-only, textless table
+    blocks with almost no dark ink are reclassified. This keeps real scanned
+    tables as TABLE blocks even when table OCR fails.
+    """
+    if headers or rows or html or caption or (raw_text or "").strip() or not image_path:
+        return False
+    try:
+        from PIL import Image
+    except Exception:
+        return False
+
+    try:
+        with Image.open(image_path) as image:
+            rgb = image.convert("RGB")
+            rgb.thumbnail((256, 256))
+            data = getattr(rgb, "get_flattened_data", rgb.getdata)
+            pixels = list(data())
+    except Exception:
+        return False
+
+    if not pixels:
+        return False
+
+    dark = 0
+    for r, g, b in pixels:
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        if luminance < 100 and max(r, g, b) < 140:
+            dark += 1
+
+    return (dark / len(pixels)) < 0.003
+
+
+def _patch_rapid_table_ocr_result() -> None:
+    """Patch magic-pdf 1.3.x RapidTable wrapper for rapid-table 2.x.
+
+    magic-pdf builds OCR rows as ``[[box, text, score], ...]`` and passes them
+    directly to rapid-table. rapid-table 2.x expects one OCR package per image:
+    ``[[boxes, texts, scores]]``. Without this compatibility shim, table
+    recognition fails with ``'numpy.float32' object is not iterable``.
+    """
+    try:
+        from magic_pdf.model.sub_modules.table.rapidtable import rapid_table as rt  # type: ignore
+    except Exception:
+        return
+    model_cls = getattr(rt, "RapidTableModel", None)
+    if model_cls is None or getattr(model_cls, "_docgraph_ocr_patch", False):
+        return
+
+    def predict(self, image):
+        import cv2
+        import numpy as np
+
+        bgr_image = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+        ocr_rows = self.ocr_engine.ocr(bgr_image)[0]
+        if not ocr_rows:
+            return None, None, None, None
+
+        boxes, texts, scores = [], [], []
+        for item in ocr_rows:
+            if len(item) != 2 or not isinstance(item[1], tuple):
+                continue
+            boxes.append(item[0])
+            texts.append(item[1][0])
+            scores.append(float(item[1][1]))
+
+        if not boxes:
+            return None, None, None, None
+
+        ocr_result = [np.asarray(boxes), tuple(texts), tuple(scores)]
+        table_results = self.table_model(np.asarray(image), [ocr_result])
+        htmls = getattr(table_results, "pred_htmls", None)
+        html_code = htmls[0] if htmls else getattr(table_results, "pred_html", None)
+        cell_bboxes = getattr(table_results, "cell_bboxes", None)
+        table_cell_bboxes = cell_bboxes[0] if cell_bboxes else None
+        points = getattr(table_results, "logic_points", None)
+        logic_points = points[0] if points else None
+        elapse = table_results.elapse
+        return html_code, table_cell_bboxes, logic_points, elapse
+
+    model_cls.predict = predict
+    model_cls._docgraph_ocr_patch = True

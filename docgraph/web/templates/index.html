@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% set active = 'index' %}
+{% block content %}
+<h1>{{ project.name }}</h1>
+<p class="muted">family <code>{{ project.family }}</code> · {{ project.description or '—' }}</p>
+
+<div class="cards">
+  <div class="card"><div class="big">{{ status.nodes_total }}</div><div>节点</div></div>
+  <div class="card"><div class="big">{{ status.edges_total }}</div><div>边</div></div>
+  <div class="card"><div class="big">{{ status.docs|length }}</div><div>文档</div></div>
+  <div class="card"><div class="big">{{ status.vector_count }}</div><div>向量</div></div>
+</div>
+
+<section>
+  <h2>节点分布</h2>
+  <div class="bars">
+  {% for kind, count in status.by_kind.items() %}
+    <div class="bar-row">
+      <span class="bar-label">{{ kind }}</span>
+      <span class="bar-fill" style="width: {{ (count / status.nodes_total * 100) if status.nodes_total else 0 }}%"></span>
+      <span class="bar-count">{{ count }}</span>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+
+<section>
+  <h2>边分布</h2>
+  <div class="bars">
+  {% for kind, count in status.by_edge_kind.items() %}
+    <div class="bar-row">
+      <span class="bar-label">{{ kind }}</span>
+      <span class="bar-fill alt" style="width: {{ (count / status.edges_total * 100) if status.edges_total else 0 }}%"></span>
+      <span class="bar-count">{{ count }}</span>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+
+<section>
+  <h2>文档</h2>
+  <ul class="doc-list">
+  {% for d in docs %}
+    <li><code>{{ d }}</code></li>
+  {% endfor %}
+  </ul>
+</section>
+{% endblock %}

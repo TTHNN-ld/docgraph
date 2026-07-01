@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% set active = 'registers' %}
+{% block title %}{{ node.name }} · DocGraph{% endblock %}
+{% block content %}
+
+<nav class="crumbs"><a href="/registers">寄存器</a> / <strong>{{ node.name }}</strong></nav>
+
+<h1>{{ node.name }}</h1>
+<p class="muted">
+  qualified <code>{{ node.qualified_name }}</code>
+  · doc <code>{{ node.doc_id | short_id }}</code>
+  · page {{ node.location.page or '—' }}
+  · source <span class="tag tag-{{ node.attrs.get('source','heuristic') }}">{{ node.attrs.get('source','heuristic') }}</span>
+</p>
+
+{% if node.summary %}<blockquote>{{ node.summary }}</blockquote>{% endif %}
+
+<dl class="kv">
+  <dt>address</dt><dd><code>{{ node.attrs.get('address') or '—' }}</code></dd>
+  <dt>offset</dt><dd><code>{{ node.attrs.get('offset') or '—' }}</code></dd>
+  <dt>width</dt><dd>{{ node.attrs.get('width') or 32 }} bits</dd>
+  <dt>access</dt><dd>{{ node.attrs.get('access') or '—' }}</dd>
+  <dt>reset</dt><dd><code>{{ node.attrs.get('reset_value') or '—' }}</code></dd>
+</dl>
+
+<h2>位图（{{ node.attrs.get('width', 32) }} bits）</h2>
+<div class="bit-layout">
+{% set width = node.attrs.get('width', 32) %}
+{# 自顶向下渲染，从 MSB → LSB #}
+{% for bit in range(width - 1, -1, -1) %}
+  {% set claimed = namespace(bf=None) %}
+  {% for bf in bitfields %}
+    {% if claimed.bf is none and bf.attrs.bit_high >= bit >= bf.attrs.bit_low %}
+      {% set claimed.bf = bf %}
+    {% endif %}
+  {% endfor %}
+  {% if claimed.bf %}
+    {% set bf = claimed.bf %}
+    <div class="bit-cell bit-claimed"
+         title="bit {{ bit }} · {{ bf.name }} · {{ bf.attrs.access or '' }}"
+         data-name="{{ bf.name }}">
+      <span class="bit-no">{{ bit }}</span>
+      <span class="bit-name">{{ bf.name }}</span>
+    </div>
+  {% else %}
+    <div class="bit-cell bit-reserved" title="bit {{ bit }}">
+      <span class="bit-no">{{ bit }}</span>
+      <span class="bit-name">—</span>
+    </div>
+  {% endif %}
+{% endfor %}
+</div>
+
+<h2>位域 ({{ bitfields|length }})</h2>
+
+{% if not bitfields %}
+  <p class="muted">没有位域。可能是 LLM 抽取还没覆盖；试试 docgraph review 检查置信度。</p>
+{% else %}
+<table class="grid">
+<thead><tr>
+  <th>bits</th><th>name</th><th>access</th><th>reset</th><th>description</th>
+</tr></thead>
+<tbody>
+{% for bf in bitfields %}
+<tr>
+  <td><code>{{ bf.attrs.bit_high }}:{{ bf.attrs.bit_low }}</code></td>
+  <td><strong>{{ bf.name }}</strong></td>
+  <td>{{ bf.attrs.access or '—' }}</td>
+  <td><code>{{ bf.attrs.reset or '—' }}</code></td>
+  <td>{{ bf.attrs.description | short(200) }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
+
+<details>
+  <summary>原始 JSON</summary>
+  <pre><code>{{ node.model_dump_json(indent=2) }}</code></pre>
+</details>
+
+{% endblock %}

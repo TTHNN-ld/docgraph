@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% set active = 'registers' %}
+{% block title %}寄存器 · DocGraph{% endblock %}
+{% block content %}
+<h1>寄存器 <span class="muted">({{ nodes|length }})</span></h1>
+
+<form method="get" class="filter-bar">
+  <input type="search" name="q" placeholder="按名称过滤…" value="{{ q }}">
+  <button type="submit">过滤</button>
+  {% if q %}<a href="/registers" class="muted">清除</a>{% endif %}
+</form>
+
+{% if not nodes %}
+  <p class="muted">没有寄存器节点。启用 LLM 模式后跑 build 试试，参见 <a href="/plugins">插件页</a>。</p>
+{% else %}
+<table class="grid">
+  <thead><tr>
+    <th>name</th><th>address / offset</th><th>width</th><th>access</th>
+    <th>reset</th><th>page</th><th>source</th>
+  </tr></thead>
+  <tbody>
+  {% for n in nodes %}
+    <tr>
+      <td><a href="/registers/{{ n.id | urlencode }}"><strong>{{ n.name }}</strong></a></td>
+      <td><code>{{ n.attrs.get('address') or n.attrs.get('offset') or '—' }}</code></td>
+      <td>{{ n.attrs.get('width') or '?' }}</td>
+      <td>{{ n.attrs.get('access') or '—' }}</td>
+      <td><code>{{ n.attrs.get('reset_value') or '—' }}</code></td>
+      <td>{{ n.location.page or '—' }}</td>
+      <td><span class="tag tag-{{ n.attrs.get('source','heuristic') }}">{{ n.attrs.get('source','heuristic') }}</span></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,216 @@
+"""LanceDB-backed vector store.
+
+LanceDB is optional. The core project keeps SQLite JSON vectors as the zero
+dependency default; this adapter is selected only when `storage.vector_backend`
+is configured as `lancedb`.
+"""
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Any
+
+from docgraph.embeddings.vector_store import _cosine
+
+
+class LanceDBVectorStore:
+    """VectorStore-compatible adapter backed by local LanceDB tables."""
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = Path(db_path)
+        self.db_path.mkdir(parents=True, exist_ok=True)
+        self._db: Any | None = None
+
+    def _connect(self):
+        if self._db is None:
+            try:
+                import lancedb
+            except ImportError as e:  # pragma: no cover - optional dependency
+                raise RuntimeError(
+                    "LanceDB vector backend requires lancedb. "
+                    "Install with: pip install 'docgraph[lancedb]'"
+                ) from e
+            self._db = lancedb.connect(str(self.db_path))
+        return self._db
+
+    def init_schema(self) -> None:
+        db = self._connect()
+        self._ensure_table(
+            "vec_nodes",
+            {
+                "node_id": "string",
+                "model": "string",
+                "dim": "int32",
+                "vector": "float32_list",
+            },
+        )
+        self._ensure_table(
+            "vec_items",
+            {
+                "namespace": "string",
+                "item_id": "string",
+                "model": "string",
+                "dim": "int32",
+                "vector": "float32_list",
+            },
+        )
+
+    def _ensure_table(self, name: str, fields: dict[str, str]) -> None:
+        db = self._connect()
+        if name in set(db.table_names()):
+            return
+        import pyarrow as pa
+
+        pa_fields = []
+        for field_name, field_type in fields.items():
+            if field_type == "string":
+                pa_fields.append(pa.field(field_name, pa.string()))
+            elif field_type == "int32":
+                pa_fields.append(pa.field(field_name, pa.int32()))
+            elif field_type == "float32_list":
+                pa_fields.append(pa.field(field_name, pa.list_(pa.float32())))
+        schema = pa.schema(pa_fields)
+        db.create_table(name, schema=schema)
+
+    def upsert(self, node_id: str, model: str, vector: list[float]) -> None:
+        table = self._table("vec_nodes")
+        table.delete(f"node_id = '{_sql_quote(node_id)}'")
+        table.add([{
+            "node_id": node_id,
+            "model": model,
+            "dim": len(vector),
+            "vector": _float32(vector),
+        }])
+
+    def upsert_item(self, namespace: str, item_id: str, model: str, vector: list[float]) -> None:
+        table = self._table("vec_items")
+        table.delete(
+            f"namespace = '{_sql_quote(namespace)}' AND item_id = '{_sql_quote(item_id)}'"
+        )
+        table.add([{
+            "namespace": namespace,
+            "item_id": item_id,
+            "model": model,
+            "dim": len(vector),
+            "vector": _float32(vector),
+        }])
+
+    def delete(self, node_id: str) -> None:
+        self._table("vec_nodes").delete(f"node_id = '{_sql_quote(node_id)}'")
+
+    def delete_by_doc(self, doc_ids: list[str], graph_db: Path) -> int:
+        return 0
+
+    def all_for_model(self, model: str) -> list[tuple[str, list[float]]]:
+        rows = [r for r in self._all_rows("vec_nodes") if r.get("model") == model]
+        return [(str(r["node_id"]), list(r["vector"])) for r in rows]
+
+    def all_items_for_model(self, namespace: str, model: str) -> list[tuple[str, list[float]]]:
+        rows = [
+            r for r in self._all_rows("vec_items")
+            if r.get("namespace") == namespace and r.get("model") == model
+        ]
+        return [(str(r["item_id"]), list(r["vector"])) for r in rows]
+
+    def count(self) -> int:
+        return len(self._all_rows("vec_nodes")) + len(self._all_rows("vec_items"))
+
+    def count_items(self, namespace: str | None = None) -> int:
+        rows = self._all_rows("vec_items")
+        if namespace is None:
+            return len(rows)
+        return sum(1 for r in rows if r.get("namespace") == namespace)
+
+    def search(
+        self, query_vec: list[float], model: str, top_k: int = 10
+    ) -> list[tuple[str, float]]:
+        native = self._native_search("vec_nodes", query_vec, model, top_k)
+        if native is not None:
+            return [(str(r["node_id"]), _distance_to_score(r)) for r in native]
+        rows = self.all_for_model(model)
+        return _cosine_top_k(rows, query_vec, top_k)
+
+    def search_items(
+        self,
+        namespace: str,
+        query_vec: list[float],
+        model: str,
+        top_k: int = 10,
+    ) -> list[tuple[str, float]]:
+        native = self._native_search(
+            "vec_items",
+            query_vec,
+            model,
+            top_k,
+            where=f"namespace = '{_sql_quote(namespace)}' AND model = '{_sql_quote(model)}'",
+        )
+        if native is not None:
+            return [(str(r["item_id"]), _distance_to_score(r)) for r in native]
+        rows = self.all_items_for_model(namespace, model)
+        return _cosine_top_k(rows, query_vec, top_k)
+
+    def close(self) -> None:
+        self._db = None
+
+    def _table(self, name: str):
+        return self._connect().open_table(name)
+
+    def _all_rows(self, table_name: str) -> list[dict[str, Any]]:
+        table = self._table(table_name)
+        try:
+            return list(table.to_list())
+        except AttributeError:  # pragma: no cover - compatibility with older LanceDB
+            return table.to_pandas().to_dict("records")
+
+    def _native_search(
+        self,
+        table_name: str,
+        query_vec: list[float],
+        model: str,
+        top_k: int,
+        *,
+        where: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        try:
+            table = self._table(table_name)
+            q = table.search(_float32(query_vec))
+            if where is None:
+                where = f"model = '{_sql_quote(model)}'"
+            q = q.where(where, prefilter=True).limit(top_k)
+            return list(q.to_list())
+        except Exception:
+            return None
+
+
+def _cosine_top_k(
+    rows: list[tuple[str, list[float]]],
+    query_vec: list[float],
+    top_k: int,
+) -> list[tuple[str, float]]:
+    results = [(item_id, _cosine(query_vec, vec)) for item_id, vec in rows]
+    results.sort(key=lambda kv: kv[1], reverse=True)
+    return results[:top_k]
+
+
+def _distance_to_score(row: dict[str, Any]) -> float:
+    if "_score" in row:
+        try:
+            return float(row["_score"])
+        except Exception:
+            pass
+    if "_distance" in row:
+        try:
+            distance = max(0.0, float(row["_distance"]))
+            if math.isfinite(distance):
+                return 1.0 / (1.0 + distance)
+        except Exception:
+            pass
+    return 0.0
+
+
+def _float32(values: list[float]) -> list[float]:
+    return [float(v) for v in values]
+
+
+def _sql_quote(value: str) -> str:
+    return value.replace("'", "''")

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% set active = 'plugins' %}
+{% block title %}插件 · DocGraph{% endblock %}
+{% block content %}
+<h1>插件</h1>
+<p class="muted">内置 + 通过 entry_points 注册的第三方插件。</p>
+
+{% for group, plugins in by_group.items() %}
+<h2><code>{{ group }}</code></h2>
+<table class="grid">
+<thead><tr><th>name</th><th>kind</th><th>target</th><th>dist</th><th>version</th><th>enabled</th></tr></thead>
+<tbody>
+{% for p in plugins %}
+<tr>
+  <td><strong>{{ p.name }}</strong></td>
+  <td><span class="tag">{{ 'builtin' if p.builtin else 'ext' }}</span></td>
+  <td><code>{{ p.target }}</code></td>
+  <td>{{ p.dist or '—' }}</td>
+  <td>{{ p.version or '—' }}</td>
+  <td>{{ '✓' if p.enabled else '✗' }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endfor %}
+{% endblock %}

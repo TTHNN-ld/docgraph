@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% set active = 'sections' %}
+{% block title %}章节树 · DocGraph{% endblock %}
+{% block content %}
+<h1>章节树</h1>
+<p class="muted">从 spec TOC 推断；可逐级展开。</p>
+
+<div id="tree" data-loading="正在加载…">正在加载…</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+fetch('/api/sections/tree').then(r => r.json()).then(data => {
+  const el = document.getElementById('tree');
+  el.innerHTML = '';
+  const counter = document.createElement('p');
+  counter.className = 'muted';
+  counter.textContent = `共 ${data.count} 个章节 · ${data.docs.length} 份文档`;
+  el.appendChild(counter);
+
+  data.docs.forEach(doc => {
+    const section = document.createElement('section');
+    section.className = 'doc-section-tree';
+    const title = document.createElement('h2');
+    title.textContent = doc.name;
+    const meta = document.createElement('p');
+    meta.className = 'muted';
+    meta.textContent = doc.doc_id;
+    const ul = document.createElement('ul');
+    ul.className = 'tree';
+    doc.roots.forEach(r => ul.appendChild(renderNode(r)));
+    section.append(title, meta, ul);
+    el.appendChild(section);
+  });
+});
+
+function renderNode(node) {
+  const li = document.createElement('li');
+  const head = document.createElement('div');
+  head.className = 'tree-head';
+  const path = document.createElement('span');
+  path.className = 'tree-path';
+  path.textContent = node.path;
+  const name = document.createElement('span');
+  name.className = 'tree-name';
+  name.textContent = node.name;
+  const page = document.createElement('span');
+  page.className = 'muted tree-page';
+  page.textContent = node.page ? `p.${node.page}` : '';
+  head.append(path, name, page);
+  li.appendChild(head);
+  if (node.children && node.children.length) {
+    const toggle = document.createElement('button');
+    toggle.className = 'tree-toggle';
+    toggle.textContent = `▶ ${node.children.length}`;
+    head.prepend(toggle);
+    const ul = document.createElement('ul');
+    ul.className = 'tree tree-children';
+    ul.style.display = 'none';
+    node.children.forEach(c => ul.appendChild(renderNode(c)));
+    li.appendChild(ul);
+    toggle.addEventListener('click', () => {
+      const open = ul.style.display !== 'none';
+      ul.style.display = open ? 'none' : 'block';
+      toggle.textContent = open ? `▶ ${node.children.length}` : `▼ ${node.children.length}`;
+    });
+  }
+  return li;
+}
+</script>
+{% endblock %}

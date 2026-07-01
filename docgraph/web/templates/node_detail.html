@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% set active = 'search' %}
+{% block title %}{{ node.name }} · DocGraph{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/search">搜索</a> / {{ node.kind.value }}</p>
+
+<h1>{{ node.name }}</h1>
+<p class="muted">
+  <span class="tag">{{ node.kind.value }}</span>
+  · doc <code>{{ node.doc_id | short_id }}</code>
+  · page {{ node.location.page or '—' }}
+  · id <code>{{ node.id }}</code>
+</p>
+
+{% if node.summary %}<blockquote>{{ node.summary }}</blockquote>{% endif %}
+
+<dl class="kv">
+  <dt>qualified</dt><dd><code>{{ node.qualified_name or '—' }}</code></dd>
+  <dt>section</dt><dd><code>{{ node.location.section_path or '—' }}</code></dd>
+  <dt>source</dt><dd><span class="tag">{{ node.attrs.get('source', '—') }}</span></dd>
+  <dt>source blocks</dt><dd>{{ blocks|length }}</dd>
+  <dt>source chunks</dt><dd>{{ chunks|length }}</dd>
+</dl>
+
+{% if neighbors %}
+<section>
+  <h2>关联节点</h2>
+  <table class="grid">
+    <thead><tr><th>kind</th><th>name</th><th>page</th><th>summary</th></tr></thead>
+    <tbody>
+    {% for n in neighbors %}
+    <tr>
+      <td><span class="tag">{{ n.kind.value }}</span></td>
+      <td>
+        {% if n.kind.value == 'register' %}
+          <a href="/registers/{{ n.id | urlencode }}"><strong>{{ n.name }}</strong></a>
+        {% else %}
+          <a href="/nodes/{{ n.id | urlencode }}"><strong>{{ n.name }}</strong></a>
+        {% endif %}
+      </td>
+      <td>{{ n.location.page or '—' }}</td>
+      <td>{{ n.summary | short(120) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if edges %}
+<section>
+  <h2>关系</h2>
+  <table class="grid">
+    <thead><tr><th>kind</th><th>src</th><th>dst</th><th>confidence</th></tr></thead>
+    <tbody>
+    {% for e in edges %}
+    <tr>
+      <td><span class="tag">{{ e.kind.value }}</span></td>
+      <td><code>{{ e.src | short_id }}</code></td>
+      <td><code>{{ e.dst | short_id }}</code></td>
+      <td>{{ "%.2f"|format(e.confidence or 0) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if chunks %}
+<section>
+  <h2>L1 Chunks</h2>
+  <table class="grid">
+    <thead><tr><th>kind</th><th>page</th><th>section</th><th>chunk</th></tr></thead>
+    <tbody>
+    {% for c in chunks %}
+    <tr>
+      <td><span class="tag">{{ c.kind }}</span></td>
+      <td>
+        {% if c.page_start and c.page_end and c.page_start != c.page_end %}
+          {{ c.page_start }}-{{ c.page_end }}
+        {% else %}
+          {{ c.page or c.page_start or '—' }}
+        {% endif %}
+      </td>
+      <td><code>{{ c.section_id or '—' }}</code></td>
+      <td><a href="/chunks/{{ c.id | urlencode }}">证据</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if blocks %}
+<section>
+  <h2>L0 证据</h2>
+  {% for b in blocks %}
+  <article class="l0-block">
+    <div class="l0-block-head">
+      <span class="tag">{{ b.kind.value }}</span>
+      <code>{{ b.id }}</code>
+      <span class="muted">p.{{ b.page }}</span>
+    </div>
+    {% if b.text %}<div class="spec-text l0-text">{{ b.text | pretty_text }}</div>{% endif %}
+    {% if b.table %}
+      {% set t = b.table %}
+      {% if t.caption %}<p><strong>{{ t.caption }}</strong></p>{% endif %}
+      <div class="table-scroll">
+        <table class="grid l0-table">
+          {% if t.headers %}
+          <thead><tr>{% for h in t.headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+          {% endif %}
+          <tbody>
+          {% for row in t.rows %}
+            <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+    {% if b.image_path %}<p class="muted">image: <code>{{ b.image_path }}</code></p>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+
+<details>
+  <summary>原始 JSON</summary>
+  <pre><code>{{ node.model_dump_json(indent=2) }}</code></pre>
+</details>
+{% endblock %}

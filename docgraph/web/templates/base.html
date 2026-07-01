@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}DocGraph{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body>
+<header>
+  <div class="container header-row">
+    <a href="/" class="brand">📚 DocGraph</a>
+    <form action="/search" method="get" class="search-inline">
+      <input type="search" name="q" placeholder="搜索节点 / 寄存器 / 章节…" value="{{ q or '' }}">
+    </form>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <a href="/"           {% if active=='index' %}class="active"{% endif %}>概览</a>
+    <a href="/registers"  {% if active=='registers' %}class="active"{% endif %}>寄存器</a>
+    <a href="/pins"       {% if active=='pins' %}class="active"{% endif %}>管脚</a>
+    <a href="/timing"     {% if active=='timing' %}class="active"{% endif %}>时序参数</a>
+    <a href="/sections"   {% if active=='sections' %}class="active"{% endif %}>章节树</a>
+    <a href="/figures"    {% if active=='figures' %}class="active"{% endif %}>图</a>
+    <a href="/glossary"   {% if active=='glossary' %}class="active"{% endif %}>术语</a>
+    <a href="/graph"      {% if active=='graph' %}class="active"{% endif %}>关系图</a>
+    <a href="/search"     {% if active=='search' %}class="active"{% endif %}>搜索</a>
+    <a href="/plugins"    {% if active=='plugins' %}class="active"{% endif %}>插件</a>
+  </nav>
+
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+</div>
+
+<footer>
+  <div class="container muted">
+    DocGraph v0.1 · Apache 2.0 · <a href="/api/status">JSON status</a>
+  </div>
+</footer>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% set active = 'search' %}
+{% block title %}Chunk 证据 · DocGraph{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/search">搜索</a> / L1 chunk</p>
+
+<h1>Chunk 证据</h1>
+
+<dl class="kv">
+  <dt>chunk</dt><dd><code>{{ chunk.id }}</code></dd>
+  <dt>kind</dt><dd><span class="tag">{{ chunk.kind }}</span></dd>
+  <dt>doc</dt><dd><code>{{ chunk.doc_id | short_id }}</code></dd>
+  <dt>page</dt>
+  <dd>
+    {% if chunk.page_start and chunk.page_end and chunk.page_start != chunk.page_end %}
+      {{ chunk.page_start }}-{{ chunk.page_end }}
+    {% else %}
+      {{ chunk.page or chunk.page_start or '—' }}
+    {% endif %}
+  </dd>
+  <dt>section</dt><dd><code>{{ chunk.section_id or '—' }}</code></dd>
+  <dt>section node</dt><dd><code>{{ chunk.section_node_id or '—' }}</code></dd>
+  <dt>L0 blocks</dt><dd>{{ blocks|length }}</dd>
+</dl>
+
+<section>
+  <h2>L1 文本</h2>
+  <div class="spec-text">{{ chunk.text | pretty_text }}</div>
+</section>
+
+<section>
+  <h2>L0 Blocks</h2>
+  {% if blocks %}
+    {% for b in blocks %}
+    <article class="l0-block">
+      <div class="l0-block-head">
+        <span class="tag">{{ b.kind }}</span>
+        <code>{{ b.id }}</code>
+        <span class="muted">p.{{ b.page }}</span>
+      </div>
+
+      {% if b.text %}
+      <div class="spec-text l0-text">{{ b.text | pretty_text }}</div>
+      {% endif %}
+
+      {% if b.table %}
+      {% set t = b.table %}
+      {% if t.caption %}<p><strong>{{ t.caption }}</strong></p>{% endif %}
+      {% if chunk.kind == 'table' and chunk.attrs and chunk.attrs.table_profile %}
+      {% set p = chunk.attrs.table_profile %}
+      <p class="muted">
+        table profile:
+        <span class="tag">{{ p.kind }}</span>
+        {% if p.continued %}<span class="tag">continued</span>{% endif %}
+        {% for flag in p.quality_flags or [] %}<span class="tag">{{ flag }}</span>{% endfor %}
+      </p>
+      {% endif %}
+      <div class="table-scroll">
+        <table class="grid l0-table">
+          {% if t.headers %}
+          <thead>
+            <tr>{% for h in t.headers %}<th>{{ h }}</th>{% endfor %}</tr>
+          </thead>
+          {% endif %}
+          <tbody>
+            {% for row in t.rows %}
+            <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if t.html %}
+      <details>
+        <summary>原始 HTML</summary>
+        <pre><code>{{ t.html }}</code></pre>
+      </details>
+      {% endif %}
+      {% endif %}
+
+      {% if b.image_path %}
+      <p class="muted">image: <code>{{ b.image_path }}</code></p>
+      {% endif %}
+    </article>
+    {% endfor %}
+  {% else %}
+    <p class="muted">这个 chunk 没有关联的 L0 block。</p>
+  {% endif %}
+</section>
+{% endblock %}
