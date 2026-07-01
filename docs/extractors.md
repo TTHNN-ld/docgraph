@@ -43,7 +43,7 @@ Extractor 之间通过 `requires` 声明依赖，由 orchestrator 拓扑排序�
 ```text
 L1 chunk + L0 blocks
   └─ EntityCandidate
-       ├─ kind=table       → cells/html 表格文本化 → LLM schema 抽取
+       ├─ kind=table       → cells/html → deterministic normalizer → schema LLM 兜底
        ├─ kind=table_image → 表格裁剪图 → VLM/OCR/table-recognizer → schema 抽取
        ├─ kind=text        → 章节/页面文本候选 → LLM schema 抽取
        └─ kind=page_image  → 整页渲染图 → VLM schema 抽取
@@ -53,23 +53,43 @@ L1 chunk + L0 blocks
 
 `docgraph l2-audit` 可在不调用 LLM/VLM 的情况下审计候选覆盖：统计 table/text/figure candidate 数量、schema 命中数量、已物化 L2 节点数量和未命中的文档样例。它用于定位漏抽来自候选层、schema 路由还是后续模型抽取。
 
-### 3.1 Schema Registry
+### 3.1 确定性 Normalizer
+
+L2 不能把所有结构化事实都交给模型猜测。对于列语义明确的高收益表格，`TableEntityExtractor` 会先运行确定性 normalizer；只有 normalizer 判断为不明确时才进入 LLM/VLM 兜底。
+
+当前确定性路径覆盖 register/bitfield 表，识别以下通用列语义：
+
+- register：`Reg name` / `Register` / `寄存器`
+- bitfield：`Field` / `Bit field` / `字段`
+- 位段：`Msb` + `Lsb`，或 `Bits 4:3` / `Bit` 列
+- 属性：`SWaccess` / `Access` / `Default` / `Reset` / `Description`
+
+Normalizer 只依赖表头和单元格结构，不绑定文档名或协议名。它会处理常见 OCR/表格解析错位：寄存器名被移入相邻列、续行为空或纯数字、位段列缺失但同表存在重复 `bit_N` 模式。无法可靠恢复时不强行产出，保留给 LLM/VLM 兜底和 L0/L1 原文回溯。
+
+### 3.2 Schema Registry
 
 新增实体类型优先通过 schema registry，而不是新增专用 extractor。
 
-已有预设 schema：
+已有预设 schema（高收益集合，分两档）：
 
-| schema | NodeKind | 典型输入 |
-|---|---|---|
-| `register` | `REGISTER` + `BITFIELD` | register/bitfield 表 |
-| `pin` | `PIN` | pin/package/interface 表 |
-| `timing` | `PARAMETER` | min/typ/max 时序或电气参数表 |
-| `signal` | `SIGNAL` | 接口信号表 |
-| `interface` | `INTERFACE` | 总线/协议接口表 |
-| `requirement` | `CODEBLOCK` | requirement / feature 列表 |
-| `interrupt` | `SIGNAL` | IRQ/MSI/MSI-X 表 |
-| `clock_reset` | `MODULE` | 时钟、复位、电源域表 |
-| `memory_map` | `MODULE` | 地址映射表 |
+| schema | NodeKind | 典型输入 | 档位 |
+|---|---|---|---|
+| `register` | `REGISTER` + `BITFIELD` | register/bitfield 表 | 核心 |
+| `pin` | `PIN` | pin/package/interface 表 | 核心 |
+| `memory_map` | `MEMORY_MAP` | 地址映射表 | 核心 |
+| `interrupt` | `INTERRUPT` | IRQ/MSI/MSI-X 表 | 核心 |
+| `errata` | `ERRATA` | errata 条目 + workaround | 核心 |
+| `signal` | `SIGNAL` | 接口信号表 | 扩展 |
+| `interface` | `INTERFACE` | 总线/协议接口表 | 扩展 |
+| `timing` | `PARAMETER` | min/typ/max 时序或电气参数表 | 扩展 |
+| `clock_reset` | `CLOCK` | 时钟、复位、电源域表 | 扩展 |
+| `requirement` | `REQUIREMENT` | requirement / feature 列表 | 扩展 |
+
+每个 schema 声明：
+- `table_header_hints`：双语（中英）匹配词，决定哪些表/段落走该 schema。
+- `negative_hints`：排除词，命中则不抽（如 `clock_reset` 排除 SoC/地址映射/封装条目，避免污染）。
+- `doc_types`：该 schema 默认启用的文档类型（见下"文档类型路由"）。
+- `min_confidence`：物化时写的置信度。
 
 新增 schema 的最小内容：
 
@@ -81,18 +101,35 @@ EntitySchema(
     description="接口/内部信号定义",
     prompt_template="...",
     table_header_hints=["signal", "direction", "width"],
+    doc_types=(DocType.DATASHEET, DocType.PROTOCOL),
 )
 ```
 
-### 3.2 Parser 输出差异的处理
+### 3.3 文档类型路由
+
+`TableEntityExtractor` 按 `parsed.metadata.type` 选择默认启用的 schema 子集，
+避免 9 个 schema 对每份文档全扫：
+
+| DocType | 默认 schema |
+|---|---|
+| datasheet | register, pin, memory_map, interrupt, signal, interface, timing |
+| reference_manual / trm | register, memory_map, interrupt, signal, interface, clock_reset, requirement |
+| errata | errata, register |
+| app_note | register, signal, timing, requirement |
+| protocol | signal, interface, timing, memory_map, interrupt |
+| unknown | register, pin, memory_map, interrupt（核心子集） |
+
+显式指定 `schema_names` 或环境变量 `DOCGRAPH_TABLE_ENTITY_SCHEMAS` 时覆盖路由，全扫。
+
+### 3.4 Parser 输出差异的处理
 
 Parser 后端能力不同，Extractor 不能假设表格一定有单元格。
 
 | Parser 输出 | L0 表达 | Extractor 策略 |
 |---|---|---|
-| PyMuPDF `find_tables()` 单元格 | `table_source=cells` | 直接 markdown 化后按 schema 抽取 |
+| PyMuPDF `find_tables()` 单元格 | `table_source=cells` | 先走 deterministic normalizer；不明确再 markdown 化按 schema 抽取 |
 | MinerU 表格裁剪图 | `table_source=image` + `image_path` | 单表图片 VLM/OCR/table-recognizer |
-| Docling HTML/结构表 | `table_source=html/cells` | 解析 HTML/cells 后抽取 |
+| Docling HTML/结构表 | `table_source=html/cells` | 先解析 HTML/cells 并运行 normalizer；不明确再抽取 |
 | OCR 文本块 | `table_source=text` 或 paragraph blocks | 文本候选窗口抽取 |
 
 这样下游抽取逻辑复用同一套 schema，不需要按 parser 分叉。
@@ -148,8 +185,8 @@ L2 是可选增强，失败不得影响 L0/L1。
 - `modules` → `MODULE`
 - `signals` → `SIGNAL`
 - `interfaces` → `INTERFACE`
-- `clocks_resets` → `MODULE`，`attrs.entity_type=clock_reset`
-- `address_regions` → `MODULE`，`attrs.entity_type=memory_map`
+- `clocks_resets` → `CLOCK`
+- `address_regions` → `MEMORY_MAP`
 - `connections` → `CONNECTS_TO` / `DEPENDS_ON` / `CONTROLS` / `REFERENCES`
 - 实体到图 → `ILLUSTRATED_BY`
 

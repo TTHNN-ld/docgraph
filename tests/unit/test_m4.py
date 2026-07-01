@@ -232,6 +232,101 @@ def test_table_entity_register_drops_overlapping_bitfields():
     }]
 
 
+def test_table_entity_deterministically_extracts_register_field_table_without_llm():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import (
+        Block,
+        BlockKind,
+        NodeKind,
+        ParsedDoc,
+        ParsedPage,
+        TableData,
+    )
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::demo",
+        source_path="demo.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::demo#p1#b0",
+                doc_id="chip::doc::demo",
+                page=1,
+                kind=BlockKind.TABLE,
+                reading_order=0,
+                table=TableData(
+                    headers=[
+                        "Reg name", "reg_num", "Field", "Msb", "Lsb",
+                        "SWaccess", "HWaccess", "Default", "Description",
+                    ],
+                    rows=[
+                        ["CTRL", "1", "EN", "0", "0", "RW", "RO", "0x0", "enable"],
+                        ["CTRL", "1", "MODE", "3", "1", "RW", "RO", "0x0", "mode"],
+                    ],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["register"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    assert result.stats.llm_calls == 0
+    register = next(n for n in result.nodes if n.kind == NodeKind.REGISTER)
+    bitfields = [n for n in result.nodes if n.kind == NodeKind.BITFIELD]
+    assert register.name == "CTRL"
+    assert [n.name for n in bitfields] == ["EN", "MODE"]
+    assert [(bf.attrs["bit_high"], bf.attrs["bit_low"]) for bf in bitfields] == [(0, 0), (3, 1)]
+    assert all(bf.attrs["source_block_ids"] == ["chip::doc::demo#p1#b0"] for bf in bitfields)
+
+
+def test_table_entity_recovers_shifted_register_name_in_field_table():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import Block, BlockKind, NodeKind, ParsedDoc, ParsedPage, TableData
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::demo",
+        source_path="demo.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::demo#p1#b0",
+                doc_id="chip::doc::demo",
+                page=1,
+                kind=BlockKind.TABLE,
+                table=TableData(
+                    headers=[
+                        "Reg name", "reg_num", "Field", "Msb", "Lsb",
+                        "SWaccess", "HWaccess", "Default", "Description",
+                    ],
+                    rows=[
+                        ["cfg_dbg_sel_sig0", "1", "bit_0", "7", "0", "RW", "RO", "0x0", "PAD0"],
+                        ["cfg_dbg_sel_sig0", "1", "bit_1", "15", "8", "RW", "RO", "0x0", "PAD1"],
+                        ["cfg_dbg_sel_sig0", "cfg_dbg_sel_sig1 1", "bit_4", "", "0", "RW", "RO", "0x0", "PAD4"],
+                        ["1", "", "bit_5", "15", "RW", "", "RO", "0x0", "PAD5"],
+                    ],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["register"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    registers = {n.name: n for n in result.nodes if n.kind == NodeKind.REGISTER}
+    assert set(registers) == {"cfg_dbg_sel_sig0", "cfg_dbg_sel_sig1"}
+    sig1_fields = [
+        n for n in result.nodes
+        if n.kind == NodeKind.BITFIELD and n.attrs["register_id"] == registers["cfg_dbg_sel_sig1"].id
+    ]
+    assert [n.name for n in sig1_fields] == ["bit_4", "bit_5"]
+    assert [(n.attrs["bit_high"], n.attrs["bit_low"]) for n in sig1_fields] == [(7, 0), (15, 8)]
+
+
 def test_table_entity_page_vlm_uses_l1_candidate_provenance(tmp_path, monkeypatch):
     from docgraph.extractors.base import ExtractContext
     from docgraph.extractors.schema_registry import RegisterDefList

@@ -163,6 +163,104 @@ def test_chip_figure_vlm_materializes_semantic_nodes_and_edges(tmp_path):
     )
 
 
+def test_chip_figure_zero_model_confidence_gets_conservative_edge_confidence(tmp_path):
+    image_path = _image(tmp_path)
+    payload = {
+        "domain": "chip",
+        "figure_type": "block",
+        "summary": "PCIe core connects to DMA.",
+        "modules": [
+            {"name": "PCIe Core", "role": "endpoint", "description": "core"},
+            {"name": "DMA", "role": "engine", "description": "dma"},
+        ],
+        "signals": [],
+        "interfaces": [],
+        "clocks_resets": [],
+        "address_regions": [],
+        "connections": [
+            {"source": "PCIe Core", "target": "DMA", "kind": "connects_to"},
+        ],
+        "confidence": 0.0,
+    }
+    doc = ParsedDoc(
+        doc_id="chip::doc",
+        source_path="pcie_spec.pdf",
+        metadata=DocMetadata(title="PCIe Subsystem Specification", family="pcie"),
+        pages=[ParsedPage(page_no=3, blocks=[
+            Block(
+                id="chip::doc#p3#b2",
+                doc_id="chip::doc",
+                page=3,
+                kind=BlockKind.FIGURE,
+                text="Figure 3-1 PCIe Subsystem Architecture",
+                image_path=image_path,
+            ),
+        ])],
+    )
+
+    result = FigureExtractor().extract(
+        doc,
+        ExtractContext(
+            family="chip",
+            options={"vlm_client": FakeVLM(payload), "root": str(tmp_path)},
+        ),
+    )
+
+    assert result.edges
+    assert all(edge.confidence >= 0.65 for edge in result.edges)
+
+
+def test_figure_extractor_skips_weak_semantic_and_captionless_duplicate(tmp_path):
+    image_path = _image(tmp_path)
+    payload = {
+        "domain": "chip",
+        "figure_type": "other",
+        "summary": "Figure 6-5 ECC Protection range",
+        "modules": [],
+        "signals": [],
+        "interfaces": [],
+        "clocks_resets": [],
+        "address_regions": [],
+        "connections": [],
+        "confidence": 0.0,
+    }
+    doc = ParsedDoc(
+        doc_id="chip::doc",
+        source_path="pcie_spec.pdf",
+        metadata=DocMetadata(title="PCIe Subsystem Specification", family="pcie"),
+        pages=[ParsedPage(page_no=39, blocks=[
+            Block(
+                id="chip::doc#p39#b1",
+                doc_id="chip::doc",
+                page=39,
+                kind=BlockKind.FIGURE,
+                text="Figure 6-5 ECC Protection range",
+                image_path=image_path,
+            ),
+            Block(
+                id="chip::doc#p39#b2",
+                doc_id="chip::doc",
+                page=39,
+                kind=BlockKind.FIGURE,
+                text="",
+                image_path=image_path,
+            ),
+        ])],
+    )
+
+    result = FigureExtractor().extract(
+        doc,
+        ExtractContext(
+            family="chip",
+            options={"vlm_client": FakeVLM(payload), "root": str(tmp_path)},
+        ),
+    )
+
+    assert [n.kind for n in result.nodes] == [NodeKind.FIGURE]
+    assert result.nodes[0].attrs["quality_flags"] == ["weak_semantic"]
+    assert result.edges == []
+
+
 def test_general_figure_vlm_does_not_emit_chip_entities(tmp_path):
     image_path = _image(tmp_path)
     payload = {

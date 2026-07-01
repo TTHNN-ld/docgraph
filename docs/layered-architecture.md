@@ -188,7 +188,7 @@ EntityCandidate（统一候选层）:
 
 TableEntityExtractor（通用）:
   输入：EntityCandidate
-  过程：LLM 按"目标 schema"把表格规整成结构化条目
+  过程：确定性 normalizer 优先；无法可靠规整时再由 LLM/VLM 按"目标 schema"抽取
   schema 由"实体类型注册表"提供，而非硬编码 extractor
 
 实体类型 = 配置 + schema：

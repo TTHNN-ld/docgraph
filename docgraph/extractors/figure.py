@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from docgraph.core.ids import content_hash, make_node_id
 from docgraph.core.logger import get_logger
 from docgraph.extractors.base import ExtractContext
-from docgraph.extractors.candidates import EntityCandidate, build_entity_candidates
+from docgraph.extractors.candidates import build_entity_candidates
 from docgraph.graph.schema import (
     BlockKind,
     Edge,
@@ -71,6 +71,27 @@ _CHIP_DOMAIN_RE = re.compile(
     r"时钟|复位|中断|地址映射|模块|子系统",
     re.I,
 )
+
+# 架构图里常见的非实体噪声名：SoC 拓扑/地址区域/封装条目，不作为独立 MODULE 节点。
+# 命中则跳过物化（避免 CHIP/BAR/SoC Die 污染 module 图）。
+_FIGURE_NOISE_NAME_RE = re.compile(
+    r"^(chip|die|bar|reserved|host\s*ddr|gpu|smmu|iommu|iova|"
+    r"local\s*memory|memory\s*\+\s*io|pre-?pci|pci-?domain|"
+    r"in-?house|external\s*atu|inbound|outbound|cross\s*die|"
+    r"tc\d+|550x)"
+    r"|"
+    r"(chip|die|bar|iova|拓扑|封装)",
+    re.I,
+)
+
+
+def _is_noise_entity_name(name: str) -> bool:
+    """架构图抽取的噪声名：SoC 拓扑/地址区域/封装条目，不该作为独立实体节点。"""
+    n = (name or "").strip().lower()
+    if not n:
+        return True
+    return bool(_FIGURE_NOISE_NAME_RE.search(n))
+
 
 _OUTPUT_FORMAT: dict[str, str] = {
     "timing": "WaveJSON plus extracted signals/events",
@@ -207,6 +228,11 @@ class FigureExtractor:
             for block in page.blocks
             if block.kind == BlockKind.FIGURE
         }
+        pages_with_caption = {
+            block.page
+            for block in block_by_id.values()
+            if (block.text or "").strip()
+        }
         for candidate in candidates:
             page_context = self._page_context(doc, candidate.page)
             for block_id in candidate.block_ids:
@@ -218,6 +244,8 @@ class FigureExtractor:
                 count += 1
 
                 if block.attrs.get("semantic_role") == "decoration":
+                    continue
+                if not (block.text or "").strip() and block.page in pages_with_caption:
                     continue
                 source_block_ids = [block.id]
                 source_chunk_ids = [candidate.chunk_id] if candidate.chunk_id else []
@@ -260,7 +288,9 @@ class FigureExtractor:
                                 f"type={semantic.figure_type}"
                             )
                             self._apply_semantic_to_figure(fig_node, semantic)
-                            if isinstance(semantic, ChipFigureSemantic):
+                            if isinstance(semantic, ChipFigureSemantic) and not self._is_weak_chip_semantic(
+                                semantic, caption=caption
+                            ):
                                 extra = self._materialize_chip_semantics(
                                     semantic=semantic,
                                     fig_node=fig_node,
@@ -272,6 +302,8 @@ class FigureExtractor:
                                 )
                                 nodes.extend(extra["nodes"])
                                 edges.extend(extra["edges"])
+                            elif isinstance(semantic, ChipFigureSemantic):
+                                fig_node.attrs.setdefault("quality_flags", []).append("weak_semantic")
                         except Exception as e:
                             failed += 1
                             if not getattr(vlm_client, "disabled", False):
@@ -580,9 +612,13 @@ class FigureExtractor:
         nodes: list[Node] = []
         edges: list[Edge] = []
         name_to_id: dict[str, str] = {}
+        semantic_confidence = semantic.confidence if semantic.confidence > 0 else 0.65
 
         def emit_node(kind: NodeKind, name: str, attrs: dict, summary: str = "") -> str | None:
             if not name.strip():
+                return None
+            # 过滤架构图噪声名（SoC 拓扑/地址区域/封装条目）
+            if _is_noise_entity_name(name):
                 return None
             node_id = make_node_id(ctx.family, kind, name, doc_id=doc_id)
             node = Node(
@@ -617,7 +653,7 @@ class FigureExtractor:
                 page_no=page_no,
                 source_block_ids=source_block_ids,
                 source_chunk_ids=source_chunk_ids,
-                confidence=semantic.confidence,
+                confidence=semantic_confidence,
                 raw_snippet=fig_node.attrs.get("caption"),
             ))
             return node_id
@@ -645,14 +681,14 @@ class FigureExtractor:
             )
         for item in semantic.clocks_resets:
             emit_node(
-                NodeKind.MODULE,
+                NodeKind.CLOCK,
                 item.name,
                 {"entity_type": "clock_reset", **item.model_dump()},
                 item.description,
             )
         for item in semantic.address_regions:
             emit_node(
-                NodeKind.MODULE,
+                NodeKind.MEMORY_MAP,
                 item.name,
                 {"entity_type": "memory_map", **item.model_dump()},
                 item.description or item.address or "",
@@ -670,13 +706,31 @@ class FigureExtractor:
                 page_no=page_no,
                 source_block_ids=source_block_ids,
                 source_chunk_ids=source_chunk_ids,
-                confidence=semantic.confidence,
+                confidence=semantic_confidence,
                 raw_snippet=conn.description or conn.label or fig_node.attrs.get("caption"),
                 attrs={"label": conn.label, "description": conn.description},
             ))
 
         fig_node.attrs["semantic_node_ids"] = [n.id for n in nodes]
         return {"nodes": nodes, "edges": edges}
+
+    @staticmethod
+    def _is_weak_chip_semantic(semantic: ChipFigureSemantic, *, caption: str) -> bool:
+        summary = (semantic.summary or "").strip()
+        caption_text = (caption or "").strip()
+        entity_count = (
+            len(semantic.modules)
+            + len(semantic.signals)
+            + len(semantic.interfaces)
+            + len(semantic.clocks_resets)
+            + len(semantic.address_regions)
+            + len(semantic.connections)
+        )
+        if entity_count > 0:
+            return False
+        if not summary:
+            return True
+        return bool(caption_text and summary == caption_text)
 
     @staticmethod
     def _edge_kind(kind: str) -> EdgeKind:

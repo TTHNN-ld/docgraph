@@ -12,6 +12,7 @@ VLM 整页兜底也集成在此（M6 能力迁移至此）。
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from docgraph.extractors.schema_registry import (
     schemas_for_doctype,
 )
 from docgraph.graph.schema import (
+    BitFieldDef,
     BlockKind,
     DocType,
     Edge,
@@ -117,12 +119,6 @@ class TableEntityExtractor:
         vlm_calls = 0
         seen: dict[str, set[str]] = {}  # schema → {name}
 
-        if not ctx.has_llm:
-            # 无 LLM 时 L2 不产出（L0/L1 已完整）
-            return ExtractResult(
-                stats=ExtractStats(duration_s=round(time.time() - t0, 3)),
-            )
-
         # 按文档类型路由 schema 子集（未显式指定时用 parsed.metadata.type）
         schemas = self._resolved_schemas(doc)
         if not schemas:
@@ -154,11 +150,14 @@ class TableEntityExtractor:
                     break
                 if not self._table_matches(candidate.table, schema):
                     continue
-                if self._table_has_cells(candidate.table):
+                if not self._table_has_cells(candidate.table):
+                    continue
+                result = None
+                if sn == "register":
+                    result = self._extract_registers_from_table(candidate.table)
+                if result is None and ctx.has_llm:
                     result = self._llm_extract(candidate.table, schema, sn, ctx)
                     llm_calls += 1
-                else:
-                    continue
                 schema_calls += 1
                 if result is None:
                     continue
@@ -197,6 +196,8 @@ class TableEntityExtractor:
         # 1.5) 从文本段落中检测候选（对 find_tables 漏掉的表格降级）。
         # 不写规则正则，只做候选判断 + 送 LLM。
         for sn, schema in schemas:
+            if not ctx.has_llm:
+                continue
             schema_calls = 0
             seen.setdefault(sn, set())
             for candidate in text_candidates:
@@ -576,6 +577,279 @@ class TableEntityExtractor:
             return dict(item.model_dump() if hasattr(item, "model_dump") else item.__dict__)
         except Exception:
             return {}
+
+    # ------- deterministic table normalizers -------
+
+    @classmethod
+    def _extract_registers_from_table(cls, table: TableData | None) -> list[RegisterDef] | None:
+        """Deterministically parse common register field tables.
+
+        This is deliberately schema/column-driven, not document-specific. It
+        handles the two dominant chip-spec forms:
+        - one table with ``Reg name`` + ``Field`` + ``Msb``/``Lsb`` columns
+        - per-register tables whose caption/header says ``Fields for Register``
+          and whose bit range is in a ``Bits`` column/header.
+
+        Ambiguous tables return ``None`` so the schema-guided LLM path can still
+        act as fallback.
+        """
+        if table is None or not table.rows:
+            return None
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        raw_headers = list(table.headers or [])
+        if not headers:
+            return None
+
+        reg_col = cls._find_col(headers, ("reg name", "register name", "register", "reg", "寄存器名", "寄存器"))
+        field_col = cls._find_col(headers, ("field", "bit field", "bitfield", "name", "字段", "位域"))
+        msb_col = cls._find_col(headers, ("msb", "bit high", "high", "bit_high"))
+        lsb_col = cls._find_col(headers, ("lsb", "bit low", "low", "bit_low"))
+        bits_col = cls._find_col(headers, ("bits", "bit", "位", "位段"))
+        access_col = cls._find_col(headers, ("swaccess", "sw access", "software access", "access", "memory access", "访问"))
+        reset_col = cls._find_col(headers, ("default", "reset", "reset value", "复位", "默认"))
+        desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
+        offset_col = cls._find_col(headers, ("offset", "address offset", "addr offset", "address", "base address", "偏移", "地址"))
+        width_col = cls._find_col(headers, ("width", "reg width", "位宽"))
+
+        caption_reg = cls._register_name_from_caption(table.caption or "")
+        bits_from_header = cls._bit_range_from_text(" ".join(raw_headers))
+        is_field_table = field_col is not None and (
+            (msb_col is not None and lsb_col is not None)
+            or bits_col is not None
+            or bits_from_header is not None
+        )
+        if not is_field_table:
+            return None
+        if reg_col is None and not caption_reg:
+            return None
+
+        grouped: dict[str, dict] = {}
+        current_reg_name = caption_reg
+        known_bit_ranges: dict[int, tuple[int, int]] = {}
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            field_name = cls._clean_entity_name(cls._cell(cells, field_col))
+            embedded_reg = cls._register_name_from_cells(cells, skip_indexes={reg_col, field_col})
+            raw_reg_name = cls._cell(cells, reg_col)
+            if embedded_reg:
+                reg_name = embedded_reg
+            elif raw_reg_name and not cls._looks_like_continuation_reg_cell(raw_reg_name):
+                reg_name = raw_reg_name
+            elif current_reg_name:
+                reg_name = current_reg_name
+            else:
+                reg_name = caption_reg
+            reg_name = cls._clean_entity_name(reg_name)
+            if not reg_name:
+                continue
+            if not field_name:
+                continue
+            current_reg_name = reg_name
+
+            bit_range = None
+            if msb_col is not None and lsb_col is not None:
+                bit_range = cls._parse_bit_pair(cls._cell(cells, msb_col), cls._cell(cells, lsb_col))
+            if bit_range is None and bits_col is not None:
+                bit_range = cls._bit_range_from_text(cls._cell(cells, bits_col))
+            if bit_range is None:
+                bit_range = bits_from_header
+            if bit_range is None:
+                bit_range = cls._fallback_bit_range_from_field(field_name, known_bit_ranges)
+            if bit_range is None:
+                continue
+            bit_high, bit_low = bit_range
+            suffix = cls._bit_suffix(field_name)
+            if suffix is not None:
+                known_bit_ranges[suffix] = bit_range
+
+            entry = grouped.setdefault(reg_name, {
+                "name": reg_name,
+                "address": None,
+                "offset": None,
+                "width": 32,
+                "access": None,
+                "reset_value": None,
+                "description": "",
+                "bitfields": [],
+            })
+            offset = cls._cell(cells, offset_col)
+            if offset and entry["offset"] is None:
+                if re.search(r"0x[0-9a-fA-F]+|\b\d+\s*[KMGTP]?B?\b", offset):
+                    entry["offset"] = offset
+            width = cls._parse_intish(cls._cell(cells, width_col))
+            if width and width > 0:
+                entry["width"] = width
+
+            access = cls._normalize_access(cls._cell(cells, access_col))
+            reset = cls._cell(cells, reset_col) or None
+            desc = cls._cell(cells, desc_col)
+            entry["bitfields"].append(BitFieldDef(
+                name=field_name,
+                bit_high=bit_high,
+                bit_low=bit_low,
+                access=access,
+                reset=reset,
+                description=desc,
+            ))
+
+        registers: list[RegisterDef] = []
+        for item in grouped.values():
+            selected, _dropped = cls._select_non_overlapping_bitfields(item["bitfields"])
+            if not selected:
+                continue
+            max_bit = max(int(bf.bit_high) for bf in selected)
+            width = int(item["width"] or 32)
+            while max_bit >= width:
+                width *= 2
+            registers.append(RegisterDef(
+                name=item["name"],
+                address=item["address"],
+                offset=item["offset"],
+                width=width,
+                access=item["access"],
+                reset_value=item["reset_value"],
+                description=item["description"],
+                bitfields=selected,
+            ))
+        return registers or None
+
+    @staticmethod
+    def _norm_header(value: str) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+        text = text.replace("_", " ")
+        return text
+
+    @staticmethod
+    def _find_col(headers: list[str], names: tuple[str, ...]) -> int | None:
+        wanted = {n.lower() for n in names}
+        for idx, header in enumerate(headers):
+            if header in wanted:
+                return idx
+        for idx, header in enumerate(headers):
+            if any(n in header for n in wanted):
+                return idx
+        return None
+
+    @staticmethod
+    def _cell(cells: list[str], idx: int | None) -> str:
+        if idx is None or idx < 0 or idx >= len(cells):
+            return ""
+        return cells[idx].strip()
+
+    @staticmethod
+    def _clean_entity_name(value: str) -> str:
+        text = re.sub(r"\s+", "_", str(value or "").strip())
+        text = text.strip("_")
+        return text
+
+    @staticmethod
+    def _register_name_from_caption(caption: str) -> str:
+        text = caption or ""
+        patterns = [
+            r"fields\s+for\s+register\s*[:：]\s*([A-Za-z0-9_.\-\[\]/]+)",
+            r"register\s*[:：]\s*([A-Za-z0-9_.\-\[\]/]+)",
+            r"寄存器\s*[:：]\s*([A-Za-z0-9_.\-\[\]/]+)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, re.I)
+            if m:
+                return m.group(1).strip().rstrip(".,;，。；")
+        return ""
+
+    @staticmethod
+    def _register_name_from_cells(cells: list[str], *, skip_indexes: set[int | None]) -> str:
+        """Recover register names accidentally shifted into neighbor columns."""
+        for idx, cell in enumerate(cells[:4]):
+            if idx in skip_indexes:
+                continue
+            text = str(cell or "").strip()
+            if not text:
+                continue
+            m = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*?(?:reg|ctrl|cfg|stat|state|sel)[A-Za-z0-9_]*)\b", text, re.I)
+            if m:
+                return m.group(1)
+        return ""
+
+    @staticmethod
+    def _looks_like_continuation_reg_cell(value: str) -> bool:
+        text = str(value or "").strip()
+        return not text or bool(re.fullmatch(r"\d+|[-–—]+", text))
+
+    @staticmethod
+    def _bit_suffix(field_name: str) -> int | None:
+        m = re.search(r"(?:^|_)bit[_-]?(\d+)$", field_name, re.I)
+        if m:
+            return int(m.group(1))
+        return None
+
+    @staticmethod
+    def _fallback_bit_range_from_field(
+        field_name: str,
+        known_bit_ranges: dict[int, tuple[int, int]],
+    ) -> tuple[int, int] | None:
+        suffix = TableEntityExtractor._bit_suffix(field_name)
+        if suffix is None:
+            return None
+        for delta in (4, 8, 16):
+            previous = suffix - delta
+            if previous in known_bit_ranges:
+                return known_bit_ranges[previous]
+        return None
+
+    @staticmethod
+    def _parse_bit_pair(high: str, low: str) -> tuple[int, int] | None:
+        hi = TableEntityExtractor._parse_intish(high)
+        lo = TableEntityExtractor._parse_intish(low)
+        if hi is None or lo is None:
+            return None
+        if hi < lo:
+            hi, lo = lo, hi
+        return hi, lo
+
+    @staticmethod
+    def _bit_range_from_text(text: str) -> tuple[int, int] | None:
+        raw = str(text or "")
+        m = re.search(r"(\d+)\s*[:：]\s*(\d+)", raw)
+        if m:
+            hi, lo = int(m.group(1)), int(m.group(2))
+            if hi < lo:
+                hi, lo = lo, hi
+            return hi, lo
+        m = re.search(r"\bbit[s]?\s*(\d+)\b", raw, re.I)
+        if m:
+            bit = int(m.group(1))
+            return bit, bit
+        m = re.search(r"\b(\d+)\b", raw)
+        if m and re.search(r"\bbit", raw, re.I):
+            bit = int(m.group(1))
+            return bit, bit
+        return None
+
+    @staticmethod
+    def _parse_intish(value: str | int | None) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        text = str(value).strip()
+        m = re.search(r"0x[0-9a-fA-F]+|\d+", text)
+        if not m:
+            return None
+        try:
+            return int(m.group(0), 0)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_access(value: str) -> str | None:
+        text = str(value or "").strip().upper().replace(" ", "")
+        if not text:
+            return None
+        text = text.replace("R/W", "RW").replace("R/O", "RO").replace("W/O", "WO")
+        for token in ("RW", "RO", "WO", "W1C", "W1S", "RC", "RS", "WC", "R", "W"):
+            if token in text:
+                return token
+        return text[:24]
 
     @staticmethod
     def _select_non_overlapping_bitfields(bitfields: list) -> tuple[list, list[dict]]:
