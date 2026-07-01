@@ -39,6 +39,7 @@ docgraph doctor --strict
 docgraph l2-audit
 docgraph l2-audit --schema register --schema signal
 docgraph l2-audit --json
+docgraph l2-eval --golden examples/golden --kind register --min-recall 0.9
 ```
 
 `l2-audit` 输出：
@@ -50,6 +51,8 @@ docgraph l2-audit --json
 
 它回答的是“L2 有没有机会抽到、为什么可能漏抽”；不替代最终 precision/recall 评估。
 
+`l2-eval` 对比人工标注的 expected JSON 与当前库中已物化的 L2 节点，输出 precision / recall / F1。默认是报告模式；传入 `--min-precision` 或 `--min-recall` 后可作为 CI 门禁。
+
 ```
 examples/golden/                    # 人工标注的"小份 spec + 期望抽取"
 ├── stm32f407-tim1/
@@ -60,7 +63,9 @@ examples/golden/                    # 人工标注的"小份 spec + 期望抽取
     └── ...
 ```
 
-- `docgraph eval` 跑 golden 集，输出 precision/recall 报告
+- `expected_registers.json` 可以是 `["CTRL", "STATUS"]`，也可以是 `[{"name": "CTRL", "doc_id": "..."}]`
+- `l2_expected.json` 可以按 kind 分组：`{"registers": ["CTRL"], "signals": ["clk"]}`
+- `docgraph l2-eval` 跑 golden 集，输出 precision/recall 报告
 - CI 跑 golden 评估，回归检测
 - 阈值不达标 → CI 失败
 

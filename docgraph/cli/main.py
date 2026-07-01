@@ -24,6 +24,7 @@ from docgraph.graph.schema import NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.quality.layers import audit_l0_l1
 from docgraph.quality.l2 import audit_l2_candidates
+from docgraph.quality.l2_eval import eval_l2_golden
 from docgraph.query.engine import QueryEngine
 from docgraph.version import __version__
 from docgraph.watcher import run_watch_loop
@@ -250,6 +251,61 @@ def l2_audit(
     has_errors = any(i.severity == "error" for i in report.issues)
     has_warnings = any(i.severity == "warning" for i in report.issues)
     if has_errors or (strict and has_warnings):
+        raise typer.Exit(code=1)
+
+
+@app.command("l2-eval")
+def l2_eval(
+    golden: Path = typer.Option(..., "--golden", help="Golden directory or expected JSON file"),
+    kind: list[str] = typer.Option(None, "--kind", help="Limit to one or more entity kinds"),
+    min_precision: float = typer.Option(0.0, "--min-precision", help="Fail below this precision"),
+    min_recall: float = typer.Option(0.0, "--min-recall", help="Fail below this recall"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """Evaluate persisted L2 nodes against a golden expected JSON set."""
+    import json
+
+    _root, store, _qe = _open_project()
+    report = eval_l2_golden(
+        store,
+        golden,
+        kinds=kind or None,
+        min_precision=min_precision,
+        min_recall=min_recall,
+    )
+    store.close()
+    if json_output:
+        console.print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+    else:
+        totals = report.totals
+        console.print("[bold]L2 golden eval[/bold] " + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]"))
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("metric")
+        table.add_column("value", justify="right")
+        for key in ("expected", "actual", "true_positive", "false_positive", "false_negative", "precision", "recall", "f1"):
+            table.add_row(key, str(totals.get(key, 0)))
+        console.print(table)
+
+        kind_table = Table(title="By kind", show_header=True, header_style="bold")
+        for col in ("kind", "expected", "actual", "tp", "fp", "fn", "precision", "recall", "f1"):
+            kind_table.add_column(col)
+        for row in report.by_kind:
+            kind_table.add_row(
+                row.kind,
+                str(row.expected),
+                str(row.actual),
+                str(row.true_positive),
+                str(row.false_positive),
+                str(row.false_negative),
+                str(row.precision),
+                str(row.recall),
+                str(row.f1),
+            )
+        console.print(kind_table)
+        if report.warnings:
+            for warning in report.warnings:
+                console.print(f"[yellow]warning:[/yellow] {warning}")
+    if not report.ok:
         raise typer.Exit(code=1)
 
 

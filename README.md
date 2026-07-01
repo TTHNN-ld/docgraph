@@ -19,6 +19,7 @@ docgraph build                           # 全量构建图谱
 docgraph status                          # 看看建了什么
 docgraph doctor --strict                 # 检查 L0/L1/L2 provenance
 docgraph l2-audit                        # 检查 L2 候选覆盖与 schema 命中
+docgraph l2-eval --golden examples/golden # 对人工标注集算 precision/recall
 
 docgraph register PWM_CTRL               # 直接查寄存器
 docgraph query "PLL 复位流程"            # 自然语言
@@ -66,6 +67,6 @@ docgraph serve --mcp                     # 启动 MCP server，对接 Claude Cod
 
 ## 项目状态
 
-🚧 **开发中** — 当前基线：L0/L1 已可用并由 `docgraph doctor --strict` 做质量门禁；L2 已有候选覆盖审计 `docgraph l2-audit`，后续重点是 golden set、schema 校准和 agent fetch 接口收紧。
+🚧 **开发中** — 当前基线：L0/L1 已可用并由 `docgraph doctor --strict` 做质量门禁；L2 已有候选覆盖审计 `docgraph l2-audit` 和 golden 评估入口 `docgraph l2-eval`，后续重点是真实 golden set、schema 校准和 agent fetch 接口收紧。
 
 License: Apache 2.0（计划）
