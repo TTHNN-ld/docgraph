@@ -8,14 +8,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 
 from docgraph.core.config import docgraph_dir
-from docgraph.graph.schema import Edge, EdgeKind, Node, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 
 console = Console()
@@ -33,7 +31,6 @@ def gather_low_confidence(
     store: SQLiteGraphStore, *, min_confidence: float = 0.85, limit: int = 50,
 ) -> list[ReviewItem]:
     """边的 confidence 显式存了；节点没有，所以只过边。"""
-    import sqlite3
     conn = store._connect()  # type: ignore[attr-defined]
     rows = conn.execute(
         """
@@ -103,7 +100,6 @@ def run_review_tui(
             stats["rejected"] += 1
             # 同时从图中删除这条边
             try:
-                import sqlite3
                 conn = store._connect()  # type: ignore[attr-defined]
                 conn.execute(
                     "DELETE FROM edges WHERE src=? AND dst=? AND kind=?",

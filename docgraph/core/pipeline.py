@@ -8,12 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from docgraph.core.bootstrap import bootstrap
-from docgraph.core.config import DocGraphConfig, ExtractorEntry
+from docgraph.core.config import DocGraphConfig
 from docgraph.core.dotenv import autoload_env
-from docgraph.core.ids import file_hash, make_doc_id
+from docgraph.core.ids import file_hash, infer_chip_model, make_doc_id
 from docgraph.core.logger import get_logger
-from docgraph.core.manifest import FileRecord, Manifest, StageRecord, load_manifest, save_manifest
+from docgraph.core.manifest import FileRecord, Manifest, StageRecord, save_manifest
 from docgraph.embeddings.factory import build_encoder
 from docgraph.embeddings.indexer import embed_graph
 from docgraph.embeddings.vector_factory import build_vector_store
@@ -84,11 +83,16 @@ def _infer_doc_metadata(path: Path, cfg: DocGraphConfig, root: Path) -> DocMetad
         doc_type = DocType.USER_GUIDE
     elif "app" in name_lower and "note" in name_lower:
         doc_type = DocType.APP_NOTE
+    elif any(token in name_lower for token in ("protocol", "subsystem spec", "interface spec", " spec", "_spec", "-spec")):
+        doc_type = DocType.PROTOCOL
     else:
         doc_type = DocType.UNKNOWN
+    # chip_model：优先 config metadata 显式配置，其次文档名启发式推断。
+    chip_model = meta_raw.get("chip_model") or infer_chip_model(path.stem)
     return DocMetadata(
         title=meta_raw.get("title") or path.stem,
         family=cfg.project.family,
+        chip_model=chip_model,
         type=doc_type,
         version=meta_raw.get("version"),
         priority=meta_raw.get("priority", 10),
@@ -247,6 +251,7 @@ def build(
         f"budget={cfg.cost.budget_per_build_usd:.2f}"
     )
 
+    active_doc_ids: set[str] = set()
     for path in files:
         rel = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
         rec = manifest.files.get(rel) or FileRecord(path=rel)
@@ -255,6 +260,8 @@ def build(
         if not force and rec.hash == h and rec.status in ("extracted", "linked", "embedded"):
             log.info(f"[cyan]skip[/cyan]    {rel}")
             report.skipped += 1
+            if rec.doc_id:
+                active_doc_ids.add(rec.doc_id)
             report.per_file.append({"path": rel, "status": "skipped"})
             continue
 
@@ -273,6 +280,7 @@ def build(
             _stage_store(extract_res, store, rec)
             rec.status = "extracted"
             rec.doc_id = parsed.doc_id
+            active_doc_ids.add(parsed.doc_id)
             rec.parser = parsed.parser
             report.parsed += 1
             report.extracted += 1
@@ -287,11 +295,18 @@ def build(
             rec.status = "error"
             rec.error = str(e)
             report.errors += 1
+            if rec.doc_id:
+                active_doc_ids.add(rec.doc_id)
             report.per_file.append({"path": rel, "status": "error", "error": str(e)})
             log.error(f"[red]error[/red]   {rel}  — {e}")
 
         manifest.files[rel] = rec
         save_manifest(root, manifest)
+
+    if file_filter is None and active_doc_ids:
+        for doc_id in store.list_docs():
+            if doc_id not in active_doc_ids:
+                store.delete_doc(doc_id)
 
     # Linker stage
     if cfg.extractors.enabled and report.nodes_total > 0:
@@ -500,6 +515,8 @@ def _stage_store_blocks(
 ) -> None:
     """L0：先清旧 doc，再把所有 Block 落库。"""
     t0 = time.time()
+    if rec.doc_id and rec.doc_id != parsed.doc_id:
+        store.delete_doc(rec.doc_id)
     store.delete_doc(parsed.doc_id)  # 清干净（含 nodes/blocks/chunks）
     all_blocks = [b for p in parsed.pages for b in p.blocks]
     store.upsert_blocks(all_blocks)

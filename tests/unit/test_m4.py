@@ -327,6 +327,188 @@ def test_table_entity_recovers_shifted_register_name_in_field_table():
     assert [(n.attrs["bit_high"], n.attrs["bit_low"]) for n in sig1_fields] == [(7, 0), (15, 8)]
 
 
+def test_table_entity_deterministically_extracts_memory_map_without_llm():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import Block, BlockKind, NodeKind, ParsedDoc, ParsedPage, TableData
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::demo",
+        source_path="demo.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::demo#p1#b0",
+                doc_id="chip::doc::demo",
+                page=1,
+                kind=BlockKind.TABLE,
+                table=TableData(
+                    headers=["NoC Master", "NoC Slave", "Offset", "Size", "Description"],
+                    rows=[
+                        ["noc", "Top CFG", "0x00000000", "1MB", "top registers"],
+                        ["noc", "CRG CFG", "0x00100000", "1MB", "clock registers"],
+                    ],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["memory_map"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    maps = [n for n in result.nodes if n.kind == NodeKind.MEMORY_MAP]
+    assert [n.name for n in maps] == ["Top CFG", "CRG CFG"]
+    assert [n.attrs["address"] for n in maps] == ["0x00000000", "0x00100000"]
+    assert all(n.attrs["source_block_ids"] == ["chip::doc::demo#p1#b0"] for n in maps)
+
+
+def test_table_entity_deterministically_extracts_interrupts_without_llm():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import Block, BlockKind, NodeKind, ParsedDoc, ParsedPage, TableData
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::demo",
+        source_path="demo.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::demo#p1#b0",
+                doc_id="chip::doc::demo",
+                page=1,
+                kind=BlockKind.TABLE,
+                table=TableData(
+                    caption="Interrupt source list",
+                    headers=["type", "irq_src信号", "位宽", "Description"],
+                    rows=[
+                        ["function", "radm_cpl_timeout", "1", "completion timeout"],
+                        ["error", "edma_int", "32", "DMA interrupt"],
+                    ],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["interrupt", "signal"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    interrupts = [n for n in result.nodes if n.kind == NodeKind.INTERRUPT]
+    signals = [n for n in result.nodes if n.kind == NodeKind.SIGNAL]
+    assert [n.name for n in interrupts] == ["radm_cpl_timeout", "edma_int"]
+    assert [n.attrs["type"] for n in interrupts] == ["function", "error"]
+    assert signals == []
+
+
+def test_table_entity_normalizes_ocr_repeated_signal_width():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import Block, BlockKind, NodeKind, ParsedDoc, ParsedPage, TableData
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::demo",
+        source_path="demo.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::demo#p1#b0",
+                doc_id="chip::doc::demo",
+                page=1,
+                kind=BlockKind.TABLE,
+                table=TableData(
+                    caption="Signal list",
+                    headers=["Signal", "位宽", "Description"],
+                    rows=[["phy_plllock_int", "1 1", "PLL lock interrupt"]],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["signal"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    signals = [n for n in result.nodes if n.kind == NodeKind.SIGNAL]
+    assert signals[0].attrs["width"] == "1"
+
+
+def test_table_entity_deterministically_extracts_signals_without_llm():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import Block, BlockKind, NodeKind, ParsedDoc, ParsedPage, TableData
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::demo",
+        source_path="demo.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::demo#p1#b0",
+                doc_id="chip::doc::demo",
+                page=1,
+                kind=BlockKind.TABLE,
+                table=TableData(
+                    headers=["Signal", "Width", "Direction", "Description"],
+                    rows=[
+                        ["clk", "1", "IN", "clock"],
+                        ["axi_awaddr", "32", "OUT", "AXI address"],
+                    ],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["signal"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    signals = [n for n in result.nodes if n.kind == NodeKind.SIGNAL]
+    assert [n.name for n in signals] == ["clk", "axi_awaddr"]
+    assert [n.attrs["width"] for n in signals] == ["1", "32"]
+    assert [n.attrs["direction"] for n in signals] == ["IN", "OUT"]
+
+
+def test_table_entity_extracts_signal_names_from_interface_group_table():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import Block, BlockKind, NodeKind, ParsedDoc, ParsedPage, TableData
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::demo",
+        source_path="demo.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::demo#p1#b0",
+                doc_id="chip::doc::demo",
+                page=1,
+                kind=BlockKind.TABLE,
+                table=TableData(
+                    caption="Table 2-1 IP peripheral interfaces",
+                    headers=["Interface Group", "方向", "Description"],
+                    rows=[
+                        ["Clock/Reset", "Clock/Reset", "Clock/Reset"],
+                        ["mstr_aclk", "0", "AXI master NoC clock"],
+                        ["mstr_rst_n", "0", "AXI master NoC reset"],
+                        ["slv_aclk", "0", "AXI slave NoC clock"],
+                    ],
+                    n_cols=3,
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["signal"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    signals = [n for n in result.nodes if n.kind == NodeKind.SIGNAL]
+    assert [n.name for n in signals] == ["mstr_aclk", "mstr_rst_n", "slv_aclk"]
+    assert "Clock/Reset" not in {n.name for n in signals}
+    assert [n.attrs["direction"] for n in signals] == [None, None, None]
+
+
 def test_table_entity_page_vlm_uses_l1_candidate_provenance(tmp_path, monkeypatch):
     from docgraph.extractors.base import ExtractContext
     from docgraph.extractors.schema_registry import RegisterDefList

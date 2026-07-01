@@ -46,6 +46,36 @@ def test_make_ids():
     assert node_id2 == "stm32f407::reg:TIM1.CR1#stm32f407::datasheet@rev9"
 
 
+def test_doc_type_inference_routes_subsystem_specs_to_protocol():
+    from docgraph.core.config import DocGraphConfig, ProjectConfig
+    from docgraph.core.pipeline import _infer_doc_metadata
+    from docgraph.graph.schema import DocType
+
+    cfg = DocGraphConfig(project=ProjectConfig(family="chip"))
+    meta = _infer_doc_metadata(
+        Path("/repo/case/PCIE Subsystem Spec_v3.21.pdf"),
+        cfg,
+        Path("/repo"),
+    )
+
+    assert meta.type == DocType.PROTOCOL
+
+
+def test_doc_type_inference_keeps_trs_on_core_unknown_route():
+    from docgraph.core.config import DocGraphConfig, ProjectConfig
+    from docgraph.core.pipeline import _infer_doc_metadata
+    from docgraph.graph.schema import DocType
+
+    cfg = DocGraphConfig(project=ProjectConfig(family="chip"))
+    meta = _infer_doc_metadata(
+        Path("/repo/case/PCIe Subsystem TRS_r2p0.pdf"),
+        cfg,
+        Path("/repo"),
+    )
+
+    assert meta.type == DocType.UNKNOWN
+
+
 def test_store_node_roundtrip(tmp_store: SQLiteGraphStore):
     node = Node(
         id="stm32::reg:CR1",
@@ -64,6 +94,69 @@ def test_store_node_roundtrip(tmp_store: SQLiteGraphStore):
     assert got.name == "CR1"
     assert "TIM1_CR1" in got.aliases
     assert got.attrs["address"] == "0x40010000"
+
+
+def test_store_node_upsert_merges_multisource_l2_evidence(tmp_store: SQLiteGraphStore):
+    table_node = Node(
+        id="chip::signal:pcie_core#doc",
+        kind=NodeKind.SIGNAL,
+        name="pcie_core",
+        aliases=["PCIE core"],
+        doc_id="doc",
+        location=Location(page=12, section_path="5.1"),
+        evidence=Evidence(
+            chunk_ids=["c-table"],
+            pages=[12],
+            extractor="table_entity@0.1",
+            raw_snippet="Name | Width | Direction\npcie_core | 1 | input",
+        ),
+        attrs={
+            "source": "table_entity:signal",
+            "source_block_ids": ["b-table"],
+            "source_chunk_ids": ["c-table"],
+            "width": "1",
+            "direction": "input",
+        },
+        summary="Signal from the interface table",
+    )
+    figure_node = Node(
+        id=table_node.id,
+        kind=NodeKind.SIGNAL,
+        name="pcie_core",
+        aliases=["PCIe Core"],
+        doc_id="doc",
+        location=Location(page=15, section_path="5.1"),
+        evidence=Evidence(
+            chunk_ids=["c-figure"],
+            pages=[15],
+            extractor="figure@0.5",
+            raw_snippet="PCIE core is connected to PIPE",
+        ),
+        attrs={
+            "source": "figure@0.5",
+            "source_block_ids": ["b-figure"],
+            "source_chunk_ids": ["c-figure"],
+            "semantic_role": "block",
+        },
+        summary="Node seen in the system block diagram",
+    )
+
+    tmp_store.upsert_node(table_node)
+    tmp_store.upsert_node(figure_node)
+
+    got = tmp_store.get_node(table_node.id)
+    assert got is not None
+    assert got.attrs["source"] == "table_entity:signal"
+    assert got.attrs["sources"] == ["table_entity:signal", "figure@0.5"]
+    assert got.attrs["source_block_ids"] == ["b-table", "b-figure"]
+    assert got.attrs["source_chunk_ids"] == ["c-table", "c-figure"]
+    assert got.attrs["width"] == "1"
+    assert got.attrs["direction"] == "input"
+    assert got.attrs["semantic_role"] == "block"
+    assert got.evidence.extractor == "table_entity@0.1+figure@0.5"
+    assert got.evidence.chunk_ids == ["c-table", "c-figure"]
+    assert got.evidence.pages == [12, 15]
+    assert set(got.aliases) == {"PCIE core", "PCIe Core"}
 
 
 def test_store_edge_and_neighbors(tmp_store: SQLiteGraphStore):

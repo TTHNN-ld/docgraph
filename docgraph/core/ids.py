@@ -75,3 +75,43 @@ def content_hash(data: str | bytes, algo: str = "sha256") -> str:
     h = hashlib.new(algo)
     h.update(data.encode("utf-8") if isinstance(data, str) else data)
     return f"{algo}:{h.hexdigest()}"
+
+
+# ---------------------------------------------------------------------------
+# chip_model 推断 —— 跨文档消歧判断"同一实例"用
+# ---------------------------------------------------------------------------
+
+# 文档名里的型号 token → 归一化小写标识符。
+_CHIP_MODEL_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"cortex[-_ ]]?m(\d+\+?)", re.I), r"cortex-m\1"),
+    (re.compile(r"cortex[-_ ]]?r(\d+)", re.I), r"cortex-r\1"),
+    (re.compile(r"cortex[-_ ]]?a(\d+)", re.I), r"cortex-a\1"),
+    (re.compile(r"pcie[-_ ]?subsystem", re.I), r"pcie-subsystem"),
+    (re.compile(r"pcie[-_ ]?spec", re.I), r"pcie-subsystem"),
+    (re.compile(r"stm32f(\d+)", re.I), r"stm32f\1"),
+]
+
+
+def infer_chip_model(stem: str) -> str | None:
+    """从文档名（或 doc_id 里的文档名段）推断芯片型号/IP 实例。
+
+    用于跨文档消歧判断"同一实例"：同名实体只有 chip_model 相同才合并。
+    推断不出返回 None；调用方应回退到 family（兼容旧项目）。
+    """
+    s = stem.lower()
+    for pat, repl in _CHIP_MODEL_PATTERNS:
+        m = pat.search(s)
+        if m:
+            return pat.sub(repl, m.group(0)).replace(" ", "").replace("_", "-")
+    return None
+
+
+def doc_name_from_doc_id(doc_id: str) -> str:
+    """从 doc_id 提取文档名段。
+
+    doc_id 形如 ``family::type::Doc Name`` 或 ``family::type@version``；
+    返回最后一个 ``::`` 之后的部分（文档名）。
+    """
+    if not doc_id:
+        return ""
+    return doc_id.split("::")[-1]

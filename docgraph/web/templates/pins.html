@@ -11,20 +11,25 @@
 {% if not nodes %}
 <p class="muted">没有管脚节点。</p>
 {% else %}
-<table class="grid">
-<thead><tr><th>name</th><th>direction</th><th>pin_no</th><th>functions</th><th>description</th><th>page</th></tr></thead>
-<tbody>
-{% for n in nodes %}
-<tr>
-  <td><strong>{{ n.name }}</strong></td>
-  <td>{{ n.attrs.get('direction') or '—' }}</td>
-  <td>{{ n.attrs.get('pin_no') or '—' }}</td>
-  <td>{{ ', '.join(n.attrs.get('functions') or []) or '—' }}</td>
-  <td>{{ n.attrs.get('description') | short(120) }}</td>
-  <td>{{ n.location.page or '—' }}</td>
-</tr>
+{% for doc_id, group in nodes | groupby('doc_id') %}
+<section class="doc-group">
+  <h2 class="doc-group-title">{{ doc_id | doc_name }} <span class="muted">({{ group|length }})</span></h2>
+  <table class="grid">
+  <thead><tr><th>name</th><th>direction</th><th>pin_no</th><th>functions</th><th>description</th><th>page</th></tr></thead>
+  <tbody>
+  {% for n in group %}
+  <tr>
+    <td><strong>{{ n.name }}</strong></td>
+    <td>{{ n.attrs.get('direction') or '—' }}</td>
+    <td>{{ n.attrs.get('pin_no') or '—' }}</td>
+    <td>{{ ', '.join(n.attrs.get('functions') or []) or '—' }}</td>
+    <td>{{ n.attrs.get('description') | short(120) }}</td>
+    <td>{{ n.location.page or '—' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+  </table>
+</section>
 {% endfor %}
-</tbody>
-</table>
 {% endif %}
 {% endblock %}

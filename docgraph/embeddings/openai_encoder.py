@@ -62,10 +62,12 @@ class OpenAIEmbeddingProvider:
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         self._ensure_client()
-        # 批量上限多数 API 是 100；保守用 64
+        # OpenAI-compatible providers differ on batch limits; Doubao currently
+        # accepts at most 10 inputs per embeddings request.
+        max_batch = max(1, int(os.environ.get("EMBEDDING_MAX_BATCH", "10")))
         out: list[list[float]] = []
-        for i in range(0, len(texts), 64):
-            batch = [t or " " for t in texts[i:i + 64]]  # 空串会被拒
+        for i in range(0, len(texts), max_batch):
+            batch = [t or " " for t in texts[i:i + max_batch]]  # 空串会被拒
             resp = self._client.embeddings.create(model=self.model, input=batch)
             for item in resp.data:
                 out.append(list(item.embedding))

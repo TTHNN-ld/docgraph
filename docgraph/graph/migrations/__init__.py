@@ -52,8 +52,6 @@ def _migration_002_l0_l1(conn: sqlite3.Connection) -> None:
 
     对全新 db，store.init_schema 已经建好这些；本 migration 处理"从 v1 升级"的旧 db。
     """
-    from docgraph.graph.sqlite_store import _SCHEMA_V1
-
     # blocks 表（IF NOT EXISTS 安全）
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS blocks (

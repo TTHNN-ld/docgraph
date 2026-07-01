@@ -24,8 +24,10 @@
     <a href="/pins"       {% if active=='pins' %}class="active"{% endif %}>管脚</a>
     <a href="/timing"     {% if active=='timing' %}class="active"{% endif %}>时序参数</a>
     <a href="/sections"   {% if active=='sections' %}class="active"{% endif %}>章节树</a>
-    <a href="/figures"    {% if active=='figures' %}class="active"{% endif %}>图</a>
+    <a href="/figures"    {% if active=='figures' %}class="active"{% endif %}>插图</a>
+    {% if nav_counts and nav_counts.terms %}
     <a href="/glossary"   {% if active=='glossary' %}class="active"{% endif %}>术语</a>
+    {% endif %}
     <a href="/graph"      {% if active=='graph' %}class="active"{% endif %}>关系图</a>
     <a href="/search"     {% if active=='search' %}class="active"{% endif %}>搜索</a>
     <a href="/plugins"    {% if active=='plugins' %}class="active"{% endif %}>插件</a>

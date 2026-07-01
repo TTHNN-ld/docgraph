@@ -38,6 +38,8 @@ class EntitySchema:
     min_confidence: float = 0.85
     # 该 schema 默认启用的文档类型；None = 所有文档类型
     doc_types: tuple[DocType, ...] | None = None
+    # 负向排除词：表头/正文命中则不抽（避免 SoC/地址映射等被误判为该实体）
+    negative_hints: tuple[str, ...] = ()
 
     @property
     def items_field(self) -> str:
@@ -351,9 +353,15 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "clock", "reset", "power", "frequency", "domain", "period", "polarity",
-            "时钟", "复位", "电源", "域", "频率", "周期", "极性",
+            "clock", "reset", "frequency", "period", "polarity",
+            "时钟", "复位", "频率", "周期", "极性",
         ],
+        # 排除 SoC 拓扑 / 地址映射 / 封装条目，它们不是时钟复位实体
+        negative_hints=(
+            "soc die", "chip ", "bar ", "iova", "address map", "address space",
+            "memory + io", "host ddr", "gpu", "smmu", "iommu", "reserved",
+            "拓扑", "地址映射", "地址空间", "封装",
+        ),
         min_confidence=0.8,
         doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM),
     ),

@@ -123,29 +123,28 @@ class XRefLinker:
         key: str,
         prefer_doc: str | None,
     ):
-        # 1. 精确按 section_path（section）
-        if kind == NodeKind.SECTION:
-            # section_path 命中
-            results = store.search_nodes(
-                NodeQuery(kind=kind, fuzzy=key, limit=10)
-            )
-            # 优先 qualified_name 以 key 开头的，再优先同 doc
-            results.sort(
-                key=lambda n: (
-                    n.doc_id != prefer_doc,
-                    not (n.qualified_name or "").startswith(key),
-                )
-            )
-            return results[0] if results else None
-
-        # Figure / Table 名字里可能带 "Figure 3-2 caption"，做模糊
         results = store.search_nodes(
             NodeQuery(kind=kind, fuzzy=key, limit=10)
         )
         if not results:
             return None
-        results.sort(key=lambda n: (n.doc_id != prefer_doc,))
-        return results[0]
+        # 同文档命中优先（xref 引用通常指同文档章节/图表）
+        same_doc = [n for n in results if n.doc_id == prefer_doc]
+        if same_doc:
+            same_doc.sort(
+                key=lambda n: not (n.qualified_name or "").startswith(key)
+            )
+            return same_doc[0]
+        # 跨文档只接受 qualified_name 严格匹配 key 的，避免 "3.2" 模糊命中无关章节
+        strict = [
+            n for n in results
+            if (n.qualified_name or "") == key
+            or (n.qualified_name or "").startswith(key + " ")
+            or (n.qualified_name or "").startswith(key + "-")
+        ]
+        if strict:
+            return strict[0]
+        return None
 
     @staticmethod
     def _write_unresolved(root: Path, records: list[dict]) -> None:

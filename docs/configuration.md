@@ -20,10 +20,12 @@ docs:
       type: datasheet
       version: rev9
       priority: 10
+      chip_model: stm32f407          # 芯片型号/IP 实例，用于跨文档消歧（缺省由文件名推断）
     "docs/errata.pdf":
       type: errata
       version: rev3
       priority: 100
+      chip_model: stm32f407
       supersedes: ["docs/datasheet.pdf", "docs/reference-manual.pdf"]
 
 parsers:
@@ -104,7 +106,7 @@ llm:
 |---|---|
 | `include` | glob 模式列表 |
 | `exclude` | glob 模式列表（优先级高于 include） |
-| `metadata` | 路径 → 元数据，覆盖自动嗅探结果 |
+| `metadata` | 路径 → 元数据，覆盖自动嗅探结果。每项可含 `type` / `version` / `priority` / `chip_model` / `supersedes` |
 
 ### `parsers`
 

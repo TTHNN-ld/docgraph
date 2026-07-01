@@ -93,6 +93,20 @@ def _is_noise_entity_name(name: str) -> bool:
     return bool(_FIGURE_NOISE_NAME_RE.search(n))
 
 
+def _normalize_width(value) -> str | None:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"-", "--", "n/a", "na", "none", "null"}:
+        return None
+    text = re.sub(r"\s+", " ", text)
+    repeated = re.fullmatch(r"(\d+)(?:\s+\1)+", text)
+    if repeated:
+        return repeated.group(1)
+    bit_suffix = re.fullmatch(r"(\d+)\s*b", text, flags=re.I)
+    if bit_suffix:
+        return bit_suffix.group(1)
+    return text
+
+
 _OUTPUT_FORMAT: dict[str, str] = {
     "timing": "WaveJSON plus extracted signals/events",
     "fsm": "PlantUML state diagram plus states/transitions",
@@ -620,6 +634,9 @@ class FigureExtractor:
             # 过滤架构图噪声名（SoC 拓扑/地址区域/封装条目）
             if _is_noise_entity_name(name):
                 return None
+            attrs = dict(attrs)
+            if kind in (NodeKind.SIGNAL, NodeKind.INTERFACE):
+                attrs["width"] = _normalize_width(attrs.get("width"))
             node_id = make_node_id(ctx.family, kind, name, doc_id=doc_id)
             node = Node(
                 id=node_id,

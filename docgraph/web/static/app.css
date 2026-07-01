@@ -173,6 +173,8 @@ button:hover { background: #4c7ee0; }
 .figure-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
 .figure-card { background: var(--bg-alt); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
 .figure-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.doc-group { margin-bottom: 28px; }
+.doc-group-title { font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 4px; margin: 18px 0 12px; word-break: break-all; }
 
 .glossary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
 .glossary-item { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
@@ -188,6 +190,26 @@ button:hover { background: #4c7ee0; }
 .dot-parameter { background: #10b981; }
 .dot-module    { background: #a78bfa; }
 .dot-signal    { background: #fb7185; }
+.dot-interface { background: #22c55e; }
+.dot-figure    { background: #ec4899; }
+.dot-term      { background: #64748b; }
+.dot-interrupt { background: #ef4444; }
+.dot-clock     { background: #06b6d4; }
+.dot-memory_map{ background: #8b5cf6; }
+.dot-power_domain{ background: #84cc16; }
+.dot-requirement { background: #f97316; }
+.dot-errata    { background: #dc2626; }
+
+/* ---- graph 过滤区 ---- */
+.graph-filters { flex-direction: column; align-items: stretch; gap: 10px; }
+.filter-group { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.filter-row { align-items: center; }
+.filter-label { font-weight: 600; min-width: 64px; padding-top: 3px; }
+.checkbox-group { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.cb-item { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+.cb-item:hover { background: var(--bg-alt); }
+.cb-item input { margin: 0; }
+.limit-input { width: 80px; }
 .dot-interface { background: #22c55e; }
 .dot-figure    { background: #ec4899; }
 .dot-term      { background: #64748b; }

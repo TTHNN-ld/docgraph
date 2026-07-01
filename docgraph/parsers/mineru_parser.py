@@ -162,6 +162,11 @@ def _middle_json_to_parsed_doc(
     pages: list[ParsedPage] = []
     toc: list[TocEntry] = _parse_pdf_outline(path)
     use_mineru_title_toc = not toc
+    # MinerU 导出的 markdown 里表格 HTML 完整（middle.json 里 html 字段为空）。
+    # 按出现顺序逐 table block 对应回填。
+    md_path = image_dir / f"{path.stem}.md"
+    md_tables = _load_markdown_tables(md_path)
+    md_idx = 0
     counter = [0] * 6
     for p in pages_raw:
         pno = int(p.get("page_idx", 0)) + 1
@@ -227,7 +232,11 @@ def _middle_json_to_parsed_doc(
                     ))
                     order += 1
             elif btype in {"table", "table_body"}:
-                headers, rows, html = _extract_table(blk)
+                md_fallback = None
+                if md_idx < len(md_tables):
+                    md_fallback = md_tables[md_idx]
+                    md_idx += 1
+                headers, rows, html = _extract_table(blk, md_fallback=md_fallback)
                 caption = _caption_from_nested_blocks(blk, {"table_caption"})
                 image_path = _image_path_from_nested_blocks(blk, image_dir)
                 raw_table_text = _join_spans(blk)
@@ -476,25 +485,119 @@ def _join_spans(blk: dict) -> str:
     return "".join(out).strip()
 
 
-def _extract_table(blk: dict) -> tuple[list[str], list[list[str]], str | None]:
-    """MinerU 表格 → headers + rows。"""
+def _parse_table_html(html: str) -> tuple[list[str], list[list[str]]]:
+    """解析表格 HTML → (headers, rows)，正确处理 rowspan/colspan。
+
+    MinerU 导出的表格 HTML 带 rowspan/colspan 合并单元格；旧的正则解法会把
+    合并单元格的行整体左移，导致字段错位。这里按"网格填充"重建：
+    - 遇 colspan=N：当前格占 N 列
+    - 遇 rowspan=N：把当前值填入下方 N-1 行的同列（占位，避免左移）
+    """
+    if not html:
+        return [], []
+    rows_raw = re.findall(r"<tr[^>]*>(.*?)</tr>", html, flags=re.S | re.I)
+    # 先解析每个 tr 的单元格（含属性）
+    parsed_rows: list[list[tuple[str, int, int]]] = []  # [(text, colspan, rowspan)]
+    for r in rows_raw:
+        cells = re.findall(
+            r"<t[dh](?P<attr>[^>]*)>(?P<body>.*?)</t[dh]>",
+            r,
+            flags=re.S | re.I,
+        )
+        row: list[tuple[str, int, int]] = []
+        for attr, body in cells:
+            text = re.sub(r"<[^>]+>", "", body).strip()
+            cs = re.search(r"colspan\s*=\s*\"?(\d+)", attr, flags=re.I)
+            rs = re.search(r"rowspan\s*=\s*\"?(\d+)", attr, flags=re.I)
+            colspan = int(cs.group(1)) if cs else 1
+            rowspan = int(rs.group(1)) if rs else 1
+            row.append((text, colspan, rowspan))
+        if row:
+            parsed_rows.append(row)
+
+    if not parsed_rows:
+        return [], []
+
+    # 按网格展开：colspan 横向占位，rowspan 向下占位
+    n_cols = max(sum(c[1] for c in row) for row in parsed_rows)
+    grid: list[list[str | None]] = [[None] * n_cols for _ in parsed_rows]
+    pending: dict[int, tuple[str, int]] = {}  # col_idx -> (text, remaining_rows)
+    for ri, row in enumerate(parsed_rows):
+        ci = 0
+        # 先消化本行上方 rowspan 的占位
+        for col in range(n_cols):
+            if col in pending:
+                txt, rem = pending[col]
+                grid[ri][col] = txt
+                if rem - 1 <= 0:
+                    del pending[col]
+                else:
+                    pending[col] = (txt, rem - 1)
+        # 再填本行的单元格
+        for text, colspan, rowspan in row:
+            while ci < n_cols and grid[ri][ci] is not None:
+                ci += 1
+            if ci >= n_cols:
+                break
+            for k in range(colspan):
+                if ci + k < n_cols:
+                    grid[ri][ci + k] = text
+            if rowspan > 1:
+                for k in range(colspan):
+                    if ci + k < n_cols:
+                        pending[ci + k] = (text, rowspan - 1)
+            ci += colspan
+
+    result_rows: list[list[str]] = [
+        [("" if v is None else v) for v in row] for row in grid
+    ]
+    headers = result_rows[0]
+    body = result_rows[1:]
+    return headers, body
+
+
+def _load_markdown_tables(md_path: Path) -> list[str]:
+    """读取 MinerU 导出 markdown，按出现顺序返回每个 <table>...</table> 的 HTML。
+
+    middle.json 里部分 table block 的 html 字段为空（行数据丢失），但导出的
+    markdown 里这些表格的 HTML 是完整的。按序匹配可一对一回填。
+    """
+    if not md_path.is_file():
+        return []
+    try:
+        text = md_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+    # markdown 里每个表格是一整行 <html><body><table>...</table></body></html>
+    tables = re.findall(
+        r"<table[^>]*>.*?</table>",
+        text,
+        flags=re.S | re.I,
+    )
+    return tables
+
+
+def _extract_table(
+    blk: dict, md_fallback: str | None = None
+) -> tuple[list[str], list[list[str]], str | None]:
+    """MinerU 表格 → headers + rows。
+
+    优先用 block 自带 html；为空时用 markdown 回填（md_fallback），救回
+    middle.json 丢失行数据的表格。两者都正确解析 rowspan/colspan。
+    """
     html = blk.get("html") or ""
     if not html:
         for span in _iter_spans(blk):
             html = _span_table_html(span)
             if html:
                 break
-    if html:
-        # 简单 HTML 解析
-        import re
-        rows_raw = re.findall(r"<tr[^>]*>(.*?)</tr>", html, flags=re.S | re.I)
-        rows: list[list[str]] = []
-        for r in rows_raw:
-            cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", r, flags=re.S | re.I)
-            cells = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
-            rows.append(cells)
-        if rows:
-            return rows[0], rows[1:], html
+    if not html and md_fallback:
+        html = md_fallback
+    if not html:
+        return [], [], None
+    headers, rows = _parse_table_html(html)
+    if headers or rows:
+        return headers, rows, html
     return [], [], None
 
 

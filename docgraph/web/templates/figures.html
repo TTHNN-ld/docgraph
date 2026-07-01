@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% set active = 'figures' %}
-{% block title %}图 · DocGraph{% endblock %}
+{% block title %}插图 · DocGraph{% endblock %}
 {% block content %}
-<h1>图 <span class="muted">({{ nodes|length }})</span></h1>
+<h1>插图 <span class="muted">({{ nodes|length }})</span></h1>
 {% set enriched = nodes | selectattr("attrs.semantic_summary") | list %}
 <p class="muted">
   已做 VLM 语义抽取 {{ enriched|length }} / {{ nodes|length }} 张。
@@ -16,42 +16,51 @@
 {% if not nodes %}
 <p class="muted">没有 figure 节点。需要 parser 支持图抽取（marker / mineru）+ VLM 描述。</p>
 {% else %}
-<div class="figure-grid">
-{% for n in nodes %}
-<div class="figure-card">
-  <div class="figure-meta">
-    <span class="tag">{{ n.attrs.get('figure_type','other') }}</span>
-    <span class="muted">p.{{ n.location.page }}</span>
-    {% if n.attrs.get('semantic_node_ids') %}
-      <span class="tag">structured {{ n.attrs.get('semantic_node_ids')|length }}</span>
-    {% elif n.attrs.get('semantic_summary') %}
-      <span class="tag">summary</span>
+{% set groups = nodes | groupby('doc_id') %}
+{% for doc_id, figs in groups %}
+<section class="doc-group">
+  <h2 class="doc-group-title">
+    {{ doc_id | doc_name }}
+    <span class="muted">({{ figs|length }} 张)</span>
+  </h2>
+  <div class="figure-grid">
+  {% for n in figs %}
+  <div class="figure-card">
+    <div class="figure-meta">
+      <span class="tag">{{ n.attrs.get('figure_type','other') }}</span>
+      <span class="muted">p.{{ n.location.page }}</span>
+      {% if n.attrs.get('semantic_node_ids') %}
+        <span class="tag">structured {{ n.attrs.get('semantic_node_ids')|length }}</span>
+      {% elif n.attrs.get('semantic_summary') %}
+        <span class="tag">summary</span>
+      {% else %}
+        <span class="tag">L0 only</span>
+      {% endif %}
+    </div>
+    <h3>{{ n.name | short(60) }}</h3>
+    {% if n.attrs.get('semantic_summary') %}
+    <p>{{ n.attrs.semantic_summary | short(220) }}</p>
+    {% elif n.attrs.get('caption') %}
+    <p class="muted">{{ n.attrs.caption | short(160) }}</p>
     {% else %}
-      <span class="tag">L0 only</span>
+    <p class="muted">尚未运行 VLM 语义抽取。</p>
+    {% endif %}
+    {% if n.attrs.get('semantic_entities') %}
+    <details>
+      <summary>结构化 JSON</summary>
+      <pre><code>{{ n.attrs.semantic_entities }}</code></pre>
+    </details>
+    {% endif %}
+    {% if n.attrs.get('mermaid') %}
+    <details><summary>Mermaid</summary><pre><code>{{ n.attrs.mermaid }}</code></pre></details>
+    {% endif %}
+    {% if n.attrs.get('wavejson') %}
+    <details><summary>WaveJSON</summary><pre><code>{{ n.attrs.wavejson }}</code></pre></details>
     {% endif %}
   </div>
-  <h3>{{ n.name | short(60) }}</h3>
-  {% if n.attrs.get('semantic_summary') %}
-  <p>{{ n.attrs.semantic_summary | short(220) }}</p>
-  {% elif n.attrs.get('caption') %}
-  <p class="muted">{{ n.attrs.caption | short(160) }}</p>
-  {% else %}
-  <p class="muted">尚未运行 VLM 语义抽取。</p>
-  {% endif %}
-  {% if n.attrs.get('semantic_entities') %}
-  <details>
-    <summary>结构化 JSON</summary>
-    <pre><code>{{ n.attrs.semantic_entities }}</code></pre>
-  </details>
-  {% endif %}
-  {% if n.attrs.get('mermaid') %}
-  <details><summary>Mermaid</summary><pre><code>{{ n.attrs.mermaid }}</code></pre></details>
-  {% endif %}
-  {% if n.attrs.get('wavejson') %}
-  <details><summary>WaveJSON</summary><pre><code>{{ n.attrs.wavejson }}</code></pre></details>
-  {% endif %}
-</div>
+  {% endfor %}
+  </div>
+</section>
 {% endfor %}
-</div>
 {% endif %}
 {% endblock %}

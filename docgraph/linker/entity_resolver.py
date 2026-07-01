@@ -16,6 +16,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from docgraph.core.ids import doc_name_from_doc_id, infer_chip_model
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import Edge, EdgeKind, Evidence, Node, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
@@ -37,12 +38,41 @@ def normalize(name: str) -> str:
     return _NORM_RE.sub("", name).upper()
 
 
+def _instance_key(doc_id: str) -> str:
+    """跨文档消歧的实例键：chip_model 相同才算"同一实例"。
+
+    从 doc_id 提取文档名 → 推断 chip_model（如 cortex-m4 / pcie-subsystem）。
+    推断不出时回退到 family（doc_id 第一段），兼容未配置 chip_model 的旧项目：
+    旧项目所有文档同 family，同名实体仍会合并（与改造前行为一致）。
+    无 family 标记的裸 doc_id（如测试用的 "d1"）统一归为空串，按同组处理。
+    """
+    doc_name = doc_name_from_doc_id(doc_id)
+    chip = infer_chip_model(doc_name)
+    if chip:
+        return chip
+    if "::" in doc_id:
+        return doc_id.split("::")[0]  # family 段
+    return ""  # 无 family 标记：归为同一组（兼容简化场景）
+
+
 class EntityResolver:
     name = "entity_resolver"
     version = "0.1"
 
-    # 哪些 kind 参与归并（registers/pins/signals 等"硬名称"）
-    TARGET_KINDS = (NodeKind.REGISTER, NodeKind.PIN, NodeKind.PARAMETER, NodeKind.SIGNAL)
+    # 哪些 kind 参与归并（"硬名称"实体，跨文档同义时建 ALIAS_OF）
+    # 扩展覆盖：interrupt/memory_map/interface/module 也参与，因为跨文档
+    # （datasheet ↔ TRM ↔ errata）同一中断/地址空间/接口常有不同叫法。
+    TARGET_KINDS = (
+        NodeKind.REGISTER,
+        NodeKind.BITFIELD,
+        NodeKind.PIN,
+        NodeKind.PARAMETER,
+        NodeKind.SIGNAL,
+        NodeKind.INTERRUPT,
+        NodeKind.MEMORY_MAP,
+        NodeKind.INTERFACE,
+        NodeKind.MODULE,
+    )
 
     AUDIT_REL = "entities/linker.merged.jsonl"
 
@@ -53,12 +83,14 @@ class EntityResolver:
 
         for kind in self.TARGET_KINDS:
             nodes = store.search_nodes(NodeQuery(kind=kind, limit=10000))
-            buckets: dict[str, list[Node]] = defaultdict(list)
+            buckets: dict[tuple[str, str], list[Node]] = defaultdict(list)
             for n in nodes:
-                key = normalize(n.qualified_name or n.name)
-                buckets[key].append(n)
-
-            for key, group in buckets.items():
+                name_key = normalize(n.qualified_name or n.name)
+                # 消歧实例键：chip_model（推断得出）相同才算"同一实例"。
+                # chip_model 推断不出时回退到 family（doc_id 前缀），兼容旧项目。
+                inst = _instance_key(n.doc_id)
+                buckets[(name_key, inst)].append(n)
+            for (name_key, inst), group in buckets.items():
                 if len(group) < 2:
                     continue
                 # 主节点：按 doc 的 priority 决定（无法直接拿到 priority，用 page 较前 + 名字较短）
@@ -78,7 +110,7 @@ class EntityResolver:
                                 confidence=0.95,
                                 evidence=Evidence(
                                     extractor=f"{self.name}@{self.version}:rule",
-                                    raw_snippet=f"normalized key: {key}",
+                                    raw_snippet=f"normalized={name_key} instance={inst}",
                                 ),
                             )
                         )
@@ -87,7 +119,8 @@ class EntityResolver:
                         pass
                 audit.append(
                     {
-                        "key": key,
+                        "name_key": name_key,
+                        "instance": inst,
                         "primary": primary.id,
                         "members": [n.id for n in group],
                         "kind": kind.value,

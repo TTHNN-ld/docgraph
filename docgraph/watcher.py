@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from docgraph.core.config import DocGraphConfig, load_config, project_root_from_cwd
+from docgraph.core.config import load_config, project_root_from_cwd
 from docgraph.core.logger import get_logger
 from docgraph.core.manifest import load_manifest, save_manifest
 from docgraph.core.pipeline import build

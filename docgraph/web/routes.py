@@ -8,11 +8,28 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from docgraph.graph.schema import EdgeKind, NodeKind
 from docgraph.graph.store import NodeQuery
+
+
+def _nav_counts(store) -> dict[str, int]:
+    """各导航 kind 的节点计数，供模板按数据有无显示/隐藏导航项。
+
+    计算成本很低（几条 COUNT 查询），每次 render 都算。若未来图变大可缓存。
+    """
+    try:
+        return {
+            "registers": store.count_nodes(NodeKind.REGISTER),
+            "pins": store.count_nodes(NodeKind.PIN),
+            "timing": store.count_nodes(NodeKind.PARAMETER),
+            "figures": store.count_nodes(NodeKind.FIGURE),
+            "terms": store.count_nodes(NodeKind.TERM),
+        }
+    except Exception:
+        return {}
 
 
 def register_routes(app: FastAPI) -> None:
@@ -23,11 +40,19 @@ def register_routes(app: FastAPI) -> None:
     tpl.env.filters["short_id"] = lambda s: (s.split("::")[-1].split("#")[0])
     tpl.env.filters["short"] = lambda s, n=80: (str(s)[:n] + "…") if s and len(str(s)) > n else (s or "")
     tpl.env.filters["pretty_text"] = _pretty_text
+    # doc_id → 可读文档名：取 family::type:: 之后的文档名部分
+    tpl.env.filters["doc_name"] = lambda s: (str(s).split("::", 2)[-1] if "::" in str(s) else str(s))
 
     def render(request: Request, name: str, context: dict | None = None,
                status_code: int = 200):
-        """统一用 Starlette 新签名：(request, name, context)。"""
-        return tpl.TemplateResponse(request, name, context or {}, status_code=status_code)
+        """统一用 Starlette 新签名：(request, name, context)。
+
+        自动注入 nav_counts：各导航 kind 的节点计数，供模板按数据有无
+        显示/隐藏导航项（如术语在无 term 时隐藏）。
+        """
+        ctx = dict(context or {})
+        ctx.setdefault("nav_counts", _nav_counts(app.state.store))
+        return tpl.TemplateResponse(request, name, ctx, status_code=status_code)
 
     # ----- HTML 页面 -----
 
@@ -48,6 +73,7 @@ def register_routes(app: FastAPI) -> None:
         nodes = store.search_nodes(NodeQuery(
             kind=NodeKind.REGISTER, fuzzy=q or None, limit=limit,
         ))
+        nodes = sorted(nodes, key=lambda n: (n.doc_id, n.location.page or 0, n.name))
         return render(request, "registers.html", {"q": q, "nodes": nodes})
 
     @app.get("/registers/{node_id:path}", response_class=HTMLResponse)
@@ -70,6 +96,7 @@ def register_routes(app: FastAPI) -> None:
         nodes = store.search_nodes(NodeQuery(
             kind=NodeKind.PIN, fuzzy=q or None, limit=limit,
         ))
+        nodes = sorted(nodes, key=lambda n: (n.doc_id, n.location.page or 0, n.name))
         return render(request, "pins.html", {"q": q, "nodes": nodes})
 
     @app.get("/timing", response_class=HTMLResponse)
@@ -78,6 +105,7 @@ def register_routes(app: FastAPI) -> None:
         nodes = store.search_nodes(NodeQuery(
             kind=NodeKind.PARAMETER, fuzzy=q or None, limit=limit,
         ))
+        nodes = sorted(nodes, key=lambda n: (n.doc_id, n.location.page or 0, n.name))
         return render(request, "timing.html", {"q": q, "nodes": nodes})
 
     @app.get("/figures", response_class=HTMLResponse)
@@ -86,6 +114,8 @@ def register_routes(app: FastAPI) -> None:
         nodes = store.search_nodes(NodeQuery(
             kind=NodeKind.FIGURE, fuzzy=q or None, limit=limit,
         ))
+        # 按文档分组展示：同文档的图聚在一起，便于按文档浏览
+        nodes = sorted(nodes, key=lambda n: (n.doc_id, n.location.page or 0))
         return render(request, "figures.html", {"q": q, "nodes": nodes})
 
     @app.get("/glossary", response_class=HTMLResponse)
@@ -149,7 +179,23 @@ def register_routes(app: FastAPI) -> None:
 
     @app.get("/graph", response_class=HTMLResponse)
     def graph_page(request: Request, seed: str = "", depth: int = 1):
-        return render(request, "graph.html", {"seed": seed, "depth": depth})
+        store = app.state.store
+        # 各 kind/edge_kind 计数，供过滤复选框显示"勾选会带多少节点/边"
+        node_kind_counts = {}
+        for k in NodeKind:
+            c = store.count_nodes(k)
+            if c:
+                node_kind_counts[k.value] = c
+        edge_kind_counts = {}
+        for ek in EdgeKind:
+            c = store.count_edges(ek)
+            if c:
+                edge_kind_counts[ek.value] = c
+        return render(request, "graph.html", {
+            "seed": seed, "depth": depth,
+            "node_kind_counts": node_kind_counts,
+            "edge_kind_counts": edge_kind_counts,
+        })
 
     @app.get("/plugins", response_class=HTMLResponse)
     def plugins_page(request: Request):
@@ -336,7 +382,6 @@ def register_routes(app: FastAPI) -> None:
         # 收集所有相关边
         node_ids = {n.id for n in nodes_list}
         edges_out = []
-        import sqlite3
         conn = store._connect()  # type: ignore[attr-defined]
         rows = conn.execute(
             f"SELECT src, dst, kind, confidence FROM edges "

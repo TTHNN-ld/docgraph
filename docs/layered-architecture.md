@@ -199,6 +199,15 @@ TableEntityExtractor（通用）:
 
 领域 extractor（register/pin/...）保留为"特例预设"，但底座是同一个通用 `TableEntityExtractor` + `schema registry`。**新文档类型来了，是加一个 schema 条目，不是写一个新 extractor。**
 
+芯片文档的 L2 质量策略：
+
+- 表格是硬证据，优先走确定性 normalizer。当前已覆盖 register/bitfield、memory_map、interrupt、signal、interface 的常见 IP spec/TRM 表型，包括 `Interface Group / 方向 / Description`、`irq_src信号 / 位宽 / Description`、`Interface / Base Address`、`Fields for Register` 等行业常见格式。
+- VLM/figure 抽取用于补充框图语义、模块互连、时钟复位、地址图和数据通路，不应覆盖表格中更精确的结构化字段。
+- 同一实体来自表格和图时，图存储必须做多源合并：保留 table_entity 的确定性字段，合并 `source_block_ids` / `source_chunk_ids` / evidence / aliases，并记录 `sources`，避免后写入的软证据覆盖硬证据。
+- 抽取器入库前要规整 OCR/VLM 常见噪声，如 `null`、`1 1`、`512b` 等宽度表达；不合规字段不得依赖 doctor 事后兜底。
+- 文档类型路由影响 schema 启用范围：`spec/protocol/interface spec/subsystem spec` 默认按 protocol 启用 signal/interface/memory_map/interrupt；TRS 等无法确定类型的文档走 UNKNOWN 核心路由（register/pin/memory_map/interrupt），避免误关寄存器抽取。
+- build 结束后按当前 include 文件的 doc_id 集合清理 stale docs，支持新增、删除、重命名或类型路由变化后的增量图谱一致性。
+
 ---
 
 ## 5. Agent 使用模式（回答"省上下文 + 不丢信息"）

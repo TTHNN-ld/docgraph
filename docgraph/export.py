@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from docgraph.graph.schema import Edge, EdgeKind, Node, NodeKind
+from docgraph.graph.schema import EdgeKind, Node, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.graph.store import NodeQuery
 

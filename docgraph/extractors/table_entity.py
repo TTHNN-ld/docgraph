@@ -23,7 +23,11 @@ from docgraph.extractors._vlm_backstop import page_needs_vlm_for, vlm_extract
 from docgraph.extractors.base import ExtractContext
 from docgraph.extractors.schema_registry import (
     EntitySchema,
+    InterfaceDef,
+    InterruptDef,
+    MemoryMapDef,
     RegisterDef,
+    SignalDef,
     get_schema,
     schemas_for_doctype,
 )
@@ -155,6 +159,14 @@ class TableEntityExtractor:
                 result = None
                 if sn == "register":
                     result = self._extract_registers_from_table(candidate.table)
+                elif sn == "memory_map":
+                    result = self._extract_memory_maps_from_table(candidate.table)
+                elif sn == "interrupt":
+                    result = self._extract_interrupts_from_table(candidate.table)
+                elif sn == "signal":
+                    result = self._extract_signals_from_table(candidate.table)
+                elif sn == "interface":
+                    result = self._extract_interfaces_from_table(candidate.table)
                 if result is None and ctx.has_llm:
                     result = self._llm_extract(candidate.table, schema, sn, ctx)
                     llm_calls += 1
@@ -448,6 +460,8 @@ class TableEntityExtractor:
                          candidate_id: str | None = None) -> dict:
         name = getattr(item, "name", "") or getattr(item, "symbol", "")
         attrs = self._dump_attrs(item)
+        if schema.kind in (NodeKind.SIGNAL, NodeKind.INTERFACE):
+            attrs["width"] = self._normalize_width(attrs.get("width"))
         attrs["source"] = f"table_entity:{schema_name}"
         attrs["source_block_ids"] = source_block_ids or []
         attrs["source_chunk_ids"] = source_chunk_ids or []
@@ -548,6 +562,11 @@ class TableEntityExtractor:
         if schema.negative_hints:
             if any(x in pool for x in schema.negative_hints):
                 return False
+        if schema.kind == NodeKind.SIGNAL:
+            has_interface_group = "interface group" in pool or "接口组" in pool or "外围接口" in pool
+            has_direction = "direction" in pool or "方向" in pool
+            if has_interface_group and has_direction:
+                return True
         hits = sum(1 for h in schema.table_header_hints if h.lower() in pool)
         if not (table.headers or table.rows or table.html):
             return hits >= 1
@@ -713,6 +732,188 @@ class TableEntityExtractor:
             ))
         return registers or None
 
+    @classmethod
+    def _extract_memory_maps_from_table(cls, table: TableData | None) -> list[MemoryMapDef] | None:
+        """Deterministically parse address/base/offset/size tables.
+
+        Common in chip specs as:
+        - Interface / Base Address
+        - NoC Slave / Offset / Size / Description
+        - Access Region / Access Address
+        """
+        if table is None or not table.rows:
+            return None
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        if not headers:
+            return None
+        name_col = cls._find_col(headers, (
+            "name", "region", "target", "slave", "noc slave", "interface",
+            "访问区域", "区域", "目标", "从设备", "接口",
+        ))
+        address_col = cls._find_col(headers, (
+            "base address", "address", "offset", "addr", "访问地址", "基地址", "地址", "偏移",
+        ))
+        size_col = cls._find_col(headers, ("size", "range", "大小", "范围"))
+        desc_col = cls._find_col(headers, ("description", "desc", "说明", "描述", "功能"))
+        if address_col is None:
+            return None
+        if name_col == address_col and address_col + 1 < len(headers):
+            address_col = address_col + 1
+
+        entries: list[MemoryMapDef] = []
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            address = cls._cell(cells, address_col)
+            if not cls._looks_like_address_locator(address):
+                continue
+            name = cls._clean_display_name(cls._cell(cells, name_col)) or cls._clean_display_name(address)
+            if not name or cls._is_header_echo(name, headers):
+                continue
+            entries.append(MemoryMapDef(
+                name=name,
+                address=address,
+                size=cls._cell(cells, size_col) or None,
+                description=cls._cell(cells, desc_col),
+            ))
+        return entries or None
+
+    @classmethod
+    def _extract_interrupts_from_table(cls, table: TableData | None) -> list[InterruptDef] | None:
+        """Deterministically parse IRQ/MSI/vector tables."""
+        if table is None or not table.rows:
+            return None
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
+        if not any(token in pool for token in ("interrupt", "irq", "msi", "vector", "中断", "向量")):
+            return None
+        name_col = cls._find_col(headers, (
+            "irq src signal", "irq src", "irq_src信号", "irq_src 信号",
+            "summary_irq 信号", "interrupt", "irq", "vector", "signal", "name", "中断", "信号",
+        ))
+        type_col = cls._find_col(headers, ("type", "category", "类型"))
+        number_col = cls._find_col(headers, ("number", "irq number", "vector number", "中断号", "编号"))
+        desc_col = cls._find_col(headers, ("description", "desc", "说明", "描述", "功能"))
+        if name_col is None:
+            return None
+        out: list[InterruptDef] = []
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            name = cls._clean_display_name(cls._cell(cells, name_col))
+            if not name or cls._is_header_echo(name, headers):
+                continue
+            out.append(InterruptDef(
+                name=name,
+                number=cls._cell(cells, number_col) or None,
+                type=cls._cell(cells, type_col) or None,
+                description=cls._cell(cells, desc_col),
+            ))
+        return out or None
+
+    @classmethod
+    def _extract_signals_from_table(cls, table: TableData | None) -> list[SignalDef] | None:
+        """Deterministically parse signal/port list tables."""
+        if table is None or not table.rows:
+            return None
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
+        if any(token in pool for token in ("interrupt", "irq", "中断", "irq_src")):
+            return None
+        name_col = cls._find_col(headers, ("signal", "port", "pin name", "name", "信号", "端口"))
+        width_col = cls._find_col(headers, ("width", "bit width", "bits", "位宽", "宽度"))
+        direction_col = cls._find_col(headers, ("direction", "dir", "i/o", "io", "方向"))
+        desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
+        if name_col is None:
+            name_col = cls._infer_signal_name_col(table, headers, direction_col, width_col, desc_col)
+        if name_col is None:
+            return None
+        out: list[SignalDef] = []
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            name = cls._clean_display_name(cls._cell(cells, name_col))
+            if (
+                not name
+                or cls._is_header_echo(name, headers)
+                or not cls._looks_like_signal_name(name)
+            ):
+                continue
+            out.append(SignalDef(
+                name=name,
+                direction=cls._normalize_direction(cls._cell(cells, direction_col)),
+                width=cls._normalize_width(cls._cell(cells, width_col)),
+                description=cls._cell(cells, desc_col),
+            ))
+        return out or None
+
+    @classmethod
+    def _infer_signal_name_col(
+        cls,
+        table: TableData,
+        headers: list[str],
+        direction_col: int | None,
+        width_col: int | None,
+        desc_col: int | None,
+    ) -> int | None:
+        """Infer signal-name column for interface-list tables.
+
+        Many IP specs use columns such as "Interface Group / Direction /
+        Description" where the first column contains both group labels and real
+        signal names. This is common in integration guides and subsystem specs.
+        """
+        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
+        if direction_col is None and width_col is None:
+            return None
+        if not any(token in pool for token in ("interface", "port", "signal", "接口", "端口", "信号", "方向")):
+            return None
+        excluded = {idx for idx in (direction_col, width_col, desc_col) if idx is not None}
+        col_count = table.n_cols or max((len(r) for r in table.rows), default=0)
+        best_col: int | None = None
+        best_score = 0
+        for idx in range(col_count):
+            if idx in excluded:
+                continue
+            score = 0
+            for row in table.rows:
+                cells = [str(c or "").strip() for c in row]
+                value = cls._cell(cells, idx)
+                if cls._looks_like_signal_name(value) and not cls._is_header_echo(value, headers):
+                    score += 1
+            if score > best_score:
+                best_col = idx
+                best_score = score
+        return best_col if best_score >= 2 else None
+
+    @classmethod
+    def _extract_interfaces_from_table(cls, table: TableData | None) -> list[InterfaceDef] | None:
+        """Deterministically parse high-level bus/protocol interface tables."""
+        if table is None or not table.rows:
+            return None
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
+        if not any(token in pool for token in ("interface", "bus", "protocol", "接口", "总线", "协议")):
+            return None
+        # Avoid signal-list tables that merely have an "Interface Group" column.
+        if any(token in pool for token in ("signal", "port", "信号", "端口")):
+            return None
+        name_col = cls._find_col(headers, ("interface", "interface name", "bus", "protocol", "接口", "总线", "协议"))
+        direction_col = cls._find_col(headers, ("direction", "role", "master", "slave", "方向", "角色"))
+        width_col = cls._find_col(headers, ("width", "data width", "位宽", "宽度"))
+        desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
+        if name_col is None:
+            return None
+        out: list[InterfaceDef] = []
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            name = cls._clean_display_name(cls._cell(cells, name_col))
+            if not name or cls._is_header_echo(name, headers):
+                continue
+            out.append(InterfaceDef(
+                name=name,
+                direction=cls._normalize_direction(cls._cell(cells, direction_col)),
+                width=cls._normalize_width(cls._cell(cells, width_col)),
+                description=cls._cell(cells, desc_col),
+            ))
+        return out or None
+
     @staticmethod
     def _norm_header(value: str) -> str:
         text = re.sub(r"\s+", " ", str(value or "").strip().lower())
@@ -740,6 +941,88 @@ class TableEntityExtractor:
     def _clean_entity_name(value: str) -> str:
         text = re.sub(r"\s+", "_", str(value or "").strip())
         text = text.strip("_")
+        return text
+
+    @staticmethod
+    def _clean_display_name(value: str) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        return text.strip(" ,;，；")
+
+    @staticmethod
+    def _is_header_echo(value: str, headers: list[str]) -> bool:
+        norm = TableEntityExtractor._norm_header(value)
+        return bool(norm and norm in set(headers))
+
+    @staticmethod
+    def _looks_like_address_locator(value: str) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        if re.search(r"0x[0-9a-fA-F]+", text):
+            return True
+        if re.search(r"\b[A-Z0-9_]*BAR\d*\b", text, re.I):
+            return True
+        if re.search(r"\b(BDF|offset|base|host|local|memory|register|寄存器|空间|偏移)\b", text, re.I):
+            return True
+        if any(ch in text for ch in "+:/"):
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_signal_name(value: str) -> bool:
+        text = str(value or "").strip()
+        if not text or len(text) > 96:
+            return False
+        lowered = text.lower()
+        if lowered in {
+            "reserved", "reserve", "description", "clock/reset", "interface group",
+            "interrupt", "interrupts", "irq", "irqs",
+        }:
+            return False
+        if any(ch in text for ch in " /，,;；"):
+            return False
+        if re.search(r"[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+", text):
+            return True
+        if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9]*(?:\[[0-9:]+\])?", text):
+            return any(ch.islower() for ch in text) or text.isupper()
+        return False
+
+    @staticmethod
+    def _normalize_direction(value: str) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        upper = text.upper().replace(" ", "")
+        if re.fullmatch(r"\d+", upper):
+            return None
+        mapping = {
+            "I": "IN",
+            "IN": "IN",
+            "INPUT": "IN",
+            "O": "OUT",
+            "OUT": "OUT",
+            "OUTPUT": "OUT",
+            "IO": "IO",
+            "I/O": "IO",
+            "BIDIR": "BIDIR",
+            "BIDIRECTIONAL": "BIDIR",
+            "MASTER": "master",
+            "SLAVE": "slave",
+        }
+        return mapping.get(upper, text)
+
+    @staticmethod
+    def _normalize_width(value) -> str | None:
+        text = str(value or "").strip()
+        if not text or text.lower() in {"-", "--", "n/a", "na", "none", "null"}:
+            return None
+        text = re.sub(r"\s+", " ", text)
+        repeated = re.fullmatch(r"(\d+)(?:\s+\1)+", text)
+        if repeated:
+            return repeated.group(1)
+        bit_suffix = re.fullmatch(r"(\d+)\s*b", text, flags=re.I)
+        if bit_suffix:
+            return bit_suffix.group(1)
         return text
 
     @staticmethod

@@ -19,7 +19,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from docgraph.graph.schema import (
-    BBox,
     ParsedDoc,
     ParsedPage,
     ParsedTable,

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from docgraph.core.bootstrap import bootstrap
 from docgraph.core.config import docgraph_dir, load_config, project_root_from_cwd

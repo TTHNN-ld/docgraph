@@ -13,7 +13,7 @@ import sqlite3
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from docgraph.graph.schema import (
     BBox,
@@ -215,6 +215,9 @@ class SQLiteGraphStore:
         from docgraph.graph.schema import _utcnow  # type: ignore
 
         conn = self._connect()
+        existing = self.get_node(node.id)
+        if existing is not None:
+            node = _merge_node(existing, node)
         bbox_json = (
             json.dumps(node.location.bbox.model_dump()) if node.location.bbox else None
         )
@@ -263,7 +266,7 @@ class SQLiteGraphStore:
 
         # 别名维护
         conn.execute("DELETE FROM aliases WHERE node_id = ?", (node.id,))
-        for alias in node.aliases:
+        for alias in _dedupe_preserve_order(node.aliases):
             conn.execute(
                 "INSERT OR IGNORE INTO aliases(alias, node_id) VALUES (?, ?)",
                 (alias, node.id),
@@ -707,3 +710,136 @@ def _row_evidence(row: sqlite3.Row) -> Evidence:
         return Evidence(extractor="unknown")
     evidence_data = json.loads(row["evidence"])
     return Evidence(**evidence_data) if evidence_data else Evidence(extractor="unknown")
+
+
+def _merge_node(existing: Node, incoming: Node) -> Node:
+    """Merge same-ID L2 nodes without losing stronger structured evidence.
+
+    Chip documents commonly describe the same entity twice: a register/signal table
+    gives precise fields, and a figure gives topology/context. A plain UPSERT would
+    let the later extractor overwrite the earlier one. The store keeps one canonical
+    node and treats repeated writes as evidence enrichment instead.
+    """
+
+    attrs = _merge_attrs(existing.attrs, incoming.attrs)
+    evidence = _merge_evidence(existing.evidence, incoming.evidence)
+    location = _merge_location(existing.location, incoming.location)
+    summary = existing.summary or incoming.summary
+    if existing.summary and incoming.summary and len(incoming.summary) > len(existing.summary) * 2:
+        attrs.setdefault("alternative_summaries", [])
+        if incoming.summary not in attrs["alternative_summaries"]:
+            attrs["alternative_summaries"].append(incoming.summary)
+
+    return existing.model_copy(
+        update={
+            "qualified_name": existing.qualified_name or incoming.qualified_name,
+            "aliases": _dedupe_preserve_order([*existing.aliases, *incoming.aliases]),
+            "location": location,
+            "evidence": evidence,
+            "attrs": attrs,
+            "summary": summary,
+            "embedding_id": existing.embedding_id or incoming.embedding_id,
+            "hash": incoming.hash or existing.hash,
+            "schema_version": max(existing.schema_version, incoming.schema_version),
+            "updated_at": incoming.updated_at,
+        }
+    )
+
+
+def _merge_attrs(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    attrs = dict(existing)
+    existing_source = str(existing.get("source") or "")
+    incoming_source = str(incoming.get("source") or "")
+
+    sources = _dedupe_preserve_order(
+        [
+            *_as_list(existing.get("sources")),
+            existing_source,
+            *_as_list(incoming.get("sources")),
+            incoming_source,
+        ]
+    )
+    if sources:
+        attrs["sources"] = sources
+
+    for key, value in incoming.items():
+        if key in {"source_block_ids", "source_chunk_ids"}:
+            attrs[key] = _dedupe_preserve_order([*_as_list(attrs.get(key)), *_as_list(value)])
+            continue
+        if key == "source":
+            if not _structured_source(existing_source) and incoming_source:
+                attrs[key] = incoming_source
+            elif "source" not in attrs and incoming_source:
+                attrs[key] = incoming_source
+            continue
+        if key == "sources":
+            continue
+        if _is_empty(attrs.get(key)):
+            attrs[key] = value
+            continue
+        if key not in attrs:
+            attrs[key] = value
+
+    return attrs
+
+
+def _merge_evidence(existing: Evidence, incoming: Evidence) -> Evidence:
+    extractors = _dedupe_preserve_order(
+        [*_split_extractors(existing.extractor), *_split_extractors(incoming.extractor)]
+    )
+    raw_snippet = existing.raw_snippet or incoming.raw_snippet
+    if existing.raw_snippet and incoming.raw_snippet and incoming.raw_snippet not in existing.raw_snippet:
+        raw_snippet = f"{existing.raw_snippet}\n---\n{incoming.raw_snippet}"
+    return Evidence(
+        chunk_ids=_dedupe_preserve_order([*existing.chunk_ids, *incoming.chunk_ids]),
+        pages=_dedupe_preserve_order([*existing.pages, *incoming.pages]),
+        bboxes=[*existing.bboxes, *incoming.bboxes],
+        extractor="+".join(extractors) if extractors else "unknown",
+        raw_snippet=raw_snippet,
+    )
+
+
+def _merge_location(existing: Location, incoming: Location) -> Location:
+    return Location(
+        page=existing.page if existing.page is not None else incoming.page,
+        bbox=existing.bbox or incoming.bbox,
+        section_path=existing.section_path or incoming.section_path,
+    )
+
+
+def _structured_source(source: str) -> bool:
+    return source.startswith(("table_entity", "section", "schema"))
+
+
+def _split_extractors(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [part for part in value.split("+") if part]
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _is_empty(value: Any) -> bool:
+    return value in (None, "", [], {})
+
+
+def _dedupe_preserve_order(items: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    seen: set[str] = set()
+    for item in items:
+        if item in (None, ""):
+            continue
+        marker = json.dumps(item, sort_keys=True, default=str)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        out.append(item)
+    return out

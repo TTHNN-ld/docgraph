@@ -121,7 +121,10 @@ class Evidence(BaseModel):
 class DocMetadata(BaseModel):
     """从文档头部 / 用户配置中拿到的元数据。"""
     title: str | None = None
-    family: str | None = None  # e.g. "stm32f407"
+    family: str | None = None  # e.g. "stm32f407"（项目级命名空间，进 node_id）
+    # 芯片型号/IP 实例（比 family 更细，用于消歧判断"同一实例"）。
+    # 缺省时由文档名推断；推断不出则为 None，消歧回退到 family（兼容旧项目）。
+    chip_model: str | None = None
     type: DocType = DocType.UNKNOWN
     version: str | None = None
     date: str | None = None

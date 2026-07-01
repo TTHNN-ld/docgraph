@@ -21,7 +21,7 @@ from pathlib import Path
 
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import (
-    BBox, ParsedDoc, ParsedFigure, ParsedPage, ParsedTable,
+    ParsedDoc, ParsedFigure, ParsedPage, ParsedTable,
     TextBlock, TocEntry,
 )
 from docgraph.parsers.base import ParseContext

@@ -10,24 +10,29 @@
 {% if not nodes %}
 <p class="muted">没有参数节点。</p>
 {% else %}
-<table class="grid">
-<thead><tr>
-  <th>symbol</th><th>min</th><th>typ</th><th>max</th><th>unit</th>
-  <th>condition</th><th>page</th>
-</tr></thead>
-<tbody>
-{% for n in nodes %}
-<tr>
-  <td><strong>{{ n.name }}</strong></td>
-  <td>{{ n.attrs.get('min') or '—' }}</td>
-  <td>{{ n.attrs.get('typ') or '—' }}</td>
-  <td>{{ n.attrs.get('max') or '—' }}</td>
-  <td>{{ n.attrs.get('unit') or '—' }}</td>
-  <td>{{ n.attrs.get('condition') | short(80) }}</td>
-  <td>{{ n.location.page or '—' }}</td>
-</tr>
+{% for doc_id, group in nodes | groupby('doc_id') %}
+<section class="doc-group">
+  <h2 class="doc-group-title">{{ doc_id | doc_name }} <span class="muted">({{ group|length }})</span></h2>
+  <table class="grid">
+  <thead><tr>
+    <th>symbol</th><th>min</th><th>typ</th><th>max</th><th>unit</th>
+    <th>condition</th><th>page</th>
+  </tr></thead>
+  <tbody>
+  {% for n in group %}
+  <tr>
+    <td><strong>{{ n.name }}</strong></td>
+    <td>{{ n.attrs.get('min') or '—' }}</td>
+    <td>{{ n.attrs.get('typ') or '—' }}</td>
+    <td>{{ n.attrs.get('max') or '—' }}</td>
+    <td>{{ n.attrs.get('unit') or '—' }}</td>
+    <td>{{ n.attrs.get('condition') | short(80) }}</td>
+    <td>{{ n.location.page or '—' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+  </table>
+</section>
 {% endfor %}
-</tbody>
-</table>
 {% endif %}
 {% endblock %}

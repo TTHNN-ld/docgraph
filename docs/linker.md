@@ -58,9 +58,25 @@ class EntityResolver:
 ```
 
 合并规则：
+- 同 `chip_model` + 同 `qualified_name` → 高置信合并（同一实例的多份文档）
+- 同名但不同 `chip_model` → 保留为不同节点 + 双向 `ALIAS_OF`（同名概念，不同芯片）
 - 同 `family` + 同 `qualified_name` + 同 `address`（寄存器）→ 高置信合并
-- 同名但不同模块 → 保留为不同节点 + 双向 `ALIAS_OF`
 - LLM 决定合并的，置信度上限 0.85，强制 evidence 记录推理
+
+### 4.1 chip_model：实例级消歧键
+
+`family` 是项目级命名空间（进 node_id，用于联邦），粒度太粗——同一个 `arm-cortex`
+family 下可能含多颗不同芯片。`chip_model` 是更细的"芯片型号/IP 实例"标识，仅用于
+消歧判断，不进 node_id。
+
+- 来源（优先级递减）：config `metadata.chip_model` 显式配置 → 文档名启发式推断
+  （`_infer_chip_model`：Cortex-M4 → `cortex-m4`，PCIE Subsystem → `pcie-subsystem`）
+- 推断不出 → `None` → 消歧回退到 `family`（兼容单芯片项目，行为不变）
+- 参与 `EntityResolver` 消歧的 kind（`TARGET_KINDS`）：REGISTER / BITFIELD / PIN /
+  PARAMETER / SIGNAL / INTERRUPT / MEMORY_MAP / INTERFACE / MODULE
+
+这样 PCIe Spec + TRS（都推断为 `pcie-subsystem`）的 module/interrupt 合并是对的；
+Cortex-M0+ vs Cortex-M23（`cortex-m0+` vs `cortex-m23`）的 ALU 不合并。
 
 ## 5. 联邦合并
 
@@ -68,7 +84,7 @@ class EntityResolver:
 
 核心：
 - 节点 id 全局形式 `<family>::<kind>:<qualified_name>[#<doc_id>]`
-- 同 family 默认尝试合并
+- 同 family 默认尝试合并（联邦层面）
 - 冲突按 `doc.priority` 决定主节点
 
 ## 6. errata 覆盖

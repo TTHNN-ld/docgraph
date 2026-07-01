@@ -1,14 +1,11 @@
 """Extractor 协议与注册表。"""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from docgraph.graph.schema import ExtractResult, NodeKind, ParsedDoc
-
-if TYPE_CHECKING:
-    from docgraph.llm.client import LLMClient
 
 
 class ExtractContext(BaseModel):

@@ -4,34 +4,46 @@
 {% block content %}
 <h1>关系图</h1>
 
-<form class="filter-bar" id="graph-controls">
-  <label>kinds:
-    <input type="text" name="kinds" value="register,bitfield,module,interface,signal,figure" placeholder="register,bitfield,module,interface,signal,figure,…">
-  </label>
-  <label>edge_kinds:
-    <input type="text" name="edge_kinds" value="has_bitfield,connects_to,controls,illustrated_by,references" placeholder="(空=全部)">
-  </label>
-  <label>limit:
-    <input type="number" name="limit" value="200" min="10" max="2000">
-  </label>
-  <button type="submit">刷新</button>
+{% set default_node_kinds = 'register,bitfield,module,interface,signal,figure'.split(',') %}
+{% set default_edge_kinds = 'has_bitfield,connects_to,controls,illustrated_by,references'.split(',') %}
+<form class="filter-bar graph-filters" id="graph-controls">
+  <div class="filter-group">
+    <span class="filter-label">节点类型</span>
+    <div class="checkbox-group" id="node-kind-cbs">
+      {% for k, c in node_kind_counts.items() %}
+      <label class="cb-item" title="{{ k }}（{{ c }} 个）">
+        <input type="checkbox" name="node_kind" value="{{ k }}"
+               {% if k in default_node_kinds %}checked{% endif %}>
+        <span class="dot dot-{{ k }}"></span>{{ k }}
+        <span class="muted">({{ c }})</span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="filter-group">
+    <span class="filter-label">边类型</span>
+    <div class="checkbox-group" id="edge-kind-cbs">
+      {% for k, c in edge_kind_counts.items() %}
+      <label class="cb-item" title="{{ k }}（{{ c }} 条）">
+        <input type="checkbox" name="edge_kind" value="{{ k }}"
+               {% if k in default_edge_kinds %}checked{% endif %}>
+        {{ k }}
+        <span class="muted">({{ c }})</span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="filter-group filter-row">
+    <span class="filter-label">数量上限</span>
+    <input type="number" name="limit" value="300" min="10" max="5000" class="limit-input">
+    <button type="submit">刷新</button>
+  </div>
 </form>
 
 <div id="graph-status" class="muted">加载中…</div>
 <svg id="graph" width="100%" height="700"></svg>
-
-<div class="legend">
-  <span class="dot dot-register"></span> register
-  <span class="dot dot-bitfield"></span> bitfield
-  <span class="dot dot-section"></span> section
-  <span class="dot dot-pin"></span> pin
-  <span class="dot dot-parameter"></span> parameter
-  <span class="dot dot-module"></span> module
-  <span class="dot dot-signal"></span> signal
-  <span class="dot dot-interface"></span> interface
-  <span class="dot dot-figure"></span> figure
-  <span class="dot dot-term"></span> term
-</div>
 
 {% endblock %}
 {% block scripts %}
@@ -43,16 +55,21 @@ const KIND_COLORS = {
   parameter:'#10b981', figure:   '#ec4899',
   term:     '#64748b', module:   '#a78bfa',
   signal:   '#fb7185', chunk:    '#cbd5e1', document: '#0ea5e9',
+  interrupt:'#ef4444', clock:    '#06b6d4', memory_map:'#8b5cf6',
+  power_domain:'#84cc16', requirement:'#f97316', errata: '#dc2626',
 };
 
 let simulation = null;
 
 function fetchGraph() {
-  const form = new FormData(document.getElementById('graph-controls'));
+  // 把复选框勾选值拼成逗号串，匹配 /api/graph 的 kinds/edge_kinds 参数
+  const nodeKinds = [...document.querySelectorAll('input[name=node_kind]:checked')].map(cb => cb.value).join(',');
+  const edgeKinds = [...document.querySelectorAll('input[name=edge_kind]:checked')].map(cb => cb.value).join(',');
+  const limit = document.querySelector('input[name=limit]').value || '300';
   const params = new URLSearchParams();
-  for (const [k, v] of form.entries()) {
-    if (v) params.set(k, v);
-  }
+  if (nodeKinds) params.set('kinds', nodeKinds);
+  if (edgeKinds) params.set('edge_kinds', edgeKinds);
+  params.set('limit', limit);
   document.getElementById('graph-status').textContent = '加载中…';
   return fetch('/api/graph?' + params.toString()).then(r => r.json());
 }
@@ -126,6 +143,10 @@ function render(data) {
 document.getElementById('graph-controls').addEventListener('submit', e => {
   e.preventDefault();
   fetchGraph().then(render);
+});
+// 复选框 / 数量上限变化时自动刷新，无需点按钮
+document.querySelectorAll('#graph-controls input').forEach(el => {
+  el.addEventListener('change', () => fetchGraph().then(render));
 });
 
 fetchGraph().then(render);
