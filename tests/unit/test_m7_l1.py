@@ -502,6 +502,78 @@ def test_quality_audit_requires_l2_provenance(tmp_path):
     store.close()
 
 
+def test_quality_audit_validates_l2_register_bitfields(tmp_path):
+    from docgraph.graph.schema import Block, BlockKind, Chunk, Evidence, Location, Node, NodeKind
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.quality.layers import audit_l0_l1
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_blocks([
+        Block(id="d#p1#b0", doc_id="d", page=1, kind=BlockKind.PARAGRAPH,
+              reading_order=0, text="register table"),
+    ])
+    store.upsert_chunks([
+        Chunk(id="c1", doc_id="d", page=1, page_start=1, page_end=1,
+              text="register table", block_ids=["d#p1#b0"], source_hash="h"),
+    ])
+    reg = Node(
+        id="d::reg:CTRL",
+        doc_id="d",
+        kind=NodeKind.REGISTER,
+        name="CTRL",
+        location=Location(page=1),
+        attrs={
+            "width": 8,
+            "source_block_ids": ["d#p1#b0"],
+            "source_chunk_ids": ["c1"],
+        },
+        evidence=Evidence(extractor="table_entity:register", chunk_ids=["c1"], pages=[1]),
+    )
+    good = Node(
+        id="d::bf:CTRL.EN",
+        doc_id="d",
+        kind=NodeKind.BITFIELD,
+        name="EN",
+        location=Location(page=1),
+        attrs={
+            "register_id": reg.id,
+            "bit_high": 0,
+            "bit_low": 0,
+            "access": "RW",
+            "source_block_ids": ["d#p1#b0"],
+            "source_chunk_ids": ["c1"],
+        },
+        evidence=Evidence(extractor="table_entity:register", chunk_ids=["c1"], pages=[1]),
+    )
+    bad = Node(
+        id="d::bf:CTRL.BAD",
+        doc_id="d",
+        kind=NodeKind.BITFIELD,
+        name="BAD",
+        location=Location(page=1),
+        attrs={
+            "register_id": reg.id,
+            "bit_high": 9,
+            "bit_low": 8,
+            "source_block_ids": ["d#p1#b0"],
+            "source_chunk_ids": ["c1"],
+        },
+        evidence=Evidence(extractor="table_entity:register", chunk_ids=["c1"], pages=[1]),
+    )
+    for node in (reg, good, bad):
+        store.upsert_node(node)
+
+    report = audit_l0_l1(store)
+    assert not report.ok
+    assert any(issue.code == "l2.invalid_bit_width" for issue in report.issues)
+    store.delete_node(bad.id)
+    report = audit_l0_l1(store)
+    assert report.ok
+    assert report.totals["l2_nodes_structurally_valid"] == 2
+    store.close()
+
+
 def test_query_engine_ranks_section_heading_above_front_matter(tmp_path):
     from docgraph.graph.schema import Chunk
     from docgraph.graph.sqlite_store import SQLiteGraphStore

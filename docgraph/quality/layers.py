@@ -107,6 +107,7 @@ def audit_l0_l1(store: SQLiteGraphStore, *, table_cell_warn_ratio: float = 0.98)
             "l2_nodes_with_source_blocks": 0,
             "l2_nodes_with_source_chunks": 0,
             "l2_nodes_with_evidence": 0,
+            "l2_nodes_structurally_valid": 0,
         }
         for doc_id in docs
     }
@@ -207,6 +208,7 @@ def audit_l0_l1(store: SQLiteGraphStore, *, table_cell_warn_ratio: float = 0.98)
         ))
 
     _audit_l2_provenance(nodes, by_doc, block_ids, chunk_ids, issues)
+    _audit_l2_structure(nodes, by_doc, issues)
     _extend_sample_issues(issues, "error", "l1.orphan_chunk", "chunks without block_ids", orphan_chunks)
     _extend_sample_issues(issues, "error", "l1.missing_block_ref", "chunks reference missing L0 block IDs", missing_block_refs)
     _extend_sample_issues(issues, "error", "l1.empty_chunk_text", "chunks have empty text", empty_chunks)
@@ -261,7 +263,7 @@ def _totals(rows: list[dict[str, Any]], *, fts_count: int) -> dict[str, Any]:
             "chunks_with_block_ids", "chunks_with_section_id",
             "chunks_with_section_node_id", "multi_page_chunks",
             "l2_nodes", "l2_nodes_with_source_blocks", "l2_nodes_with_source_chunks",
-            "l2_nodes_with_evidence",
+            "l2_nodes_with_evidence", "l2_nodes_structurally_valid",
         ):
             total[key] += int(row.get(key) or 0)
         block_kinds.update(row.get("block_kinds") or {})
@@ -322,6 +324,7 @@ def _audit_l2_provenance(
             "l2_nodes_with_source_blocks": 0,
             "l2_nodes_with_source_chunks": 0,
             "l2_nodes_with_evidence": 0,
+            "l2_nodes_structurally_valid": 0,
         })
         doc["l2_nodes"] += 1
         attrs = json.loads(row["attrs"]) if row["attrs"] else {}
@@ -350,3 +353,106 @@ def _audit_l2_provenance(
     _extend_sample_issues(issues, "error", "l2.bad_source_blocks", "L2 nodes reference missing L0 block IDs", bad_blocks)
     _extend_sample_issues(issues, "error", "l2.bad_source_chunks", "L2 nodes reference missing L1 chunk IDs", bad_chunks)
     _extend_sample_issues(issues, "error", "l2.missing_evidence", "L2 nodes missing real evidence extractor", missing_evidence)
+
+
+def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[LayerIssue]) -> None:
+    """Validate strong L2 entity invariants that should never rely on LLM trust."""
+    rows = {row["id"]: row for row in nodes}
+    attrs_by_id = {
+        row["id"]: (json.loads(row["attrs"]) if row["attrs"] else {})
+        for row in nodes
+    }
+    invalid_bit_ranges: dict[str, list[str]] = defaultdict(list)
+    invalid_bit_widths: dict[str, list[str]] = defaultdict(list)
+    missing_register_refs: dict[str, list[str]] = defaultdict(list)
+    overlapping_bitfields: dict[str, list[str]] = defaultdict(list)
+    weak_access_values: dict[str, list[str]] = defaultdict(list)
+    valid_node_ids: set[str] = set()
+
+    bitfields_by_register: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
+    for row in nodes:
+        kind = row["kind"]
+        attrs = attrs_by_id[row["id"]]
+        if kind == NodeKind.REGISTER.value:
+            valid_node_ids.add(row["id"])
+            width = _parse_int(attrs.get("width"), default=32)
+            if width is None or width <= 0:
+                invalid_bit_widths[row["doc_id"]].append(row["id"])
+            access = attrs.get("access")
+            if access and not _looks_like_access(access):
+                weak_access_values[row["doc_id"]].append(row["id"])
+        elif kind == NodeKind.BITFIELD.value:
+            reg_id = attrs.get("register_id")
+            if not reg_id or reg_id not in rows:
+                missing_register_refs[row["doc_id"]].append(row["id"])
+                continue
+            bit_high = _parse_int(attrs.get("bit_high"))
+            bit_low = _parse_int(attrs.get("bit_low"))
+            if bit_high is None or bit_low is None or bit_high < bit_low:
+                invalid_bit_ranges[row["doc_id"]].append(row["id"])
+                continue
+            reg_attrs = attrs_by_id.get(reg_id, {})
+            width = _parse_int(reg_attrs.get("width"), default=32)
+            if width is not None and bit_high >= width:
+                invalid_bit_widths[row["doc_id"]].append(row["id"])
+                continue
+            access = attrs.get("access")
+            if access and not _looks_like_access(access):
+                weak_access_values[row["doc_id"]].append(row["id"])
+            bitfields_by_register[reg_id].append((bit_low, bit_high, row["id"]))
+            valid_node_ids.add(row["id"])
+
+    for reg_id, ranges in bitfields_by_register.items():
+        ranges.sort()
+        prev_low = prev_high = None
+        prev_id = ""
+        for low, high, node_id in ranges:
+            if prev_low is not None and low <= prev_high:
+                doc_id = rows[node_id]["doc_id"]
+                overlapping_bitfields[doc_id].extend([prev_id, node_id])
+            prev_low, prev_high, prev_id = low, high, node_id
+
+    invalid_ids = {
+        node_id
+        for grouped in (
+            invalid_bit_ranges,
+            invalid_bit_widths,
+            missing_register_refs,
+            overlapping_bitfields,
+        )
+        for ids in grouped.values()
+        for node_id in ids
+    }
+    for node_id in valid_node_ids - invalid_ids:
+        doc_id = rows[node_id]["doc_id"]
+        if doc_id in by_doc:
+            by_doc[doc_id]["l2_nodes_structurally_valid"] += 1
+
+    _extend_sample_issues(issues, "error", "l2.invalid_bit_range", "bitfields have invalid bit ranges", invalid_bit_ranges)
+    _extend_sample_issues(issues, "error", "l2.invalid_bit_width", "register or bitfield width constraints are invalid", invalid_bit_widths)
+    _extend_sample_issues(issues, "error", "l2.missing_register_ref", "bitfields reference missing registers", missing_register_refs)
+    _extend_sample_issues(issues, "error", "l2.overlapping_bitfields", "bitfields overlap within the same register", overlapping_bitfields)
+    _extend_sample_issues(issues, "warning", "l2.weak_access_value", "access values are not normalized", weak_access_values)
+
+
+def _parse_int(value: Any, default: int | None = None) -> int | None:
+    if value is None or value == "":
+        return default
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip(), 0)
+    except Exception:
+        return default
+
+
+def _looks_like_access(value: Any) -> bool:
+    text = str(value).strip().upper().replace(" ", "")
+    if not text:
+        return True
+    allowed = {
+        "R", "W", "RW", "RO", "WO", "W1C", "W1S", "W0C", "RC", "RS", "WC",
+        "READ", "WRITE", "READONLY", "WRITEONLY", "R/W", "R/O", "W/O",
+        "R/W1C", "RW1C",
+    }
+    return text in allowed

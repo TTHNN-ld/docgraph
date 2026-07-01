@@ -331,6 +331,7 @@ def _run_layer_doctor(*, json_output: bool, strict: bool) -> None:
             "chunks_with_section_node_id", "multi_page_chunks",
             "l2_nodes", "l2_nodes_with_source_blocks",
             "l2_nodes_with_source_chunks", "l2_nodes_with_evidence",
+            "l2_nodes_structurally_valid",
         ):
             table.add_row(key, str(totals.get(key, 0)))
         console.print(table)

@@ -17,7 +17,8 @@
 - [x] **M7-P3a（P1）L2 Candidate 输入层**：从 L1 chunk + L0 block 生成 `EntityCandidate`，统一 table/text/table_image/page_image/figure 抽取入口；L2 节点写入 `source_block_ids` / `source_chunk_ids`。
 - [x] **M7-P3b-1（P1）L2 候选覆盖审计**：`docgraph l2-audit` 统计 table/text/figure candidate、schema 命中、已物化 L2 节点和未命中文档样例，不调用 LLM/VLM。
 - [x] **M7-P3b-2（P1）L2 golden 评估入口**：`docgraph l2-eval` 对比 expected JSON 与已物化 L2 节点，输出 precision/recall/F1，并支持阈值门禁。
-- [ ] **M7-P3b-3（P1）L2 生产召回评估集**：建立真实 golden set，统计 candidate 覆盖率、schema 命中率、LLM/VLM 成功率、precision/recall/F1。
+- [x] **M7-P3b-3（P1）L2 强结构校验**：`docgraph doctor` 校验 register/bitfield 的位宽、位域范围、重叠和 register 引用，防止 LLM 输出绕过确定性约束。
+- [ ] **M7-P3b-4（P1）L2 生产召回评估集**：建立真实 golden set，统计 candidate 覆盖率、schema 命中率、LLM/VLM 成功率、precision/recall/F1。
 - [ ] **M7-P3c（P1）L2 schema 校准**：继续收紧 register/pin/timing/signal/interface/requirement/memory_map/interrupt 等 schema 的生产准确率。
 - [ ] **M7-P4（P1）Agent 接口**：新增 `docgraph_blocks` / `docgraph_fetch`，增强 `docgraph_context` 返回可回溯原文片段；"读全文"不再是默认路径
 - [ ] **M7-P5（P2）领域 schema 包**：register/pin/signal/interface/requirement/memory_map/interrupt 的 schema 预设集

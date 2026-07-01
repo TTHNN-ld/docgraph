@@ -32,7 +32,7 @@
 
 ## 4. 质量评估
 
-`docgraph doctor` 是分层硬门禁，检查 L0/L1 完整性和 L2 provenance；`docgraph l2-audit` 是 L2 抽取前诊断，不调用 LLM/VLM，用于确认候选覆盖与 schema 路由是否合理。
+`docgraph doctor` 是分层硬门禁，检查 L0/L1 完整性、L2 provenance 和强结构实体约束；`docgraph l2-audit` 是 L2 抽取前诊断，不调用 LLM/VLM，用于确认候选覆盖与 schema 路由是否合理。
 
 ```bash
 docgraph doctor --strict
@@ -50,6 +50,8 @@ docgraph l2-eval --golden examples/golden --kind register --min-recall 0.9
 - 哪些文档有 table candidate 但没有 schema 命中。
 
 它回答的是“L2 有没有机会抽到、为什么可能漏抽”；不替代最终 precision/recall 评估。
+
+`doctor` 会对强结构 L2 实体做确定性校验。例如 register/bitfield 必须满足：bit range 合法、bitfield 不越过 register width、同一 register 下 bitfield 不重叠、bitfield 必须指回存在的 register。模型输出不能绕过这些硬约束。
 
 `l2-eval` 对比人工标注的 expected JSON 与当前库中已物化的 L2 节点，输出 precision / recall / F1。默认是报告模式；传入 `--min-precision` 或 `--min-recall` 后可作为 CI 门禁。
 
