@@ -67,6 +67,6 @@ docgraph serve --mcp                     # 启动 MCP server，对接 Claude Cod
 
 ## 项目状态
 
-🚧 **开发中** — 当前基线：L0/L1 已可用并由 `docgraph doctor --strict` 做质量门禁；L2 已有候选覆盖审计 `docgraph l2-audit` 和 golden 评估入口 `docgraph l2-eval`，后续重点是真实 golden set、schema 校准和 agent fetch 接口收紧。
+🚧 **开发中** — 当前基线：L0/L1 已由 `docgraph doctor --strict` 做质量门禁；L2 已有 provenance 与强结构校验、候选覆盖审计 `docgraph l2-audit` 和 golden 评估入口 `docgraph l2-eval`。后续重点是真实 golden set、schema 校准和 agent fetch 接口收紧。
 
 License: Apache 2.0（计划）

@@ -574,6 +574,78 @@ def test_quality_audit_validates_l2_register_bitfields(tmp_path):
     store.close()
 
 
+def test_quality_audit_validates_l2_structured_entities(tmp_path):
+    from docgraph.graph.schema import Block, BlockKind, Chunk, Evidence, Location, Node, NodeKind
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.quality.layers import audit_l0_l1
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_blocks([
+        Block(id="d#p1#b0", doc_id="d", page=1, kind=BlockKind.PARAGRAPH,
+              reading_order=0, text="signal and map table"),
+    ])
+    store.upsert_chunks([
+        Chunk(id="c1", doc_id="d", page=1, page_start=1, page_end=1,
+              text="signal and map table", block_ids=["d#p1#b0"], source_hash="h"),
+    ])
+
+    common_attrs = {
+        "source_block_ids": ["d#p1#b0"],
+        "source_chunk_ids": ["c1"],
+    }
+    good_signal = Node(
+        id="d::signal:AXI_ADDR",
+        doc_id="d",
+        kind=NodeKind.SIGNAL,
+        name="AXI_ADDR",
+        location=Location(page=1),
+        attrs={**common_attrs, "width": "[31:0]"},
+        evidence=Evidence(extractor="table_entity:signal", chunk_ids=["c1"], pages=[1]),
+    )
+    bad_signal = Node(
+        id="d::signal:BAD_WIDTH",
+        doc_id="d",
+        kind=NodeKind.SIGNAL,
+        name="BAD_WIDTH",
+        location=Location(page=1),
+        attrs={**common_attrs, "width": "wide"},
+        evidence=Evidence(extractor="table_entity:signal", chunk_ids=["c1"], pages=[1]),
+    )
+    good_map = Node(
+        id="d::memory_map:BAR0",
+        doc_id="d",
+        kind=NodeKind.MEMORY_MAP,
+        name="BAR0",
+        location=Location(page=1),
+        attrs={**common_attrs, "address": "0x1000"},
+        evidence=Evidence(extractor="table_entity:memory_map", chunk_ids=["c1"], pages=[1]),
+    )
+    bad_map = Node(
+        id="d::memory_map:MISSING",
+        doc_id="d",
+        kind=NodeKind.MEMORY_MAP,
+        name="MISSING",
+        location=Location(page=1),
+        attrs=common_attrs,
+        evidence=Evidence(extractor="table_entity:memory_map", chunk_ids=["c1"], pages=[1]),
+    )
+    for node in (good_signal, bad_signal, good_map, bad_map):
+        store.upsert_node(node)
+
+    report = audit_l0_l1(store)
+    assert not report.ok
+    assert any(issue.code == "l2.invalid_width_value" for issue in report.issues)
+    assert any(issue.code == "l2.missing_required_field" for issue in report.issues)
+
+    store.delete_node(bad_signal.id)
+    store.delete_node(bad_map.id)
+    report = audit_l0_l1(store)
+    assert report.ok
+    assert report.totals["l2_nodes_structurally_valid"] == 2
+    store.close()
+
+
 def test_query_engine_ranks_section_heading_above_front_matter(tmp_path):
     from docgraph.graph.schema import Chunk
     from docgraph.graph.sqlite_store import SQLiteGraphStore

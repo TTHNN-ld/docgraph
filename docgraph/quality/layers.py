@@ -79,7 +79,7 @@ def audit_l0_l1(store: SQLiteGraphStore, *, table_cell_warn_ratio: float = 0.98)
     conn = store._connect()
     blocks = conn.execute("SELECT * FROM blocks").fetchall()
     chunks = conn.execute("SELECT * FROM chunks").fetchall()
-    nodes = conn.execute("SELECT id, kind, doc_id, attrs, evidence FROM nodes").fetchall()
+    nodes = conn.execute("SELECT id, kind, name, doc_id, attrs, evidence FROM nodes").fetchall()
     fts_count = int(conn.execute("SELECT COUNT(*) AS c FROM chunks_fts").fetchone()["c"])
 
     block_ids = {r["id"] for r in blocks}
@@ -367,6 +367,10 @@ def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[L
     missing_register_refs: dict[str, list[str]] = defaultdict(list)
     overlapping_bitfields: dict[str, list[str]] = defaultdict(list)
     weak_access_values: dict[str, list[str]] = defaultdict(list)
+    missing_required_fields: dict[str, list[str]] = defaultdict(list)
+    invalid_width_values: dict[str, list[str]] = defaultdict(list)
+    invalid_address_values: dict[str, list[str]] = defaultdict(list)
+    invalid_interrupt_numbers: dict[str, list[str]] = defaultdict(list)
     valid_node_ids: set[str] = set()
 
     bitfields_by_register: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
@@ -401,6 +405,43 @@ def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[L
                 weak_access_values[row["doc_id"]].append(row["id"])
             bitfields_by_register[reg_id].append((bit_low, bit_high, row["id"]))
             valid_node_ids.add(row["id"])
+        elif kind == NodeKind.SIGNAL.value:
+            if not row["name"].strip():
+                missing_required_fields[row["doc_id"]].append(row["id"])
+                continue
+            width = attrs.get("width")
+            if not _is_emptyish(width) and not _looks_like_width(width):
+                invalid_width_values[row["doc_id"]].append(row["id"])
+                continue
+            valid_node_ids.add(row["id"])
+        elif kind == NodeKind.INTERFACE.value:
+            if not row["name"].strip():
+                missing_required_fields[row["doc_id"]].append(row["id"])
+                continue
+            width = attrs.get("width")
+            if not _is_emptyish(width) and not _looks_like_width(width):
+                invalid_width_values[row["doc_id"]].append(row["id"])
+                continue
+            valid_node_ids.add(row["id"])
+        elif kind == NodeKind.INTERRUPT.value:
+            if not row["name"].strip():
+                missing_required_fields[row["doc_id"]].append(row["id"])
+                continue
+            number = attrs.get("number")
+            if not _is_emptyish(number) and not _looks_like_number(number):
+                invalid_interrupt_numbers[row["doc_id"]].append(row["id"])
+                continue
+            valid_node_ids.add(row["id"])
+        elif kind == NodeKind.MEMORY_MAP.value:
+            address = attrs.get("address")
+            has_locator = any(not _is_emptyish(attrs.get(k)) for k in ("address", "target", "size"))
+            if not row["name"].strip() or not has_locator:
+                missing_required_fields[row["doc_id"]].append(row["id"])
+                continue
+            if not _is_emptyish(address) and not _looks_like_address(address):
+                invalid_address_values[row["doc_id"]].append(row["id"])
+                continue
+            valid_node_ids.add(row["id"])
 
     for reg_id, ranges in bitfields_by_register.items():
         ranges.sort()
@@ -419,6 +460,10 @@ def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[L
             invalid_bit_widths,
             missing_register_refs,
             overlapping_bitfields,
+            missing_required_fields,
+            invalid_width_values,
+            invalid_address_values,
+            invalid_interrupt_numbers,
         )
         for ids in grouped.values()
         for node_id in ids
@@ -432,6 +477,10 @@ def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[L
     _extend_sample_issues(issues, "error", "l2.invalid_bit_width", "register or bitfield width constraints are invalid", invalid_bit_widths)
     _extend_sample_issues(issues, "error", "l2.missing_register_ref", "bitfields reference missing registers", missing_register_refs)
     _extend_sample_issues(issues, "error", "l2.overlapping_bitfields", "bitfields overlap within the same register", overlapping_bitfields)
+    _extend_sample_issues(issues, "error", "l2.missing_required_field", "L2 nodes miss required fields", missing_required_fields)
+    _extend_sample_issues(issues, "error", "l2.invalid_width_value", "signal/interface widths are invalid", invalid_width_values)
+    _extend_sample_issues(issues, "error", "l2.invalid_address_value", "memory map addresses are invalid", invalid_address_values)
+    _extend_sample_issues(issues, "error", "l2.invalid_interrupt_number", "interrupt numbers are invalid", invalid_interrupt_numbers)
     _extend_sample_issues(issues, "warning", "l2.weak_access_value", "access values are not normalized", weak_access_values)
 
 
@@ -456,3 +505,43 @@ def _looks_like_access(value: Any) -> bool:
         "R/W1C", "RW1C",
     }
     return text in allowed
+
+
+def _looks_like_width(value: Any) -> bool:
+    text = str(value).strip()
+    if _is_emptyish(text):
+        return True
+    import re
+    if re.fullmatch(r"\d+", text):
+        return int(text) > 0
+    # Common HDL/spec forms: [31:0], 31:0, 512b, 1-bit, 32 bits, INT_NUM.
+    if re.fullmatch(r"\[?\s*\d+\s*:\s*\d+\s*\]?", text):
+        return True
+    if re.search(r"\b\d+\s*-?\s*(?:b|bit|bits)\b", text, re.I):
+        return True
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9_]*(?:\s*[-+]\s*\d+)?", text))
+
+
+def _looks_like_number(value: Any) -> bool:
+    text = str(value).strip()
+    if _is_emptyish(text):
+        return True
+    import re
+    return bool(re.fullmatch(r"(0x[0-9a-fA-F]+|\d+|[-\d,\s]+)", text))
+
+
+def _looks_like_address(value: Any) -> bool:
+    text = str(value).strip()
+    if _is_emptyish(text):
+        return False
+    # Address-like fields in chip specs are often symbolic locators
+    # (BAR0, HOST PA, BDF+offset), not only numeric base addresses.
+    import re
+    return bool(re.search(r"[A-Za-z0-9]", text))
+
+
+def _is_emptyish(value: Any) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    return text in {"", "-", "--", "n/a", "na", "none", "null"}

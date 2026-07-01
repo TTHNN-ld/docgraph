@@ -151,6 +151,8 @@ L0/L1 是 DocGraph 的事实底座，L2 是可选增强，但所有层都必须�
 - chunk 文本不能为空，页范围必须合法，`source_hash` 应存在。
 - 表格 cell 保留率、原始证据覆盖率、figure image/caption-only 覆盖率作为质量输出。
 - 高价值 L2 实体必须带 `source_block_ids`、`source_chunk_ids` 和真实 `evidence.extractor`，且引用必须命中 L0/L1。
+- 强结构 L2 实体必须通过确定性约束：register/bitfield 校验位宽、位域范围、重叠和 register 引用；signal/interface 校验名称与宽度表达；interrupt 校验编号表达；memory_map 校验名称与地址/目标/尺寸定位信息。
+- L2 抽取器必须在入库前处理模型/OCR 造成的结构冲突，例如同一 register 下重叠 bitfield 只保留确定性选择出的无重叠集合，并在 register attrs 中记录 `dropped_bitfields`。
 
 硬错误必须归零；软告警进入质量校准，不得被解释为 L2 抽取问题。
 
@@ -236,7 +238,7 @@ TableEntityExtractor（通用）:
 | L0 高保真 | 表格单元格 + 图 + 公式 + 坐标全入库 | `blocks` 表落地；MinerU/PyMuPDF 等 parser 统一归一为 `Block`；表格保留 cells/html/image evidence；装饰图保留为 `FIGURE semantic_role=decoration` | ✅ 就绪 |
 | L1 切块索引 | chunk 落地 + block 回溯 + 全文 + 语义索引 | `chunks` + `chunks_fts` + `block_ids` + page range + table profile + continued table 合并；语义索引后端可插拔（默认 `sqlite_json`，可选 LanceDB） | ✅ 就绪 |
 | L0/L1 质量门 | 可审计、可回归 | `docgraph doctor` / `--strict` 校验 block、chunk、FTS、表格证据、图证据和回溯链 | ✅ 就绪 |
-| L2 实体增强 | 通用 schema-guided + 指回 L0/L1 | `TableEntityExtractor` 是统一入口；schema registry 已有 register/pin/timing/signal/interface/requirement 等预设；仍需继续校准生产准确率和覆盖率 | ⚠️ 收紧 |
+| L2 实体增强 | 通用 schema-guided + 指回 L0/L1 | `TableEntityExtractor` 是统一入口；schema registry 已有 register/pin/timing/signal/interface/requirement/memory_map/interrupt 等预设；`doctor --strict` 校验 provenance 和强结构实体约束 | ✅ 可试生产 |
 | Agent 接口 | 检索→取原文片段 | Web/search/chunk detail 已能回溯 L1/L0；MCP/CLI 的 blocks/fetch 入口仍需补齐 | ⚠️ 补齐 |
 
 当前阶段不再新增旧版兼容入口；设计与代码以本文档和当前 L0/L1 契约为准。对外命令保持少量核心入口：`docgraph build`、`docgraph doctor`、`docgraph serve` 和检索/查询类命令。

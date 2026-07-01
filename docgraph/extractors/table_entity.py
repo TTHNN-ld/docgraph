@@ -295,6 +295,9 @@ class TableEntityExtractor:
         lower = text.lower()
         if not lower or len(lower) < 40:
             return False
+        # 负向排除：命中 SoC/地址映射/封装等词的段落不抽该实体
+        if schema.negative_hints and any(x in lower for x in schema.negative_hints):
+            return False
         hits = sum(1 for h in schema.table_header_hints if h.lower() in lower)
         # errata 等段落型 schema：命中 2 个 hint 即可（不依赖 table caption）
         if schema.kind == NodeKind.ERRATA:
@@ -467,7 +470,10 @@ class TableEntityExtractor:
         bf_nodes: list[Node] = []
         bf_edges: list[Edge] = []
         if schema_name == "register" and hasattr(item, "bitfields"):
-            for bf in (item.bitfields or []):
+            selected_bitfields, dropped_bitfields = self._select_non_overlapping_bitfields(item.bitfields or [])
+            if dropped_bitfields:
+                node.attrs["dropped_bitfields"] = dropped_bitfields
+            for bf in selected_bitfields:
                 bf_name = getattr(bf, "name", "")
                 if not bf_name:
                     continue
@@ -537,6 +543,10 @@ class TableEntityExtractor:
                 "寄存器", "字段", "位域", "复位", "访问", "偏移",
             )
             return sum(1 for x in strong if x in pool) >= 2
+        # 非 register schema：先过 negative 排除，再按 hint 计数
+        if schema.negative_hints:
+            if any(x in pool for x in schema.negative_hints):
+                return False
         hits = sum(1 for h in schema.table_header_hints if h.lower() in pool)
         if not (table.headers or table.rows or table.html):
             return hits >= 1
@@ -566,3 +576,60 @@ class TableEntityExtractor:
             return dict(item.model_dump() if hasattr(item, "model_dump") else item.__dict__)
         except Exception:
             return {}
+
+    @staticmethod
+    def _select_non_overlapping_bitfields(bitfields: list) -> tuple[list, list[dict]]:
+        """Keep a deterministic non-overlapping bitfield set.
+
+        LLM/table OCR can duplicate rows or merge adjacent bit ranges. This
+        keeps the set that maximizes covered bits and, for ties, keeps more
+        granular fields. Dropped items are recorded on the register node.
+        """
+        candidates: list[tuple[int, int, int, object]] = []
+        dropped: list[dict] = []
+        for idx, bf in enumerate(bitfields):
+            name = getattr(bf, "name", "") or f"bitfield_{idx}"
+            high = getattr(bf, "bit_high", None)
+            low = getattr(bf, "bit_low", None)
+            try:
+                high_i = int(high)
+                low_i = int(low)
+            except Exception:
+                dropped.append({"name": name, "bit_high": high, "bit_low": low, "reason": "invalid_range"})
+                continue
+            if high_i < low_i:
+                dropped.append({"name": name, "bit_high": high_i, "bit_low": low_i, "reason": "invalid_range"})
+                continue
+            candidates.append((low_i, high_i, idx, bf))
+        if len(candidates) <= 1:
+            return [c[3] for c in candidates], dropped
+
+        ordered = sorted(candidates, key=lambda item: (item[1], item[0], item[2]))
+        prev: list[int] = []
+        for i, (low, _high, _idx, _bf) in enumerate(ordered):
+            j = i - 1
+            while j >= 0 and ordered[j][1] >= low:
+                j -= 1
+            prev.append(j)
+
+        # score = (covered bits, number of fields). Python tuple comparison is lexicographic.
+        best: list[tuple[int, int, tuple[int, ...]]] = [(0, 0, tuple())]
+        for i, (low, high, _idx, _bf) in enumerate(ordered, start=1):
+            width = high - low + 1
+            take_base = best[prev[i - 1] + 1]
+            take = (take_base[0] + width, take_base[1] + 1, take_base[2] + (i - 1,))
+            skip = best[i - 1]
+            best.append(max(skip, take))
+
+        selected_indexes = set(best[-1][2])
+        selected = [ordered[i][3] for i in sorted(selected_indexes, key=lambda idx: ordered[idx][2])]
+        for i, (low, high, _idx, bf) in enumerate(ordered):
+            if i in selected_indexes:
+                continue
+            dropped.append({
+                "name": getattr(bf, "name", ""),
+                "bit_high": high,
+                "bit_low": low,
+                "reason": "overlap",
+            })
+        return selected, dropped

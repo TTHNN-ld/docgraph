@@ -162,6 +162,76 @@ def test_table_entity_register_uses_l1_candidate_provenance():
     assert bitfield.attrs["source_chunk_ids"] == register.attrs["source_chunk_ids"]
 
 
+def test_table_entity_register_drops_overlapping_bitfields():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.schema_registry import RegisterDefList
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import (
+        BitFieldDef,
+        Block,
+        BlockKind,
+        DocMetadata,
+        DocType,
+        NodeKind,
+        ParsedDoc,
+        ParsedPage,
+        RegisterDef,
+        TableData,
+    )
+
+    class FakeLLM:
+        def json(self, *args, **kwargs):
+            return RegisterDefList(registers=[
+                RegisterDef(
+                    name="CTRL",
+                    offset="0x00",
+                    access="RW",
+                    width=16,
+                    bitfields=[
+                        BitFieldDef(name="WHOLE", bit_high=15, bit_low=0),
+                        BitFieldDef(name="LOW", bit_high=7, bit_low=0),
+                        BitFieldDef(name="HIGH", bit_high=15, bit_low=8),
+                    ],
+                )
+            ])
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::demo",
+        source_path="demo.pdf",
+        metadata=DocMetadata(type=DocType.DATASHEET, family="chip"),
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::demo#p1#b0",
+                doc_id="chip::doc::demo",
+                page=1,
+                kind=BlockKind.TABLE,
+                reading_order=0,
+                table=TableData(
+                    caption="Register table",
+                    headers=["Bits", "Name", "Access", "Description"],
+                    rows=[["15:0", "WHOLE", "RW", "merged row"]],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["register"]).extract(
+        doc,
+        ExtractContext(family="chip", llm_client=FakeLLM()),
+    )
+
+    register = next(n for n in result.nodes if n.kind == NodeKind.REGISTER)
+    bitfields = [n for n in result.nodes if n.kind == NodeKind.BITFIELD]
+    assert [n.name for n in bitfields] == ["LOW", "HIGH"]
+    assert register.attrs["bitfield_ids"] == [n.id for n in bitfields]
+    assert register.attrs["dropped_bitfields"] == [{
+        "name": "WHOLE",
+        "bit_high": 15,
+        "bit_low": 0,
+        "reason": "overlap",
+    }]
+
+
 def test_table_entity_page_vlm_uses_l1_candidate_provenance(tmp_path, monkeypatch):
     from docgraph.extractors.base import ExtractContext
     from docgraph.extractors.schema_registry import RegisterDefList
