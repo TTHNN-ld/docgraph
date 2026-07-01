@@ -131,7 +131,7 @@ def test_migration_baseline(tmp_path):
     store.init_schema()
     store.close()
 
-    # init_schema 应当把 db 带到最新版本（M7: CURRENT_VERSION == 3）
+    # init_schema 应当把 db 带到最新版本
     assert current_db_version(db) == CURRENT_VERSION
     assert not needs_migration(db)
     applied = run_migrations(db)
@@ -156,8 +156,8 @@ def test_migration_fresh_db_runs_baseline(tmp_path):
 
     assert current_db_version(db) == 0
     applied = run_migrations(db)
-    # 从 0 升级应跑全部 migration（001 + 002 + 003）
-    assert applied == [1, 2, 3]
+    # 从 0 升级应跑全部 migration
+    assert applied == list(range(1, CURRENT_VERSION + 1))
     assert current_db_version(db) == CURRENT_VERSION
 
 
