@@ -95,6 +95,7 @@ class SignalDefList(BaseModel):
 
 class InterfaceDef(BaseModel):
     name: str                         # 接口名 e.g. AXI4, APB, PIPE
+    protocol: str | None = None       # 协议 e.g. AMBA AXI, APB, PIPE
     direction: str | None = None      # master / slave / initiator / target
     width: str | None = None
     description: str = ""
@@ -112,6 +113,34 @@ class RequirementDef(BaseModel):
 
 class RequirementDefList(BaseModel):
     requirements: list[RequirementDef] = Field(default_factory=list)
+
+
+class ConstraintDef(BaseModel):
+    name: str
+    target: str | None = None
+    constraint_type: str | None = None
+    value: str | None = None
+    unit: str | None = None
+    condition: str = ""
+    description: str = ""
+
+
+class ConstraintDefList(BaseModel):
+    constraints: list[ConstraintDef] = Field(default_factory=list)
+
+
+class PhysicalConstraintDef(BaseModel):
+    name: str
+    object: str | None = None
+    constraint_type: str | None = None
+    value: str | None = None
+    layer: str | None = None
+    region: str | None = None
+    description: str = ""
+
+
+class PhysicalConstraintDefList(BaseModel):
+    physical_constraints: list[PhysicalConstraintDef] = Field(default_factory=list)
 
 
 class InterruptDef(BaseModel):
@@ -172,6 +201,8 @@ class ErrataDefList(BaseModel):
 #   结构最规整、查询价值最高，带完整 source_block_ids 回溯。
 # - 第二档（扩展 schema）：signal / interface / timing / clock_reset / requirement
 #   保留但去协议词、降 confidence，靠 _table_matches 自然过滤。
+# - 后端 spec（实现约束）：constraint / physical_constraint
+#   覆盖 STA/SDC、floorplan、placement、routing、power/physical implementation specs。
 #
 # prompt 统一约束：name/description 按文档原文语言输出，不要翻译。
 
@@ -384,6 +415,60 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
         min_confidence=0.7,
         doc_types=(DocType.REFERENCE_MANUAL, DocType.USER_GUIDE, DocType.APP_NOTE),
     ),
+    "constraint": EntitySchema(
+        kind=NodeKind.REQUIREMENT,
+        target_model=ConstraintDef,
+        list_wrapper=ConstraintDefList,
+        description="implementation timing/design constraints / 后端实现时序与设计约束",
+        prompt_template=(
+            "You are a chip implementation spec extractor. The input is a constraint table.\n"
+            "Extract **all** backend implementation constraints into JSON.\n"
+            "Include SDC/STA constraints such as clock uncertainty, max transition, max fanout, "
+            "false path, multicycle path, input/output delay, setup/hold margin, PVT/corner constraints.\n"
+            "target is the constrained clock/net/path/module/object. value/unit keep original form.\n"
+            "Keep description/condition in the document's original language.\n\n"
+            "{table_text}"
+        ),
+        table_header_hints=[
+            "constraint", "target", "object", "value", "unit", "condition",
+            "sdc", "sta", "setup", "hold", "uncertainty", "transition",
+            "fanout", "false path", "multicycle", "input delay", "output delay",
+            "corner", "pvt",
+            "约束", "目标", "对象", "取值", "单位", "条件", "时序",
+            "建立", "保持", "不确定度", "转换", "扇出", "假路径", "多周期",
+        ],
+        negative_hints=(
+            "register", "bit", "reset", "address", "pin no", "管脚编号", "寄存器",
+            "floorplan", "placement", "routing", "layer", "region", "macro",
+            "keepout", "blockage", "power grid", "布局", "摆放", "布线",
+            "层", "区域", "宏", "禁布", "阻塞", "电源网格",
+        ),
+        min_confidence=0.8,
+        doc_types=None,
+    ),
+    "physical_constraint": EntitySchema(
+        kind=NodeKind.REQUIREMENT,
+        target_model=PhysicalConstraintDef,
+        list_wrapper=PhysicalConstraintDefList,
+        description="floorplan / placement / routing / physical implementation constraints / 后端物理实现约束",
+        prompt_template=(
+            "You are a chip backend implementation spec extractor. The input is a physical constraint table.\n"
+            "Extract **all** floorplan/placement/routing/power-grid/keepout/layer/region constraints into JSON.\n"
+            "object is the constrained macro/net/region/layer. value keeps original form.\n"
+            "Keep description in the document's original language.\n\n"
+            "{table_text}"
+        ),
+        table_header_hints=[
+            "floorplan", "placement", "route", "routing", "layer", "region",
+            "macro", "keepout", "blockage", "halo", "channel", "spacing",
+            "width", "density", "utilization", "power grid", "voltage area",
+            "物理", "布局", "布图", "摆放", "布线", "层", "区域", "宏",
+            "禁布", "阻塞", "间距", "线宽", "密度", "利用率", "电源网格", "电压区域",
+        ],
+        negative_hints=("register", "bit", "reset", "irq", "interrupt", "寄存器", "中断"),
+        min_confidence=0.8,
+        doc_types=None,
+    ),
 }
 
 
@@ -401,9 +486,12 @@ _DEFAULT_SCHEMA_BY_DOCTYPE: dict[DocType, tuple[str, ...]] = {
                   "interface", "clock_reset"),
     DocType.ERRATA: ("errata", "register"),
     DocType.APP_NOTE: ("register", "signal", "timing", "requirement"),
-    DocType.USER_GUIDE: ("register", "requirement"),
-    DocType.PROTOCOL: ("signal", "interface", "timing", "memory_map", "interrupt"),
-    DocType.UNKNOWN: ("register", "pin", "memory_map", "interrupt"),
+    DocType.USER_GUIDE: ("register", "requirement", "constraint", "physical_constraint"),
+    DocType.PROTOCOL: (
+        "register", "pin", "signal", "interface", "timing",
+        "memory_map", "interrupt", "constraint",
+    ),
+    DocType.UNKNOWN: ("register", "pin", "memory_map", "interrupt", "constraint", "physical_constraint"),
 }
 
 # 全集（向后兼容：显式指定 schema_names 时仍可全扫）

@@ -113,11 +113,12 @@ class AnthropicProvider:
     def __init__(
         self,
         api_key_env: str = "ANTHROPIC_API_KEY",
+        api_key: str | None = None,
         base_url: str | None = None,
     ) -> None:
         self.api_key_env = api_key_env
         self.base_url = base_url
-        self.api_key = os.environ.get(api_key_env)
+        self.api_key = api_key or os.environ.get(api_key_env)
         self._client = None
 
     def _ensure_client(self) -> None:
@@ -186,13 +187,14 @@ class OpenAICompatProvider:
         *,
         name: str = "openai",
         api_key_env: str = "OPENAI_API_KEY",
+        api_key: str | None = None,
         base_url_env: str | None = "OPENAI_BASE_URL",
         base_url: str | None = None,
         timeout_s: float | None = None,
     ) -> None:
         self.name = name
         self.api_key_env = api_key_env
-        self.api_key = os.environ.get(api_key_env)
+        self.api_key = api_key or os.environ.get(api_key_env)
         self.timeout_s = timeout_s
         # 显式 base_url 优先，否则环境变量
         if base_url:

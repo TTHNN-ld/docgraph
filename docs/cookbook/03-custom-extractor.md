@@ -74,7 +74,7 @@ pip install docgraph-power-domain
 ```
 
 ```yaml
-# .docgraph/config.yaml
+# docgraph.yaml
 extractors:
   enabled:
     - section
@@ -83,7 +83,7 @@ extractors:
 ```
 
 ```bash
-docgraph plugins ls          # 应该能看到 power_domain
+docgraph admin plugins ls          # 应该能看到 power_domain
 docgraph build --force
 docgraph search VDD --kind=module
 ```

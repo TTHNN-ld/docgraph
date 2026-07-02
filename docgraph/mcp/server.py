@@ -18,7 +18,6 @@ from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.query.engine import QueryEngine
 from docgraph.version import __version__
 
-
 # ---------------------------------------------------------------------------
 # Tool definitions
 # ---------------------------------------------------------------------------
@@ -36,7 +35,7 @@ TOOLS = [
     },
     {
         "name": "docgraph_search",
-        "description": "Search nodes by name / alias / qualified_name / fuzzy / semantic.",
+        "description": "Search L2 graph nodes by name / alias / qualified_name / fuzzy / semantic. Returns source metadata; verify uncertain hits with docgraph_sources.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -49,7 +48,7 @@ TOOLS = [
     },
     {
         "name": "docgraph_node",
-        "description": "Get full detail of a node by ID.",
+        "description": "Get full detail of a node by ID, including source quality metadata.",
         "inputSchema": {
             "type": "object",
             "properties": {"id": {"type": "string"}},
@@ -71,7 +70,7 @@ TOOLS = [
     },
     {
         "name": "docgraph_context",
-        "description": "Primary entry: given a task description, return a relevant bundle of nodes+edges+semantic hits.",
+        "description": "Evidence-first primary entry: return relevant L2 candidates plus L1 chunks and L0 blocks for grounding.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -191,6 +190,15 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "docgraph_sources",
+        "description": "Fetch source chunks and original L0 blocks for a graph node. Use this before treating L2 nodes as facts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
 ]
 
 
@@ -246,9 +254,11 @@ def _tool_search(qe, args):
                 "doc_id": n.doc_id,
                 "page": n.location.page,
                 "summary": n.summary,
+                "source_quality": _source_quality(n),
             }
             for n in nodes
         ],
+        "usage_policy": "Search returns L2 candidates. Use docgraph_sources/docgraph_fetch/docgraph_blocks to verify before answering.",
         "total": len(nodes),
     }
 
@@ -257,7 +267,9 @@ def _tool_node(qe, args):
     n = qe.node(args["id"])
     if n is None:
         return {"error": "not_found", "id": args["id"]}
-    return n.model_dump()
+    out = n.model_dump()
+    out["source_quality"] = _source_quality(n)
+    return out
 
 
 def _tool_neighbors(qe, args):
@@ -270,11 +282,12 @@ def _tool_neighbors(qe, args):
     return {
         "nodes": [n.model_dump() for n in sub.nodes],
         "edges": [e.model_dump() for e in sub.edges],
+        "usage_policy": "Graph neighbors are relation candidates. Verify important nodes/edges through source_block_ids/source_chunk_ids.",
     }
 
 
 def _tool_context(qe, args):
-    return qe.context(args["task"], max_nodes=args.get("max_nodes", 20)).model_dump()
+    return qe.context_with_blocks(args["task"], max_nodes=args.get("max_nodes", 20))
 
 
 def _tool_trace(qe, args):
@@ -296,24 +309,25 @@ def _tool_register(qe, args):
     if d is None:
         return {"error": "not_found", "name": args["name"]}
     return {
-        "register": d.node.model_dump(),
-        "bitfields": [bf.model_dump() for bf in d.bitfields],
+        "register": _node_with_source_quality(d.node),
+        "bitfields": [_node_with_source_quality(bf) for bf in d.bitfields],
+        "usage_policy": "Register data is still grounded by source_block_ids/source_chunk_ids; fetch sources for implementation-critical decisions.",
     }
 
 
 def _tool_pin(qe, args):
     d = qe.pin(args["name"])
-    return d.node.model_dump() if d else {"error": "not_found"}
+    return _node_with_source_quality(d.node) if d else {"error": "not_found"}
 
 
 def _tool_timing(qe, args):
     d = qe.timing(args["name"])
-    return d.node.model_dump() if d else {"error": "not_found"}
+    return _node_with_source_quality(d.node) if d else {"error": "not_found"}
 
 
 def _tool_figure(qe, args):
     d = qe.figure(args["id_or_name"])
-    return d.node.model_dump() if d else {"error": "not_found"}
+    return _node_with_source_quality(d.node) if d else {"error": "not_found"}
 
 
 def _tool_section(qe, args):
@@ -344,6 +358,29 @@ def _tool_search_chunks(qe, args):
     return {"hits": qe.search_chunks(args["query"], limit=args.get("limit", 20))}
 
 
+def _tool_sources(qe, args):
+    n = qe.node(args["id"])
+    if n is None:
+        return {"error": "not_found", "id": args["id"]}
+    source_chunk_ids = n.attrs.get("source_chunk_ids") or n.evidence.chunk_ids or []
+    source_block_ids = n.attrs.get("source_block_ids") or n.attrs.get("block_ids") or []
+    chunks = []
+    blocks_by_id = {b.id: b.model_dump() for b in qe.blocks(source_block_ids)}
+    for cid in source_chunk_ids:
+        fetched = qe.fetch(cid)
+        chunk = fetched.get("chunk")
+        if chunk:
+            chunks.append(chunk)
+        for block in fetched.get("blocks", []):
+            blocks_by_id.setdefault(block["id"], block)
+    return {
+        "node": _node_with_source_quality(n),
+        "chunks": chunks,
+        "blocks": list(blocks_by_id.values()),
+        "usage_policy": "Use these L1/L0 sources as the factual basis; the L2 node is a candidate summary.",
+    }
+
+
 HANDLERS = {
     "docgraph_status": _tool_status,
     "docgraph_files": _tool_files,
@@ -362,7 +399,38 @@ HANDLERS = {
     "docgraph_blocks": _tool_blocks,
     "docgraph_fetch": _tool_fetch,
     "docgraph_search_chunks": _tool_search_chunks,
+    "docgraph_sources": _tool_sources,
 }
+
+
+def _source_quality(node) -> dict:
+    source = node.attrs.get("source") or node.evidence.extractor
+    confidence = node.attrs.get("extraction_confidence")
+    source_block_ids = node.attrs.get("source_block_ids") or node.attrs.get("block_ids") or []
+    source_chunk_ids = node.attrs.get("source_chunk_ids") or node.evidence.chunk_ids or []
+    needs_check = _needs_source_check(source, confidence)
+    return {
+        "source": source,
+        "extraction_confidence": confidence,
+        "needs_source_check": needs_check,
+        "source_block_ids": source_block_ids,
+        "source_chunk_ids": source_chunk_ids,
+        "risk": "verify_with_l0_l1" if needs_check else "grounded_candidate",
+    }
+
+
+def _node_with_source_quality(node) -> dict:
+    out = node.model_dump()
+    out["source_quality"] = _source_quality(node)
+    return out
+
+
+def _needs_source_check(source: str | None, confidence: str | None) -> bool:
+    conf = (confidence or "").lower()
+    src = (source or "").lower()
+    if conf in {"deterministic", "verified"}:
+        return False
+    return any(tag in src for tag in ("figure@", "vlm", "llm")) or not conf
 
 
 # ---------------------------------------------------------------------------

@@ -71,6 +71,24 @@ def test_autoload_env_walks_up(monkeypatch, tmp_path):
     monkeypatch.delenv("DG_TEST_AUTOLOAD", raising=False)
 
 
+def test_autoload_env_loads_user_docgraph_env(monkeypatch, tmp_path):
+    from docgraph.core.dotenv import autoload_env
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".docgraph").mkdir(parents=True)
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("DG_TEST_USER_ENV", raising=False)
+    (home / ".docgraph" / ".env").write_text("DG_TEST_USER_ENV=from-user\n", encoding="utf-8")
+    (project / ".docgraph").mkdir()
+
+    autoload_env(start=project)
+
+    assert os.environ["DG_TEST_USER_ENV"] == "from-user"
+    monkeypatch.delenv("DG_TEST_USER_ENV", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Provider 工厂
 # ---------------------------------------------------------------------------
@@ -101,6 +119,20 @@ def test_provider_factory_explicit_base_url(monkeypatch):
         base_url="https://override.example/v1",
     )
     assert p.base_url == "https://override.example/v1"
+
+
+def test_provider_factory_explicit_api_key_without_env(monkeypatch):
+    from docgraph.llm.client import make_provider
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    p = make_provider(
+        "openai_compat",
+        api_key_env="OPENAI_API_KEY",
+        api_key="config-key",
+        base_url="https://config.example/v1",
+    )
+    assert p.api_key == "config-key"
+    assert p.base_url == "https://config.example/v1"
 
 
 def test_provider_factory_unknown():
@@ -179,16 +211,134 @@ llm:
   provider: openai_compat
   providers:
     openai_compat:
+      api_key: config-key
       api_key_env: MY_KEY
+      base_url: https://config.example/v1
       base_url_env: MY_URL
+  vlm:
+    provider: openai_compat
+    model: GLM-4.6V-Flash
+    api_key: vlm-key
+    base_url: https://vlm.example/v1
   tiers:
     fast: model-fast
     balanced: model-bal
     accurate: model-acc
+embeddings:
+  provider: openai_compat
+  api_key: embed-key
+  base_url: https://embed.example/v1
 """
     data = yaml.safe_load(yaml_str)
     cfg = DocGraphConfig.model_validate(data)
     assert cfg.llm.enabled is True
     assert cfg.llm.provider == "openai_compat"
+    assert cfg.llm.providers["openai_compat"].api_key == "config-key"
     assert cfg.llm.providers["openai_compat"].api_key_env == "MY_KEY"
+    assert cfg.llm.providers["openai_compat"].base_url == "https://config.example/v1"
+    assert cfg.llm.vlm.model == "GLM-4.6V-Flash"
+    assert cfg.llm.vlm.api_key == "vlm-key"
     assert cfg.llm.tiers.fast == "model-fast"
+    assert cfg.embeddings.api_key == "embed-key"
+    assert cfg.embeddings.base_url == "https://embed.example/v1"
+
+
+def test_load_config_merges_user_and_project_configs(tmp_path, monkeypatch):
+    from docgraph.core.config import load_config
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".docgraph").mkdir(parents=True)
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    (home / ".docgraph" / "config.yaml").write_text(
+        """
+llm:
+  enabled: true
+  provider: openai_compat
+  providers:
+    openai_compat:
+      api_key_env: USER_KEY
+embeddings:
+  provider: openai_compat
+  model: embed-model
+""",
+        encoding="utf-8",
+    )
+    (project / "docgraph.yaml").write_text(
+        """
+project:
+  name: demo
+  family: chip
+docs:
+  include:
+    - "spec/**/*.pdf"
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(project)
+
+    assert cfg.project.family == "chip"
+    assert cfg.docs.include == ["spec/**/*.pdf"]
+    assert cfg.llm.enabled is True
+    assert cfg.llm.provider == "openai_compat"
+    assert cfg.llm.providers["openai_compat"].api_key_env == "USER_KEY"
+    assert cfg.embeddings.model == "embed-model"
+
+
+def test_openai_embedding_uses_config_api_key_without_env(monkeypatch):
+    from docgraph.embeddings.openai_encoder import OpenAIEmbeddingProvider
+
+    monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    enc = OpenAIEmbeddingProvider(
+        model="embed",
+        dim=8,
+        api_key="embed-config-key",
+        base_url="https://embed.example/v1",
+    )
+
+    assert enc.api_key == "embed-config-key"
+    assert enc.base_url == "https://embed.example/v1"
+
+
+def test_init_does_not_create_project_config_by_default(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from docgraph.cli.main import app
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(project)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["init"])
+
+    assert result.exit_code == 0
+    assert not (project / "docgraph.yaml").exists()
+    assert (project / ".docgraph/graph.db").exists()
+    assert (home / ".docgraph" / "config.yaml").exists()
+
+
+def test_init_creates_minimal_project_config_when_project_metadata_is_given(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from docgraph.cli.main import app
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(project)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["init", "--family", "chip"])
+
+    assert result.exit_code == 0
+    assert (project / "docgraph.yaml").read_text("utf-8") == "project:\n  family: chip\n"
+    assert (project / ".docgraph/graph.db").exists()
+    assert (home / ".docgraph" / "config.yaml").exists()

@@ -56,10 +56,16 @@ def load_env_file(path: Path | str, override: bool = False) -> dict[str, str]:
 def autoload_env(start: Path | None = None) -> dict[str, str]:
     """从 start 目录向上找 .env / .env.local 并加载。
 
-    优先级：.env.local > .env
+    优先级：已存在环境变量 > 用户级 ~/.docgraph/.env.local > ~/.docgraph/.env >
+    项目级 .env.local > .env（后加载不会覆盖已设置值）。
     """
     cur = (start or Path.cwd()).resolve()
     loaded: dict[str, str] = {}
+    user_dir = Path.home() / ".docgraph"
+    for fname in (".env.local", ".env"):
+        p = user_dir / fname
+        if p.is_file():
+            loaded.update(load_env_file(p))
     for d in [cur, *cur.parents]:
         # 优先 .env.local（个人覆盖），再 .env（共享默认）
         for fname in (".env.local", ".env"):

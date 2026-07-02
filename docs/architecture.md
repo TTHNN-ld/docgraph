@@ -36,7 +36,7 @@
 
 冲突时按顺序优先：
 
-1. **本地优先（Local-first）** —— 所有数据默认存在 `.docgraph/`，离线可用
+1. **本地优先（Local-first）** —— 项目生成数据默认存在 `.docgraph/`，离线可用
 2. **无损 > 抽取** —— L0/L1 先保证信息不丢；L2 抽取只是可选增强
 3. **可插拔的边界** —— Parser / Extractor / Embedding / VLM / Storage 全部走接口注入
 4. **幂等与可恢复** —— 每个 pipeline stage 必须幂等；任意阶段可单独重跑
@@ -49,11 +49,11 @@
 
 ```bash
 cd my-chip-project/             # docs/ 下有 spec 文件
-docgraph init                   # 生成 .docgraph/
+docgraph init                   # 初始化 .docgraph/；默认不生成项目配置文件
 docgraph build                  # 全量构建
-docgraph watch &                # 后台增量
+docgraph admin watch &                # 后台增量
 docgraph serve --mcp            # MCP server，对接 Agent
-docgraph query "PWM_CTRL bit 3" # CLI 查询
+docgraph search "PWM_CTRL bit 3" # CLI 查询
 ```
 
 用户项目结构：
@@ -66,13 +66,32 @@ my-chip-project/
 │   ├── errata.pdf
 │   └── app-note-pwm.docx
 └── .docgraph/                  # 自动生成
-    ├── config.yaml
     ├── manifest.json
     ├── graph.db
-    ├── vectors.db
     ├── cache/
     ├── entities/
     └── logs/
+```
+
+用户级配置放在 `~/.docgraph/`，用于保存跨项目复用的模型、embedding、VLM 和密钥：
+
+```
+~/.docgraph/
+├── config.yaml                 # 用户级模型/API key/base_url 配置
+├── .env                        # 可选，环境变量兼容路径
+└── .env.local                  # 可选，本机覆盖
+```
+
+`.docgraph/` 是纯生成目录，不存放手写配置。
+
+项目级 `docgraph.yaml` 是可选文件。默认文档布局为 `docs/**/*.pdf` 和
+`spec/**/*.pdf`，只有需要覆盖 docs 范围、parser、extractor 或 family 时才创建：
+
+```
+my-chip-project/
+├── docgraph.yaml               # 可选，项目级覆盖配置
+├── docs/
+└── .docgraph/                  # 自动生成
 ```
 
 ## 4. 分层架构
@@ -93,7 +112,7 @@ my-chip-project/
 │ Parser Plugins │ Extractor      │ Linker          │ Embedding     │
 ├────────────────┴────────────────┴─────────────────┴───────────────┤
 │  Storage Layer (Pluggable)                                        │
-│  GraphStore (SQLite) + VectorStore (sqlite-vec) + FS Cache        │
+│  GraphStore (SQLite) + VectorStore (sqlite_json/LanceDB) + FS Cache│
 └──────────────────────────────────────────────────────────────────┘
         ▲
         │ 监听
@@ -122,7 +141,7 @@ docs/*.pdf
 Agent ── MCP ──► Query Engine
                      │
                      ├── Graph Query (SQLite + 递归 CTE)
-                     ├── Vector Query (sqlite-vec)
+                     ├── Vector Query (sqlite_json / LanceDB)
                      └── Hybrid Rerank
                      │
                      ▼

@@ -24,6 +24,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from docgraph.core.config import user_docgraph_dir
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import (
     BBox, Block, BlockKind, ParsedDoc, ParsedFigure, ParsedPage, ParsedTable,
@@ -55,7 +56,7 @@ class MinerUParser:
         table_enable = _table_enabled_for_quality(ctx.options.get("quality"))
         output_dir = cache_dir / ("mineru_table" if table_enable else "mineru_fast")
         output_dir.mkdir(parents=True, exist_ok=True)
-        models_dir = cache_dir.parent.parent / "mineru-models"
+        models_dir = _mineru_models_dir()
         models_dir.mkdir(parents=True, exist_ok=True)
         config_path = cache_dir.parent.parent / "magic-pdf.json"
         config = {
@@ -149,6 +150,18 @@ class MinerUParser:
 
 def _table_enabled_for_quality(quality: Any) -> bool:
     return str(quality or "balanced").strip().lower() != "fast"
+
+
+def _mineru_models_dir() -> Path:
+    """Return the user-level MinerU model directory.
+
+    Parser outputs and middle JSON stay under the project `.docgraph/cache`, but
+    model weights are large and should be reused across projects.
+    """
+    override = os.environ.get("DOCGRAPH_MINERU_MODELS_DIR")
+    if override:
+        return Path(override).expanduser()
+    return user_docgraph_dir() / "mineru-models"
 
 
 def _middle_json_to_parsed_doc(

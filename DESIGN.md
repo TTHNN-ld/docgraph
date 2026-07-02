@@ -13,7 +13,7 @@
 
 | 话题 | 文档 | 内容 |
 |---|---|---|
-| ⭐ **分层架构（权威）** | [docs/layered-architecture.md](./docs/layered-architecture.md) | L0/L1/L2 三层、层次契约、通用 schema-guided 抽取、agent 使用模式、M7 改造路线 |
+| ⭐ **分层架构（权威）** | [docs/layered-architecture.md](./docs/layered-architecture.md) | L0/L1/L2 三层、层次契约、通用 schema-guided 抽取、agent 使用模式 |
 | 🏛️ **架构总览** | [docs/architecture.md](./docs/architecture.md) | 项目定位、设计原则、分层架构、数据流 |
 | 📊 **数据模型** | [docs/data-model.md](./docs/data-model.md) | 节点 / 边 / Evidence、SQLite schema、迁移 |
 | 📄 **Parser 层** | [docs/parsers.md](./docs/parsers.md) | PDF/Word/MD/Excel 解析、`ParsedDoc` IR、缓存 |
@@ -23,10 +23,11 @@
 | 🌐 **联邦机制** | [docs/federation.md](./docs/federation.md) | 多 spec 共存、SUPERSEDES、命名空间 |
 | ⚡ **增量与缓存** | [docs/incremental.md](./docs/incremental.md) | watch 模式、缓存层级、删除处理 |
 | 🔌 **插件系统** | [docs/plugins.md](./docs/plugins.md) | entry points、自定义 Parser/Extractor |
-| ⚙️ **配置参考** | [docs/configuration.md](./docs/configuration.md) | `.docgraph/config.yaml` 完整字段说明 |
+| ⚙️ **配置参考** | [docs/configuration.md](./docs/configuration.md) | 用户级 `~/.docgraph/config.yaml`、可选项目级 `docgraph.yaml`、可选 `.env` |
 | 🛡️ **运维与安全** | [docs/operations.md](./docs/operations.md) | 日志、成本、质量评估、安全边界 |
 | 🤝 **贡献指南** | [docs/contributing.md](./docs/contributing.md) | 治理、测试、CI、技术栈 |
-| 🗺️ **路线图与决策** | [docs/roadmap.md](./docs/roadmap.md) | M7 分层路线图、ADR 记录 |
+| 🗺️ **路线图与决策** | [docs/roadmap.md](./docs/roadmap.md) | 当前产品基线、近期工程重点、ADR 记录 |
+| 📝 **需求变更记录** | [docs/requirements-changelog.md](./docs/requirements-changelog.md) | 稳定记录需求变更、决策和影响范围 |
 | 📖 **术语表** | [docs/glossary.md](./docs/glossary.md) | 缩写、项目术语、芯片术语 |
 
 ---
@@ -42,9 +43,9 @@
 | 项 | 内容 |
 |---|---|
 | 项目代号 | DocGraph |
-| 状态 | Draft v0.3（L0/L1 分层基线已落地） |
+| 状态 | Active v0.4 |
 | 创建日期 | 2026-06-25 |
-| 最近更新 | 2026-06-30 |
+| 最近更新 | 2026-07-02 |
 | 类型 | 架构设计 |
 | 适用范围 | 芯片 Spec（datasheet、reference manual、TRM、errata、app note 等） |
 | 目标用户 | 芯片设计/验证工程师、Spec-driven Agent 开发者 |
@@ -55,9 +56,10 @@
 ## 快速链接
 
 - 5 分钟上手：[README.md](./README.md)
-- 当前路线图（M7）：[docs/roadmap.md](./docs/roadmap.md#m7--分层架构改造进行中最高优先级)
+- 当前路线图：[docs/roadmap.md](./docs/roadmap.md)
 - 想新增 Parser/Extractor？[docs/plugins.md](./docs/plugins.md)
 - 配置文件参考：[docs/configuration.md](./docs/configuration.md)
+- 需求变更记录：[docs/requirements-changelog.md](./docs/requirements-changelog.md)
 
 ---
 

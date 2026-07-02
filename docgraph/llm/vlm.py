@@ -72,8 +72,12 @@ class AnthropicVLMProvider:
     """复用 Anthropic SDK 的视觉能力。"""
     name = "anthropic"
 
-    def __init__(self, api_key_env: str = "ANTHROPIC_API_KEY") -> None:
-        self._inner = AnthropicProvider(api_key_env=api_key_env)
+    def __init__(
+        self,
+        api_key_env: str = "ANTHROPIC_API_KEY",
+        api_key: str | None = None,
+    ) -> None:
+        self._inner = AnthropicProvider(api_key_env=api_key_env, api_key=api_key)
 
     def describe(
         self, image_path: Path, prompt: str, *,
@@ -125,16 +129,19 @@ class OpenAICompatVLMProvider:
         self, *,
         name: str = "openai_compat",
         api_key_env: str = "OPENAI_API_KEY",
+        api_key: str | None = None,
         base_url_env: str | None = "OPENAI_BASE_URL",
         base_url: str | None = None,
     ) -> None:
         self.name = name
         self.api_key_env = api_key_env
+        self.api_key = api_key
         self.base_url_env = base_url_env
         self.base_url = base_url
         self._inner = OpenAICompatProvider(
             name=name,
             api_key_env=api_key_env,
+            api_key=api_key,
             base_url_env=base_url_env,
             base_url=base_url,
         )
@@ -214,7 +221,7 @@ class OpenAICompatVLMProvider:
         }
 
     def _http_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
-        api_key = os.environ.get(self.api_key_env)
+        api_key = self.api_key or os.environ.get(self.api_key_env)
         if not api_key:
             raise RuntimeError(f"{self.api_key_env} not set")
         base_url = self.base_url or (

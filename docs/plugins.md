@@ -40,11 +40,9 @@ anthropic = "docgraph.llm.anthropic_provider:AnthropicProvider"
 ## 3. 插件管理 CLI
 
 ```bash
-docgraph plugins ls                    # 列出所有可用插件
-docgraph plugins ls --kind=parser      # 按类型过滤
-docgraph plugins enable myextractor    # 在 config 中启用
-docgraph plugins disable mineru        # 禁用
-docgraph plugins info mineru           # 显示插件元信息
+docgraph admin plugins ls                    # 列出所有可用插件
+docgraph admin plugins ls --kind=parser      # 按类型过滤
+docgraph admin plugins info mineru           # 显示插件元信息
 ```
 
 ## 4. 自定义 Extractor 模板

@@ -1,7 +1,6 @@
 """M4 测试：register 改进 + VLM 通用化 + embedding factory + 导出。"""
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -90,6 +89,74 @@ def test_table_entity_table_matches_pin():
     ex = TableEntityExtractor()
     tbl = TableData(headers=["Pin", "Direction", "Function"], rows=[])
     assert ex._table_matches(tbl, schema)
+
+
+def test_table_entity_table_matches_backend_constraints():
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.extractors.schema_registry import get_schema
+    from docgraph.graph.schema import TableData
+
+    ex = TableEntityExtractor()
+    timing_schema = get_schema("constraint")
+    physical_schema = get_schema("physical_constraint")
+    assert timing_schema is not None
+    assert physical_schema is not None
+
+    sdc = TableData(
+        caption="STA constraint summary",
+        headers=["Constraint", "Target", "Value", "Unit", "Corner"],
+        rows=[],
+    )
+    floorplan = TableData(
+        caption="Floorplan constraints",
+        headers=["Rule", "Object", "Layer", "Region", "Spacing"],
+        rows=[],
+    )
+    register_like = TableData(
+        headers=["Register", "Bits", "Reset", "Description"],
+        rows=[],
+    )
+
+    assert ex._table_matches(sdc, timing_schema)
+    assert ex._table_matches(floorplan, physical_schema)
+    assert not ex._table_matches(register_like, timing_schema)
+    assert not ex._table_matches(register_like, physical_schema)
+
+
+def test_table_entity_rejects_interrupt_feature_summary_tables():
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.extractors.schema_registry import get_schema
+    from docgraph.graph.schema import TableData
+
+    schema = get_schema("interrupt")
+    assert schema is not None
+    ex = TableEntityExtractor()
+
+    priority_summary = TableData(
+        headers=["Interrupt priority levels", "8 to 256 priority levels"],
+        rows=[
+            ["Wake-up interrupt controller", "Optional"],
+            ["Sleep modes", "Integrated WFI and WFE Instructions"],
+            ["Debug", "Optional JTAG and serial wire debug ports"],
+        ],
+    )
+    nvic_block_summary = TableData(
+        headers=["Nested vectored interrupt controller", "Nested vectored interrupt controller", ""],
+        rows=[
+            ["CPU Armv6-M", "", ""],
+            ["Memory protection unit", "", ""],
+            ["Fast I/O port", "", "Serial wire"],
+        ],
+    )
+    irq_source_list = TableData(
+        caption="Interrupt source list",
+        headers=["type", "irq_src信号", "位宽", "Description"],
+        rows=[["function", "radm_cpl_timeout", "1", "completion timeout"]],
+    )
+
+    assert not ex._table_matches(priority_summary, schema)
+    assert not ex._table_matches(nvic_block_summary, schema)
+    assert ex._table_matches(irq_source_list, schema)
 
 
 def test_table_entity_register_uses_l1_candidate_provenance():
@@ -399,6 +466,173 @@ def test_table_entity_deterministically_extracts_interrupts_without_llm():
     assert [n.name for n in interrupts] == ["radm_cpl_timeout", "edma_int"]
     assert [n.attrs["type"] for n in interrupts] == ["function", "error"]
     assert signals == []
+
+
+def test_table_entity_extracts_interface_instance_name_and_protocol():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import Block, BlockKind, NodeKind, ParsedDoc, ParsedPage, TableData
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::r82",
+        source_path="r82.pdf",
+        pages=[ParsedPage(page_no=10, blocks=[
+            Block(
+                id="chip::doc::r82#p10#b0",
+                doc_id="chip::doc::r82",
+                page=10,
+                kind=BlockKind.TABLE,
+                table=TableData(
+                    headers=["Name", "Protocol", "Width", "Details"],
+                    rows=[
+                        [
+                            "Generic Interrupt Controller (GIC) Stream interface",
+                            "AMBA 4 AXI4-Stream",
+                            "32-bit",
+                            "AXI-4 Stream interface for interrupts.",
+                        ],
+                        ["DebugBlock", "AMBA 4 APB", "32-bit", "APB debug interface."],
+                    ],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["interface"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    interfaces = [n for n in result.nodes if n.kind == NodeKind.INTERFACE]
+    assert [n.name for n in interfaces] == [
+        "Generic Interrupt Controller (GIC) Stream interface",
+        "DebugBlock",
+    ]
+    assert [n.attrs["protocol"] for n in interfaces] == ["AMBA 4 AXI4-Stream", "AMBA 4 APB"]
+
+
+def test_table_entity_rejects_interface_group_and_address_map_tables():
+    from docgraph.extractors.schema_registry import get_schema
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import TableData
+
+    schema = get_schema("interface")
+    assert schema is not None
+    ex = TableEntityExtractor()
+
+    interface_group = TableData(
+        caption="Table 2-1 PCIe 外围接口",
+        headers=["Interface Group", "方向", "Description"],
+        rows=[
+            ["Clock/Reset", "Clock/Reset", "Clock/Reset"],
+            ["mstr_aclk", "0", "AXI master的NoC接口时钟"],
+            ["AXI Master接口", "", "标准AXI4 接口，512bit 数据位宽"],
+            ["Interrupts", "", "其他配置接口的转换"],
+            ["TXx_P/N", "10", "16 lane 差分串行输出数据"],
+        ],
+    )
+    address_map = TableData(
+        caption="Table 4-2 本地 NoC 的地址映射",
+        headers=["NoC Master", "NoC Slave", "Offset", "Size", "Description"],
+        rows=[
+            ["pcie_ss_noc", "Top CFG", "0x00000000", "1MB", "寄存器空间"],
+            ["pcie_ss_noc", "PHY1 CFG", "0x00300000", "1MB", "PHY寄存器空间"],
+        ],
+    )
+    real_interface = TableData(
+        headers=["Name", "Protocol", "Width", "Details"],
+        rows=[["DebugBlock", "AMBA 4 APB", "32-bit", "APB debug interface"]],
+    )
+
+    assert not ex._table_matches(interface_group, schema)
+    assert not ex._extract_interfaces_from_table(interface_group)
+    assert not ex._table_matches(address_map, schema)
+    assert not ex._extract_interfaces_from_table(address_map)
+    assert ex._table_matches(real_interface, schema)
+
+
+def test_table_entity_deterministically_extracts_backend_timing_constraints_without_llm():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import Block, BlockKind, NodeKind, ParsedDoc, ParsedPage, TableData
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::backend_timing",
+        source_path="backend_timing_spec.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::backend_timing#p1#b0",
+                doc_id="chip::doc::backend_timing",
+                page=1,
+                kind=BlockKind.TABLE,
+                table=TableData(
+                    caption="STA / SDC constraint summary",
+                    headers=["Constraint", "Target", "Value", "Unit", "Corner", "Description"],
+                    rows=[
+                        ["clock_uncertainty", "core_clk", "0.08", "ns", "SSG_0p72V_125C", "setup margin"],
+                        ["max_transition", "all_outputs", "0.20", "ns", "all", "route slew limit"],
+                    ],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["constraint"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    constraints = [n for n in result.nodes if n.kind == NodeKind.REQUIREMENT]
+    assert [n.name for n in constraints] == ["clock_uncertainty", "max_transition"]
+    assert constraints[0].attrs["entity_type"] == "constraint"
+    assert constraints[0].attrs["target"] == "core_clk"
+    assert constraints[0].attrs["value"] == "0.08"
+    assert constraints[0].attrs["unit"] == "ns"
+    assert constraints[0].attrs["condition"] == "SSG_0p72V_125C"
+    assert constraints[0].attrs["source_block_ids"] == ["chip::doc::backend_timing#p1#b0"]
+    assert result.stats.llm_calls == 0
+
+
+def test_table_entity_deterministically_extracts_backend_physical_constraints_without_llm():
+    from docgraph.extractors.base import ExtractContext
+    from docgraph.extractors.table_entity import TableEntityExtractor
+    from docgraph.graph.schema import Block, BlockKind, NodeKind, ParsedDoc, ParsedPage, TableData
+
+    doc = ParsedDoc(
+        doc_id="chip::doc::backend_physical",
+        source_path="physical_implementation_spec.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="chip::doc::backend_physical#p1#b0",
+                doc_id="chip::doc::backend_physical",
+                page=1,
+                kind=BlockKind.TABLE,
+                table=TableData(
+                    caption="Floorplan and routing constraints",
+                    headers=["Rule", "Object", "Type", "Layer", "Region", "Spacing", "Description"],
+                    rows=[
+                        ["SRAM_keepout", "u_sram0", "keepout", "M2-M6", "CORE_NW", "5um", "macro halo"],
+                        ["PG_strap_width", "VDD", "power grid", "M8", "core", "2um", "minimum strap width"],
+                    ],
+                ),
+            )
+        ])],
+    )
+
+    result = TableEntityExtractor(schema_names=["physical_constraint"]).extract(
+        doc,
+        ExtractContext(family="chip"),
+    )
+
+    constraints = [n for n in result.nodes if n.kind == NodeKind.REQUIREMENT]
+    assert [n.name for n in constraints] == ["SRAM_keepout", "PG_strap_width"]
+    assert constraints[0].attrs["entity_type"] == "physical_constraint"
+    assert constraints[0].attrs["object"] == "u_sram0"
+    assert constraints[0].attrs["layer"] == "M2-M6"
+    assert constraints[0].attrs["region"] == "CORE_NW"
+    assert constraints[0].attrs["value"] == "5um"
+    assert constraints[0].attrs["source_block_ids"] == ["chip::doc::backend_physical#p1#b0"]
+    assert result.stats.llm_calls == 0
 
 
 def test_table_entity_normalizes_ocr_repeated_signal_width():

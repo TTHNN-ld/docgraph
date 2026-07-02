@@ -22,6 +22,7 @@ from docgraph.core.logger import get_logger
 from docgraph.extractors.base import ExtractContext
 from docgraph.extractors.candidates import build_entity_candidates
 from docgraph.graph.schema import (
+    Block,
     BlockKind,
     Edge,
     EdgeKind,
@@ -105,6 +106,30 @@ def _normalize_width(value) -> str | None:
     if bit_suffix:
         return bit_suffix.group(1)
     return text
+
+
+def _normalize_interface_semantic(item: FigureInterfaceDef) -> FigureInterfaceDef | None:
+    name = re.sub(r"\s+", " ", (item.name or "").strip())
+    protocol = re.sub(r"\s+", " ", (item.protocol or "").strip())
+    role = re.sub(r"\s+", " ", (item.role or "").strip())
+    if not name:
+        return None
+    pure_protocols = {
+        "axi", "axi4", "axi-lite", "axilite", "apb", "ahb", "atb",
+        "pcie", "pipe", "dbi", "dti",
+    }
+    norm_name = re.sub(r"[\s_-]+", "", name).lower()
+    norm_protocol = re.sub(r"[\s_-]+", "", protocol).lower()
+    if norm_name in {re.sub(r"[\s_-]+", "", p).lower() for p in pure_protocols}:
+        if role:
+            name = f"{protocol or name} {role}".strip()
+        elif protocol and norm_protocol and norm_name == norm_protocol:
+            return None
+    data = item.model_dump()
+    data["name"] = name
+    data["protocol"] = protocol or item.protocol
+    data["role"] = role or item.role
+    return FigureInterfaceDef(**data)
 
 
 _OUTPUT_FORMAT: dict[str, str] = {
@@ -690,6 +715,10 @@ class FigureExtractor:
                 item.description,
             )
         for item in semantic.interfaces:
+            normalized = _normalize_interface_semantic(item)
+            if normalized is None:
+                continue
+            item = normalized
             emit_node(
                 NodeKind.INTERFACE,
                 item.name,

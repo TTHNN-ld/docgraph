@@ -18,7 +18,7 @@ def project_with_data():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         (root / ".docgraph").mkdir()
-        (root / ".docgraph" / "config.yaml").write_text(
+        (root / "docgraph.yaml").write_text(
             "project:\n  name: t\n  family: testchip\n", encoding="utf-8"
         )
         store = SQLiteGraphStore(root / ".docgraph" / "graph.db")
@@ -195,7 +195,7 @@ def test_api_sections_tree_falls_back_to_l1_chunks(tmp_path, monkeypatch):
 
     root = tmp_path
     (root / ".docgraph").mkdir()
-    (root / ".docgraph" / "config.yaml").write_text(
+    (root / "docgraph.yaml").write_text(
         "project:\n  name: t\n  family: testchip\n", encoding="utf-8"
     )
     store = SQLiteGraphStore(root / ".docgraph" / "graph.db")

@@ -27,8 +27,10 @@ def build_encoder(cfg: EmbeddingsConfig) -> EmbeddingProvider:
             enc = try_make_openai_embedding(
                 model=cfg.model or "text-embedding-3-small",
                 dim=cfg.dim or 1536,
+                api_key=cfg.api_key,
                 api_key_env=cfg.api_key_env,
                 api_key_fallback_env=cfg.api_key_fallback_env,
+                base_url=cfg.base_url,
                 base_url_env=cfg.base_url_env,
                 base_url_fallback_env=cfg.base_url_fallback_env,
             )

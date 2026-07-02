@@ -32,14 +32,14 @@
 
 ## 4. 质量评估
 
-`docgraph doctor` 是分层硬门禁，检查 L0/L1 完整性、L2 provenance 和强结构实体约束；`docgraph l2-audit` 是 L2 抽取前诊断，不调用 LLM/VLM，用于确认候选覆盖与 schema 路由是否合理。
+`docgraph doctor` 是分层硬门禁，检查 L0/L1 完整性、L2 provenance 和强结构实体约束；`docgraph l2 audit` 是 L2 抽取前诊断，不调用 LLM/VLM，用于确认候选覆盖与 schema 路由是否合理。
 
 ```bash
 docgraph doctor --strict
-docgraph l2-audit
-docgraph l2-audit --schema register --schema signal
-docgraph l2-audit --json
-docgraph l2-eval --golden examples/golden --kind register --min-recall 0.9
+docgraph l2 audit
+docgraph l2 audit --schema register --schema signal
+docgraph l2 audit --json
+docgraph l2 eval --golden examples/golden --kind register --min-recall 0.9
 ```
 
 `l2-audit` 输出：
@@ -47,7 +47,9 @@ docgraph l2-eval --golden examples/golden --kind register --min-recall 0.9
 - L1 chunk 中有多少 table/text/figure candidate。
 - 每个 schema 看到了多少候选、命中了多少候选。
 - 当前库中各 schema 已物化的 L2 节点数量。
+- 每个 schema 的 materialization rate，即 `l2_nodes / matched_candidates`。
 - 哪些文档有 table candidate 但没有 schema 命中。
+- 哪些 schema 命中了候选但没有物化节点，这通常表示需要开启 LLM/VLM、补确定性 normalizer，或把候选降级为人工审核项。
 
 它回答的是“L2 有没有机会抽到、为什么可能漏抽”；不替代最终 precision/recall 评估。
 
@@ -67,18 +69,18 @@ examples/golden/                    # 人工标注的"小份 spec + 期望抽取
 
 - `expected_registers.json` 可以是 `["CTRL", "STATUS"]`，也可以是 `[{"name": "CTRL", "doc_id": "..."}]`
 - `l2_expected.json` 可以按 kind 分组：`{"registers": ["CTRL"], "signals": ["clk"]}`
-- `docgraph l2-eval` 跑 golden 集，输出 precision/recall 报告
+- `docgraph l2 eval` 跑 golden 集，输出 precision/recall 报告
 - CI 跑 golden 评估，回归检测
 - 阈值不达标 → CI 失败
 
 ## 5. 抽取置信度审核
 
 - 每条节点/边带 `confidence`
-- `docgraph review` 命令交互式列出低置信项
+- `docgraph admin review` 命令交互式列出低置信项
 - 审核结果回写 `entities/*.reviewed.jsonl`，下次构建保留
 
 ```bash
-docgraph review --min-confidence=0.5
+docgraph admin review --min-confidence=0.5
 # 进入 TUI：accept / reject / edit / skip
 ```
 
@@ -91,9 +93,10 @@ docgraph review --min-confidence=0.5
 
 ### 6.2 API key 来源
 
-- 环境变量优先
-- 其次 `~/.docgraph/credentials`
-- **绝不写入项目 config**
+- 推荐写在 `~/.docgraph/config.yaml` 的 `api_key` / `base_url` 字段
+- 环境变量、`~/.docgraph/.env.local` / `~/.docgraph/.env` 作为兼容和临时覆盖
+- 项目根 `.env.local` / `.env` 仅用于临时项目覆盖
+- **绝不写入项目 `docgraph.yaml` 或 `.docgraph/`**
 
 ### 6.3 日志脱敏
 
@@ -122,7 +125,7 @@ Documents: 4
 Nodes:     12,840   (registers: 1,827 / pins: 312 / figures: 421 / ...)
 Edges:     45,201
 Chunks:    18,920   (with vectors: 18,920)
-Storage:   .docgraph/graph.db (218 MB) + vectors.db (84 MB)
+Storage:   .docgraph/graph.db (218 MB) + vector backend sqlite_json
 
 Last build: 2026-06-25 09:30  (12m 04s)
 Total cost: $2.34 USD (LLM: $1.81, VLM: $0.53)

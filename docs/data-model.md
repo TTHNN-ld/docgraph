@@ -100,7 +100,7 @@ class Evidence(BaseModel):
 | 数据 | 存储 | 理由 |
 |---|---|---|
 | 节点 + 边 | **SQLite** | 单文件、零依赖、CTE 足够；几十万节点无压力 |
-| 向量 | **sqlite-vec** | 与图同库，避免一致性问题 |
+| 向量 | **sqlite_json / LanceDB** | 默认本地轻量 JSON 向量；需要真实向量库时可切 LanceDB |
 | Parser 原始输出 | **文件系统 + JSONL** | 大、便于 diff 调试 |
 | Manifest | **JSON** | 小、人读、git 友好 |
 | 配置 | **YAML** | 用户编辑 |

@@ -120,16 +120,19 @@ def _build_llm_client(root: Path, cfg: DocGraphConfig, cache_dir: Path) -> LLMCl
         else:
             log.warning(f"[pipeline] LLM provider '{provider_name}' not configured")
             return None
-    api_key = os.environ.get(provider_cfg.api_key_env)
+    api_key = provider_cfg.api_key or os.environ.get(provider_cfg.api_key_env)
     if not api_key:
         log.warning(
-            f"[pipeline] {provider_cfg.api_key_env} not set (checked .env too); "
+            f"[pipeline] {provider_cfg.api_key_env} not set and provider api_key is empty; "
             f"LLM disabled"
         )
         return None
 
     # 不同 provider 接受的参数不同
-    kwargs: dict[str, Any] = {"api_key_env": provider_cfg.api_key_env}
+    kwargs: dict[str, Any] = {
+        "api_key_env": provider_cfg.api_key_env,
+        "api_key": provider_cfg.api_key,
+    }
     if provider_name in ("openai", "openai_compat", "volces", "deepseek"):
         kwargs["base_url_env"] = provider_cfg.base_url_env
         kwargs["base_url"] = provider_cfg.base_url
@@ -160,41 +163,58 @@ def _build_vlm_client(root: Path, cfg: DocGraphConfig, cache_dir: Path, tracker:
     """构造 VLM 客户端。
 
     优先级：
-    1. `.env` 中的 VLM_API_KEY / VLM_BASE_URL / VLM_MODEL_NAME（推荐）
-    2. config 中的 llm.vlm_model + 当前 llm provider
-    3. config 中的 llm.tiers.accurate
+    1. config 中的 llm.vlm（推荐，允许和文本 LLM 使用不同 provider/model）
+    2. `.env` 中的 VLM_API_KEY / VLM_BASE_URL / VLM_MODEL_NAME（兼容）
+    3. config 中的 llm.vlm_model + 当前 llm provider
+    4. config 中的 llm.tiers.accurate
 
     这样用户可以同时用 DeepSeek 做文本抽取、用 Doubao/Qwen/GLM/GPT-4o 做视觉。
     """
     if not cfg.llm.enabled:
         return None
 
-    # .env 专用 VLM 配置优先，不污染文本 LLM 的 OPENAI_* 配置
-    vlm_api_key = os.environ.get("VLM_API_KEY")
-    vlm_base_url = os.environ.get("VLM_BASE_URL")
-    vlm_model = os.environ.get("VLM_MODEL_NAME")
-    if vlm_api_key and vlm_base_url and vlm_model:
-        provider_name = "openai_compat"
+    if cfg.llm.vlm.api_key and cfg.llm.vlm.base_url and cfg.llm.vlm.model:
+        provider_name = cfg.llm.vlm.provider or "openai_compat"
         kwargs: dict[str, Any] = {
-            "api_key_env": "VLM_API_KEY",
-            "base_url_env": "VLM_BASE_URL",
-            "base_url": vlm_base_url,
+            "api_key_env": cfg.llm.vlm.api_key_env,
+            "api_key": cfg.llm.vlm.api_key,
+            "base_url_env": cfg.llm.vlm.base_url_env,
+            "base_url": cfg.llm.vlm.base_url,
         }
-        model = vlm_model
+        model = cfg.llm.vlm.model
     else:
-        provider_name = cfg.llm.provider
-        provider_cfg = cfg.llm.providers.get(provider_name)
-        if provider_cfg is None:
-            log.info(f"[pipeline] VLM skipped: no provider config for {provider_name}")
-            return None
-        if not os.environ.get(provider_cfg.api_key_env):
-            log.info(f"[pipeline] VLM skipped: {provider_cfg.api_key_env} not set")
-            return None
-        kwargs = {"api_key_env": provider_cfg.api_key_env}
-        if provider_name in ("openai", "openai_compat", "volces", "deepseek", "qwen", "glm"):
-            kwargs["base_url_env"] = provider_cfg.base_url_env
-            kwargs["base_url"] = provider_cfg.base_url
-        model = getattr(cfg.llm, "vlm_model", None) or cfg.llm.tiers.accurate
+        # .env 专用 VLM 配置兼容旧用法，不污染文本 LLM 的 OPENAI_* 配置
+        vlm_api_key = os.environ.get("VLM_API_KEY")
+        vlm_base_url = os.environ.get("VLM_BASE_URL")
+        vlm_model = os.environ.get("VLM_MODEL_NAME")
+        if vlm_api_key and vlm_base_url and vlm_model:
+            provider_name = "openai_compat"
+            kwargs = {
+                "api_key_env": "VLM_API_KEY",
+                "base_url_env": "VLM_BASE_URL",
+                "base_url": vlm_base_url,
+            }
+            model = vlm_model
+        else:
+            provider_name = cfg.llm.provider
+            provider_cfg = cfg.llm.providers.get(provider_name)
+            if provider_cfg is None:
+                log.info(f"[pipeline] VLM skipped: no provider config for {provider_name}")
+                return None
+            if not (provider_cfg.api_key or os.environ.get(provider_cfg.api_key_env)):
+                log.info(
+                    f"[pipeline] VLM skipped: {provider_cfg.api_key_env} not set "
+                    "and provider api_key is empty"
+                )
+                return None
+            kwargs = {
+                "api_key_env": provider_cfg.api_key_env,
+                "api_key": provider_cfg.api_key,
+            }
+            if provider_name in ("openai", "openai_compat", "volces", "deepseek", "qwen", "glm"):
+                kwargs["base_url_env"] = provider_cfg.base_url_env
+                kwargs["base_url"] = provider_cfg.base_url
+            model = getattr(cfg.llm, "vlm_model", None) or cfg.llm.tiers.accurate
 
     try:
         provider = make_vlm_provider(provider_name, **kwargs)

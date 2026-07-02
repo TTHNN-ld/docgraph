@@ -5,7 +5,7 @@
 ## 配置
 
 ```yaml
-# .docgraph/config.yaml
+# docgraph.yaml
 project:
   name: stm32f407-spec
   family: stm32f407       # 同 family 才会自动合并
@@ -44,7 +44,7 @@ Pipeline 会自动跑：
 
 ```bash
 # 默认返回最高优先级版本（errata）
-docgraph register TIM1_CR1
+docgraph inspect register TIM1_CR1
 
 # 也可以看所有版本（M4 加 --include-superseded flag）
 ```
@@ -55,8 +55,8 @@ docgraph register TIM1_CR1
 
 ```bash
 cd my-mcu-projects/stm32h7/
-docgraph federate add ../stm32f407
-docgraph federate ls
+docgraph admin federate add ../stm32f407
+docgraph admin federate ls
 ```
 
 挂接后 MCP / CLI 查询会跨 family 检索（只读视图）。
@@ -64,5 +64,5 @@ docgraph federate ls
 ## 注意
 
 - 联邦合并只在**同 family** 内自动发生
-- 跨 family 用 `docgraph federate add` 显式挂接
+- 跨 family 用 `docgraph admin federate add` 显式挂接
 - 每条 `SUPERSEDES / ALIAS_OF` 边都带 `evidence`，agent 可以反查

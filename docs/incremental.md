@@ -5,7 +5,7 @@
 ## 1. 增量触发
 
 - 手动：`docgraph build`（检测变更）/ `docgraph rebuild --doc=PATH`
-- 自动：`docgraph watch` 用 watchdog 监听 `docs/`
+- 自动：`docgraph admin watch` 用 watchdog 监听 `docs/`
 
 ## 2. 粒度
 
@@ -58,7 +58,7 @@
 ## 6. watch 模式
 
 ```bash
-docgraph watch --paths=docs/
+docgraph admin watch --paths=docs/
 ```
 
 - watchdog 监听 `docs/`

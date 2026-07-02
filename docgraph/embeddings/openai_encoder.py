@@ -27,15 +27,20 @@ class OpenAIEmbeddingProvider:
         self, *,
         model: str = "text-embedding-3-small",
         dim: int = 1536,
+        api_key: str | None = None,
         api_key_env: str = "EMBEDDING_API_KEY",
         api_key_fallback_env: str = "OPENAI_API_KEY",
+        base_url: str | None = None,
         base_url_env: str = "EMBEDDING_BASE_URL",
         base_url_fallback_env: str = "OPENAI_BASE_URL",
-        base_url: str | None = None,
     ) -> None:
         self.model = model
         self.dim = dim
-        self.api_key = os.environ.get(api_key_env) or os.environ.get(api_key_fallback_env)
+        self.api_key = (
+            api_key
+            or os.environ.get(api_key_env)
+            or os.environ.get(api_key_fallback_env)
+        )
         if base_url:
             self.base_url = base_url
         else:

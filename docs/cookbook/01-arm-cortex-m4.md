@@ -39,10 +39,10 @@ docgraph status
 docgraph search "interrupt" --kind=section --limit=5
 
 # 找具体寄存器（LLM 关闭时召回有限；启用 LLM 见 02-enable-llm.md）
-docgraph register SYSTICK_CTRL
+docgraph inspect register SYSTICK_CTRL
 
 # 一句话上下文（Agent 友好）
-docgraph context "如何配置 NVIC 优先级"
+docgraph graph context "如何配置 NVIC 优先级"
 
 # 启动 MCP server，挂到 Claude Code
 docgraph serve --mcp

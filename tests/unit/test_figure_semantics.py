@@ -163,6 +163,67 @@ def test_chip_figure_vlm_materializes_semantic_nodes_and_edges(tmp_path):
     )
 
 
+def test_chip_figure_normalizes_protocol_only_interface_names(tmp_path):
+    image_path = _image(tmp_path)
+    payload = {
+        "domain": "chip",
+        "figure_type": "block",
+        "summary": "APB connects to debug registers.",
+        "modules": [],
+        "signals": [],
+        "interfaces": [
+            {
+                "name": "APB",
+                "protocol": "APB",
+                "role": "slave",
+                "description": "debug register access",
+            },
+            {
+                "name": "PCIe",
+                "protocol": "PCIe",
+                "description": "generic protocol label without role",
+            },
+        ],
+        "clocks_resets": [],
+        "address_regions": [],
+        "connections": [],
+        "confidence": 0.8,
+    }
+    doc = ParsedDoc(
+        doc_id="chip::doc",
+        source_path="pcie_spec.pdf",
+        metadata=DocMetadata(title="PCIe Subsystem Specification", family="pcie"),
+        pages=[
+            ParsedPage(
+                page_no=9,
+                blocks=[
+                    Block(
+                        id="chip::doc#p9#b1",
+                        doc_id="chip::doc",
+                        page=9,
+                        kind=BlockKind.FIGURE,
+                        text="debug block",
+                        image_path=image_path,
+                    )
+                ],
+                figures=[ParsedFigure(image_path=image_path, caption="debug block")],
+            )
+        ],
+    )
+
+    result = FigureExtractor().extract(
+        doc,
+        ExtractContext(
+            family="chip",
+            options={"vlm_client": FakeVLM(payload), "root": str(tmp_path)},
+        ),
+    )
+
+    interfaces = [n for n in result.nodes if n.kind == NodeKind.INTERFACE]
+    assert [n.name for n in interfaces] == ["APB slave"]
+    assert interfaces[0].attrs["protocol"] == "APB"
+
+
 def test_chip_figure_zero_model_confidence_gets_conservative_edge_confidence(tmp_path):
     image_path = _image(tmp_path)
     payload = {

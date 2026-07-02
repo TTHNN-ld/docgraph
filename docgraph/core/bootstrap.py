@@ -9,6 +9,7 @@ from docgraph.extractors.figure import FigureExtractor
 from docgraph.extractors.glossary import GlossaryExtractor
 from docgraph.extractors.section import SectionExtractor
 from docgraph.extractors.table_entity import TableEntityExtractor
+from docgraph.extractors.text_entity import TextEntityExtractor
 from docgraph.parsers.base import registry as parser_registry
 from docgraph.parsers.docx_parser import DocxParser
 from docgraph.parsers.marker_parser import MarkerParser
@@ -47,6 +48,7 @@ def bootstrap(*, disabled_plugins: set[str] | None = None) -> None:
         (SectionExtractor, "section"),
         (TableEntityExtractor, "table_entity"),
         (GlossaryExtractor, "glossary"),
+        (TextEntityExtractor, "text_entity"),
         (FigureExtractor, "figure"),
     ]:
         extractor_registry.register(cls)

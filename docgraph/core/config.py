@@ -67,13 +67,29 @@ class LLMProviderConfig(BaseModel):
     """provider 配置。
 
     对 OpenAI 兼容：
-      api_key_env: OPENAI_API_KEY
-      base_url_env: OPENAI_BASE_URL  (会被 .env 覆盖)
-      base_url:     显式覆盖（优先级最高）
+      api_key:     直接写在 ~/.docgraph/config.yaml 中（优先级最高）
+      base_url:    直接写在 ~/.docgraph/config.yaml 中（优先级最高）
+      api_key_env: OPENAI_API_KEY    (兼容环境变量/.env)
+      base_url_env: OPENAI_BASE_URL  (兼容环境变量/.env)
     """
+    api_key: str | None = None
     api_key_env: str = "ANTHROPIC_API_KEY"
     base_url_env: str | None = None
     base_url: str | None = None
+
+
+class VLMConfig(BaseModel):
+    """独立 VLM 配置。
+
+    允许文本 LLM 与视觉模型使用不同 provider/model。直接配置值优先，
+    环境变量仍作为兼容兜底。
+    """
+    provider: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    api_key_env: str = "VLM_API_KEY"
+    base_url: str | None = None
+    base_url_env: str = "VLM_BASE_URL"
 
 
 class LLMConfig(BaseModel):
@@ -87,6 +103,8 @@ class LLMConfig(BaseModel):
           provider: openai_compat
           providers:
             openai_compat:
+              api_key: sk-...
+              base_url: https://...
               api_key_env: OPENAI_API_KEY
               base_url_env: OPENAI_BASE_URL
           tiers:
@@ -108,6 +126,7 @@ class LLMConfig(BaseModel):
     )
     tiers: LLMTiers = Field(default_factory=LLMTiers)
     vlm_model: str | None = None
+    vlm: VLMConfig = Field(default_factory=VLMConfig)
 
 
 class StorageConfig(BaseModel):
@@ -123,8 +142,10 @@ class EmbeddingsConfig(BaseModel):
     provider: str = "hash"
     model: str | None = None        # bge_m3 默认 "BAAI/bge-m3"；openai 默认 "text-embedding-3-small"
     dim: int | None = None          # 不设则用 provider 默认
+    api_key: str | None = None
     api_key_env: str = "EMBEDDING_API_KEY"
     api_key_fallback_env: str = "OPENAI_API_KEY"
+    base_url: str | None = None
     base_url_env: str = "EMBEDDING_BASE_URL"
     base_url_fallback_env: str = "OPENAI_BASE_URL"
 
@@ -159,7 +180,7 @@ class DocGraphConfig(BaseModel):
     cost: CostConfig = Field(default_factory=CostConfig)
 
 
-DEFAULT_CONFIG_YAML = """\
+DEFAULT_PROJECT_CONFIG_YAML = """\
 project:
   name: my-chip-spec
   family: default
@@ -184,26 +205,6 @@ extractors:
     - glossary
     - figure
 
-llm:
-  enabled: false        # 改 true 即启用；同时设置 .env 中的 API key
-  provider: anthropic   # anthropic | openai_compat | openai | null
-  providers:
-    anthropic:
-      api_key_env: ANTHROPIC_API_KEY
-    openai_compat:
-      api_key_env: OPENAI_API_KEY
-      base_url_env: OPENAI_BASE_URL
-  tiers:
-    fast: claude-haiku-4-5-20251001
-    balanced: claude-sonnet-4-6
-    accurate: claude-opus-4-8
-  # vlm_model: claude-sonnet-4-6   # 可选 vision 模型（不设则用 accurate）
-
-embeddings:
-  provider: hash        # hash | bge_m3 | openai_compat | openai
-  # model: text-embedding-3-small
-  # dim: 1536
-
 storage:
   graph_backend: sqlite
   vector_backend: sqlite_json  # sqlite_json | lancedb
@@ -214,6 +215,50 @@ cost:
 logging:
   level: info
 """
+
+
+DEFAULT_USER_CONFIG_YAML = """\
+llm:
+  enabled: false        # 改 true 即启用；api_key 可直接写在本文件
+  provider: anthropic   # anthropic | openai_compat | openai | null
+  providers:
+    anthropic:
+      # api_key: sk-ant-...
+      api_key_env: ANTHROPIC_API_KEY
+    openai_compat:
+      # api_key: sk-...
+      # base_url: https://api.example.com/v1
+      api_key_env: OPENAI_API_KEY
+      base_url_env: OPENAI_BASE_URL
+  tiers:
+    fast: claude-haiku-4-5-20251001
+    balanced: claude-sonnet-4-6
+    accurate: claude-opus-4-8
+  vlm:
+    # provider: openai_compat
+    # model: GLM-4.6V-Flash
+    # api_key: sk-...
+    # base_url: https://api.example.com/v1
+
+embeddings:
+  provider: hash        # hash | bge_m3 | openai_compat | openai
+  # model: text-embedding-3-small
+  # dim: 1536
+  # api_key: sk-...
+  # base_url: https://api.example.com/v1
+
+# Optional: make MinerU the default PDF parser for all projects.
+# Parser outputs still stay in each project's .docgraph/cache, while MinerU
+# model weights are shared under ~/.docgraph/mineru-models.
+# parsers:
+#   pdf:
+#     primary: mineru
+#     fallback: [pymupdf]
+#     quality: balanced
+"""
+
+
+DEFAULT_CONFIG_YAML = DEFAULT_PROJECT_CONFIG_YAML
 
 
 def project_root_from_cwd(cwd: Path | None = None) -> Path:
@@ -229,23 +274,54 @@ def docgraph_dir(root: Path) -> Path:
     return root / ".docgraph"
 
 
+def user_docgraph_dir() -> Path:
+    return Path.home() / ".docgraph"
+
+
+def user_config_path() -> Path:
+    return user_docgraph_dir() / "config.yaml"
+
+
+def project_config_path(root: Path) -> Path:
+    return root / "docgraph.yaml"
+
+
 def config_path(root: Path) -> Path:
-    return docgraph_dir(root) / "config.yaml"
+    return project_config_path(root)
 
 
 def load_config(root: Path) -> DocGraphConfig:
-    cfg_path = config_path(root)
-    if not cfg_path.is_file():
-        return DocGraphConfig()
-    with cfg_path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+    data: dict[str, Any] = {}
+    for cfg_path in (user_config_path(), project_config_path(root)):
+        if not cfg_path.is_file():
+            continue
+        with cfg_path.open("r", encoding="utf-8") as f:
+            data = _deep_merge(data, yaml.safe_load(f) or {})
     return DocGraphConfig.model_validate(data)
 
 
 def write_default_config(root: Path, overwrite: bool = False) -> Path:
-    cfg_path = config_path(root)
+    cfg_path = project_config_path(root)
+    if cfg_path.exists() and not overwrite:
+        return cfg_path
+    cfg_path.write_text(DEFAULT_PROJECT_CONFIG_YAML, encoding="utf-8")
+    return cfg_path
+
+
+def write_default_user_config(overwrite: bool = False) -> Path:
+    cfg_path = user_config_path()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     if cfg_path.exists() and not overwrite:
         return cfg_path
-    cfg_path.write_text(DEFAULT_CONFIG_YAML, encoding="utf-8")
+    cfg_path.write_text(DEFAULT_USER_CONFIG_YAML, encoding="utf-8")
     return cfg_path
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out

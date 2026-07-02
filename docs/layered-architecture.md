@@ -1,7 +1,7 @@
 # 分层架构（L0 / L1 / L2）—— 权威设计
 
 > 状态：**Accepted（权威）**  
-> 日期：2026-06-30  
+> 日期：2026-07-02  
 > 关联：ADR-006（结构化 > 语义检索，已被本文档修订）、ADR-011（见 [roadmap](./roadmap.md)）  
 > 影响范围：Parser / Extractor / Storage / Query / MCP —— 全栈
 
@@ -9,40 +9,20 @@
 
 ---
 
-## 1. 背景：两个根本问题
+## 1. 设计目标
 
-实跑 ARM Cortex-M4 TRM 和 PCIe Subsystem Spec 后暴露出两个致命问题：
+DocGraph 的事实底座不是某一次实体抽取结果，而是可审计、可回溯、可增量更新的文档结构镜像。芯片文档的寄存器、管脚、时序、接口、需求和图表常分布在表格、正文、章节标题和图片中，因此系统必须同时满足：
 
-### 问题 A：抽取方法不通用
-
-旧架构是 **"预定义本体 + 专用抽取器"**：
-
-```
-先定死 NodeKind（register / pin / timing / figure …）
-  → 每个 kind 写专用 Extractor（手工正则 + 手工 prompt）
-    → 新文档出现新概念（Requirement / Interface / Signal / MemoryMap）
-      → 没有对应 extractor → 抽不到 / 抽错
-```
-
-后果：**每来一种文档就要调一轮抽取器**。PCIe spec 一来，register 召回低、pin 抽出一堆 `AXI/BAR/CFG/LTSSM` 噪声、还得现加 Requirement/Interface extractor。这条路不可持续。
-
-**结论：通用性不能靠规则，要靠架构。** 行业里没有"通用抽取规则"可抄（IP-XACT / SystemRDL / UPF / SDC 都是输出格式，不是抽取方法）。
-
-### 问题 B：预处理会丢信息
-
-旧架构把"实体抽取"当成系统唯一产出，导致：
-
-- 解析阶段 PyMuPDF 把**表格揉成文本块**（寄存器/引脚/时序 90% 在表格里）→ 信息在第一步就丢
-- 抽不到的实体 = 彻底丢失，agent 想回原文也没有结构化版本
-- agent 要么拿到残缺实体，要么退回去读 PDF 全文 → 既丢信息又费上下文
-
-**结论：预处理的价值应该是"无损 + 可检索"，而不是"有损压缩成几个实体"。**
+- **解析不丢信息**：Parser 负责保留页面、表格单元格、图、公式、坐标、顺序和章节归属。
+- **定位足够精准**：Agent 先定位相关 chunk，再按需拉取 L0 原文片段，避免把全文当上下文。
+- **实体可增强但不可独占**：L2 图谱提升查询效率和结构化程度；L2 缺失时，L1/L0 仍然能回答问题。
+- **新增文档类型不改底座**：新 parser 只需归一到 `ParsedDoc/Block`，新实体类型优先通过 schema registry 扩展。
 
 ---
 
 ## 2. 核心决策：三层架构
 
-> **不再追求"一次抽全所有领域实体"。改为"无损保存 + 强检索 + 渐进增强"。**
+> DocGraph 采用"无损保存 + 强检索 + 渐进增强"的数据架构。
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -162,7 +142,18 @@ L0/L1 是 DocGraph 的事实底座，L2 是可选增强，但所有层都必须�
 
 - 每个 L2 节点 **必须**带 `source_block_ids` / `source_chunk_ids`（指回 L0/L1）
 - `evidence` 字段强制非空，必须记录 extractor、page、chunk 等证据（ADR-008）
+- L2 节点带 `attrs.extraction_confidence` 分层：`deterministic`（normalizer/正则抽的，高可信）/ `llm` / `vlm`（模型抽的，agent 用时建议回溯 L0 原文）
 - L2 抽取失败只记 `*.failed.jsonl`，**不影响 L0/L1 的完整性**
+
+L2 实体按信息载体分三类，各有抽取路径：
+
+| 载体 | 实体 | 抽取路径 |
+|---|---|---|
+| 表格 | register / pin / timing / memory_map / interrupt / signal / interface / constraint | `TableEntityExtractor` deterministic normalizer 优先，LLM 兜底 |
+| 正文段落 | requirement / errata / glossary term | `TextEntityExtractor` 正则确定性抽取 |
+| 框图 | module / interface / connection / clock_reset | `FigureExtractor` VLM 语义抽取 |
+
+三条路径都遵循同一约束：节点带 `source_block_ids` 回溯、`extraction_confidence` 分层、失败不影响 L0/L1。
 
 ---
 
@@ -205,7 +196,7 @@ TableEntityExtractor（通用）:
 - VLM/figure 抽取用于补充框图语义、模块互连、时钟复位、地址图和数据通路，不应覆盖表格中更精确的结构化字段。
 - 同一实体来自表格和图时，图存储必须做多源合并：保留 table_entity 的确定性字段，合并 `source_block_ids` / `source_chunk_ids` / evidence / aliases，并记录 `sources`，避免后写入的软证据覆盖硬证据。
 - 抽取器入库前要规整 OCR/VLM 常见噪声，如 `null`、`1 1`、`512b` 等宽度表达；不合规字段不得依赖 doctor 事后兜底。
-- 文档类型路由影响 schema 启用范围：`spec/protocol/interface spec/subsystem spec` 默认按 protocol 启用 signal/interface/memory_map/interrupt；TRS 等无法确定类型的文档走 UNKNOWN 核心路由（register/pin/memory_map/interrupt），避免误关寄存器抽取。
+- 文档类型路由影响 schema 启用范围：`spec/protocol/interface spec/subsystem spec` 默认按 protocol 启用 register/pin/signal/interface/memory_map/interrupt 等核心 schema；协议规范和 subsystem spec 也经常包含寄存器表，不能误关 register/pin 抽取。TRS 等无法确定类型的文档走 UNKNOWN 核心路由（register/pin/memory_map/interrupt），避免误关寄存器抽取。
 - build 结束后按当前 include 文件的 doc_id 集合清理 stale docs，支持新增、删除、重命名或类型路由变化后的增量图谱一致性。
 
 ---
@@ -215,17 +206,22 @@ TableEntityExtractor（通用）:
 > 常规 agent "全量读全文"被显式禁止为默认路径。
 
 ```
-1. 定位（L1 检索）
-   docgraph_search / docgraph_context："PCIe MSI-X doorbell 配置在哪？"
+1. 定位(L1 检索优先)
+   docgraph_context / docgraph_search_chunks："PCIe MSI-X doorbell 配置在哪？"
    → 命中章节 4.6 + 相关 table chunk
 
-2. 按需取原文（L0 片段）
-   docgraph_blocks(chunk_id) / docgraph_section(path)
+2. 按需取原文(L0 片段)
+   docgraph_fetch(chunk_id) / docgraph_blocks(block_ids)
    → 只拉相关的几千 token 无损原文（含完整表格），不是 42 页全文
 
-3. 实体直取（L2 命中时）
-   docgraph_register("USP") → 直接拿结构化 register + bitfields，连读都不用
+3. 实体直取(L2 命中时)
+   docgraph_register("USP") / docgraph_search("USP")
+   → 先拿结构化候选，再用 source_chunk_ids/source_block_ids 回溯验证
 ```
+
+L2 图谱是加速索引，不是唯一事实源。MCP 输出中的 `needs_source_check=true`
+表示该节点来自 VLM/LLM 或缺少确定性置信度，agent 必须用 `docgraph_sources`
+回到 L1/L0 证据后再生成结论。
 
 各芯片设计阶段拿到"自己要的那部分全量"：
 
@@ -235,6 +231,7 @@ TableEntityExtractor（通用）:
 | 验证 | register（建 UVM model）/ 错误注入点 / 协议 | 同上，L2 缺则退 L0 |
 | 测试用例 | 寄存器访问序列 / 中断 / 边界值 | L2 + L1 检索原文 |
 | 物理/封装 | pin / ball / package | L0 表格（最权威） |
+| 后端实现 | SDC/STA 约束 / floorplan / placement / routing / power grid / PVT corner | L2 constraint/physical_constraint + L0 表格原文兜底 |
 
 **省上下文** = 只拉相关 chunk；**不丢信息** = 拉到的是 L0 无损原文，且永远有回原文的路径。两者不再矛盾。
 
@@ -247,22 +244,23 @@ TableEntityExtractor（通用）:
 | L0 高保真 | 表格单元格 + 图 + 公式 + 坐标全入库 | `blocks` 表落地；MinerU/PyMuPDF 等 parser 统一归一为 `Block`；表格保留 cells/html/image evidence；装饰图保留为 `FIGURE semantic_role=decoration` | ✅ 就绪 |
 | L1 切块索引 | chunk 落地 + block 回溯 + 全文 + 语义索引 | `chunks` + `chunks_fts` + `block_ids` + page range + table profile + continued table 合并；语义索引后端可插拔（默认 `sqlite_json`，可选 LanceDB） | ✅ 就绪 |
 | L0/L1 质量门 | 可审计、可回归 | `docgraph doctor` / `--strict` 校验 block、chunk、FTS、表格证据、图证据和回溯链 | ✅ 就绪 |
-| L2 实体增强 | 通用 schema-guided + 指回 L0/L1 | `TableEntityExtractor` 是统一入口；schema registry 已有 register/pin/timing/signal/interface/requirement/memory_map/interrupt 等预设；`doctor --strict` 校验 provenance 和强结构实体约束 | ✅ 可试生产 |
+| L2 实体增强 | 通用 schema-guided + 指回 L0/L1 | `TableEntityExtractor` 是统一入口；schema registry 已有 register/pin/timing/signal/interface/requirement/memory_map/interrupt/constraint/physical_constraint 等预设；`doctor --strict` 校验 provenance 和强结构实体约束 | ✅ 可试生产 |
 | Agent 接口 | 检索→取原文片段 | Web/search/chunk detail 已能回溯 L1/L0；MCP/CLI 的 blocks/fetch 入口仍需补齐 | ⚠️ 补齐 |
 
-当前阶段不再新增旧版兼容入口；设计与代码以本文档和当前 L0/L1 契约为准。对外命令保持少量核心入口：`docgraph build`、`docgraph doctor`、`docgraph serve` 和检索/查询类命令。
+对外命令保持少量核心入口：`docgraph init`、`docgraph build`、`docgraph doctor`、`docgraph serve` 和检索/查询类命令。
 
 ---
 
-## 7. 改造路线（M7）
+## 7. 配置与运行目录
 
-详见 [roadmap.md](./roadmap.md) 的 M7。摘要：
+DocGraph 按 codegraph/Claude Code 风格区分用户配置、项目覆盖和生成物：
 
-1. **M7-P1（P0）L0 无损版面**：真实接入 MinerU/PyMuPDF；`Block` + `TableData` 入库（`blocks` 表）；表格保留单元格和原始证据。
-2. **M7-P2（P0）L1 落地**：`chunks` 表 + `chunk→block` 回溯 + FTS5 全文 + 可插拔 embedding/vector store。
-3. **M7-P3（P1）L2 通用化**：`TableEntityExtractor` + schema registry；register/pin/timing/signal/interface/requirement 等降为 schema 预设；节点带 `source_block_ids`。
-4. **M7-P4（P1）Agent 接口**：新增 `docgraph_blocks` / `docgraph_fetch` / 增强 `docgraph_context` 返回可回溯片段。
-5. **M7-P5（P2）领域 schema 包**：register/pin/signal/interface/requirement/memory_map/interrupt 的 schema 预设集。
+- `~/.docgraph/config.yaml`：用户级模型、embedding、VLM、API key、base URL、成本和默认偏好。
+- `~/.docgraph/.env`、`~/.docgraph/.env.local`：可选环境变量兼容路径。
+- `<project>/docgraph.yaml`：可选项目级覆盖，用于文档范围、芯片 family、parser/extractor 策略。
+- `<project>/.docgraph/`：纯生成目录，保存 `graph.db`、缓存、日志、manifest、导出结果，不保存人工维护配置。
+
+普通项目无需 `docgraph.yaml` 也能运行；默认扫描 `docs/**/*.pdf` 与 `spec/**/*.pdf`。PDF 默认使用轻量 PyMuPDF，复杂版面可在项目覆盖中配置 MinerU + PyMuPDF fallback。
 
 ---
 

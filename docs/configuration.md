@@ -1,8 +1,34 @@
 # 配置参考
 
-> 对应 DESIGN.md §15。`.docgraph/config.yaml` 的完整字段说明。
+> 对应 DESIGN.md §15。DocGraph 配置分为用户级和项目级：用户级在
+> `~/.docgraph/`。项目级 `docgraph.yaml` 是可选覆盖文件；没有它时使用内置
+> 默认项目配置。项目内 `.docgraph/` 是纯生成目录，只保存图谱数据库、缓存、
+> manifest 和日志。
 
-## 完整示例
+## 配置加载顺序
+
+DocGraph 按顺序合并配置，后者覆盖前者：
+
+1. 内置默认值
+2. `~/.docgraph/config.yaml`：用户级模型、embedding、VLM、成本偏好
+3. `<project>/docgraph.yaml`：可选，项目级文档范围、芯片 family、parser/extractor 策略
+
+API key、base URL 和模型名建议直接写在 `~/.docgraph/config.yaml`。环境变量和
+`.env` 仍保留为兼容路径，按“已存在环境变量优先”的方式加载：
+
+1. shell 已设置的环境变量
+2. `~/.docgraph/.env.local`
+3. `~/.docgraph/.env`
+4. 项目根 `.env.local`
+5. 项目根 `.env`
+
+## 项目级覆盖：`docgraph.yaml`（可选）
+
+普通项目可以不创建 `docgraph.yaml`。默认会扫描 `docs/**/*.pdf` 和
+`spec/**/*.pdf`，PDF 使用轻量 PyMuPDF，其他行为使用内置
+parser/extractor/storage 默认值。
+
+需要覆盖项目行为时再创建：
 
 ```yaml
 project:
@@ -30,7 +56,7 @@ docs:
 
 parsers:
   pdf:
-    primary: mineru
+    primary: mineru                  # 默认是 pymupdf；复杂版面项目可显式切到 mineru
     fallback: [marker, pymupdf]
     quality: balanced               # fast | balanced | accurate
     per_page_timeout: 60
@@ -51,43 +77,46 @@ extractors:
   figure:
     model_tier: accurate
 
-embeddings:
-  provider: bge_m3
-  dim: 1024
-  chunk_size: 512
-  chunk_overlap: 64
-
-linker:
-  llm_for_low_confidence: claude-haiku-4-5-20251001
-  min_edge_confidence: 0.5
-  alias_normalize:
-    case_insensitive: true
-    strip_prefixes: ["REG_", "BIT_"]
-
 storage:
   graph_backend: sqlite
   vector_backend: sqlite_json   # sqlite_json | lancedb
 
 logging:
   level: info
-  file: .docgraph/logs/docgraph.log
+```
 
-cost:
-  budget_per_build_usd: 5.0        # 超预算自动暂停，等用户确认
-  vlm_max_calls_per_doc: 500
+MinerU 模型权重默认复用 `~/.docgraph/mineru-models/`，不会随每个项目重复下载；项目内 `.docgraph/cache/` 只保存该项目的解析中间产物和图片缓存。
 
+## 用户级示例：`~/.docgraph/config.yaml`
+
+```yaml
 llm:
   enabled: true
-  provider: anthropic
+  provider: openai_compat
   providers:
-    anthropic:
-      api_key_env: ANTHROPIC_API_KEY
-      base_url: null
+    openai_compat:
+      api_key: sk-...
+      base_url: https://api.deepseek.com/v1
   tiers:
-    fast: claude-haiku-4-5-20251001
-    balanced: claude-sonnet-4-6
-    accurate: claude-opus-4-8
-  vlm_model: claude-sonnet-4-6       # 可选；不设置时使用 accurate tier
+    fast: deepseek-chat
+    balanced: deepseek-chat
+    accurate: deepseek-chat
+  vlm:
+    provider: openai_compat
+    model: GLM-4.6V-Flash
+    api_key: sk-...
+    base_url: https://open.bigmodel.cn/api/paas/v4
+
+embeddings:
+  provider: openai_compat
+  model: doubao-embedding-vision
+  dim: 1024
+  api_key: sk-...
+  base_url: https://ark.cn-beijing.volces.com/api/v3
+
+cost:
+  budget_per_build_usd: 5.0
+  vlm_max_calls_per_doc: 500
 ```
 
 ## 字段说明
@@ -117,7 +146,7 @@ PDF 支持 `quality` 档位：
 | 档位 | 用途 | 行为 |
 |---|---|---|
 | `fast` | 首次导入、快速预览 | PDF 优先走轻量 PyMuPDF，保留 L0/L1 可回溯结构 |
-| `balanced` | 默认生产路径 | 按配置 parser 链执行，推荐 MinerU + PyMuPDF fallback |
+| `balanced` | 高保真项目推荐路径 | 按配置 parser 链执行，推荐 MinerU + PyMuPDF fallback |
 | `accurate` | 复杂版面复核 | 按配置 parser 链执行，保留表格识别等高保真能力 |
 
 日常只需要 `docgraph build`。需要显式覆盖时使用 `docgraph build --quality fast|balanced|accurate`；质量检查统一使用 `docgraph doctor`。
@@ -146,11 +175,12 @@ PDF 支持 `quality` 档位：
 ### `llm`
 
 - `enabled`：控制 LLM/VLM 增强。关闭时 L0/L1 仍完整构建。
-- `providers`：API 配置
+- `providers`：文本 LLM provider 配置。每个 provider 支持 `api_key` / `base_url` 直写，也支持 `api_key_env` / `base_url_env` 从环境变量读取。
 - `tiers`：tier → 具体模型映射
-- `vlm_model`：视觉模型名；为空时使用 `tiers.accurate`
+- `vlm`：独立视觉模型配置，支持 `provider` / `model` / `api_key` / `base_url`。为空时回退到文本 LLM provider 和 `vlm_model` / `tiers.accurate`。
+- `vlm_model`：旧式视觉模型名字段，保留兼容；新配置优先使用 `llm.vlm.model`。
 
-VLM 也可以使用独立环境变量，避免和文本 LLM 共用 provider：
+VLM 也可以使用独立环境变量作为兼容路径，避免和文本 LLM 共用 provider：
 
 ```bash
 VLM_API_KEY=...
@@ -162,25 +192,26 @@ VLM_MODEL_NAME=...
 
 ## API key 管理
 
-- 优先环境变量（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等）
-- 其次 `.env` / `.env.local`（项目根，DocGraph 启动时自动加载）
-- 再次 `~/.docgraph/credentials`
-- **绝不写入项目 `config.yaml`**
+- 推荐写入 `~/.docgraph/config.yaml` 的 `api_key` / `base_url` 字段，便于像 Claude Code 一样由用户级配置统一管理。
+- 环境变量、`~/.docgraph/.env` / `.env.local` 仍可用于 CI、临时覆盖或不希望密钥出现在 YAML 的场景。
+- 项目根 `.env` / `.env.local` 仅用于临时项目覆盖。
+- **绝不写入项目 `docgraph.yaml` 或 `.docgraph/`**
 
-### `.env` 用法
+### `~/.docgraph/config.yaml` 用法
 
-在项目根放 `.env`（git 应当 ignore）：
+在用户目录放 `~/.docgraph/config.yaml`：
 
-```bash
-# Anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-
-# 或者 OpenAI 兼容（火山方舟、DeepSeek、Together、Groq、vLLM、Ollama 等）
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://api.deepseek.com/v1
+```yaml
+llm:
+  enabled: true
+  provider: openai_compat
+  providers:
+    openai_compat:
+      api_key: sk-...
+      base_url: https://api.deepseek.com/v1
 ```
 
-### OpenAI 兼容 provider 配置
+### OpenAI 兼容 provider 配置（`~/.docgraph/config.yaml`）
 
 ```yaml
 llm:
@@ -188,8 +219,8 @@ llm:
   provider: openai_compat       # 任意 OpenAI 兼容端点
   providers:
     openai_compat:
-      api_key_env: OPENAI_API_KEY
-      base_url_env: OPENAI_BASE_URL
+      api_key: sk-...
+      base_url: https://ark.cn-beijing.volces.com/api/v3
   tiers:
     fast: doubao-1-5-pro-32k
     balanced: doubao-1-5-pro-32k

@@ -70,10 +70,10 @@ docs:
 ```
 docgraph build                       # 当前 family 全部 spec
 docgraph build --doc=PATH            # 只重建某一份
-docgraph federate add ../another-chip/.docgraph
+docgraph admin federate add ../another-chip/.docgraph
                                      # 把另一项目的图谱挂接进来（只读 mount）
-docgraph federate ls
-docgraph federate rm <family>
+docgraph admin federate ls
+docgraph admin federate rm <family>
 ```
 
 > 联邦挂接（多 family 共存）的设计预留，P2 实现。核心 schema 已支持。

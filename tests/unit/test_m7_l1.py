@@ -1,8 +1,6 @@
 """M7-P2 L1 切块与索引层测试。"""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 
@@ -41,6 +39,18 @@ def test_mineru_table_recognition_is_disabled_only_for_fast_quality():
     assert _table_enabled_for_quality("fast") is False
     assert _table_enabled_for_quality("balanced") is True
     assert _table_enabled_for_quality("accurate") is True
+
+
+def test_mineru_models_dir_is_user_level(monkeypatch, tmp_path):
+    from docgraph.parsers.mineru_parser import _mineru_models_dir
+
+    custom = tmp_path / "shared-mineru-models"
+    monkeypatch.setenv("DOCGRAPH_MINERU_MODELS_DIR", str(custom))
+    assert _mineru_models_dir() == custom
+
+    monkeypatch.delenv("DOCGRAPH_MINERU_MODELS_DIR")
+    assert _mineru_models_dir().name == "mineru-models"
+    assert _mineru_models_dir().parent.name == ".docgraph"
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +738,100 @@ def test_query_engine_includes_semantic_chunk_hits(tmp_path):
     assert any(str(r).startswith("semantic:") for r in hits[0]["rank_reasons"])
     store.close()
     vstore.close()
+
+
+def test_query_engine_context_with_blocks_uses_l2_source_links(tmp_path):
+    from docgraph.graph.schema import (
+        Block,
+        BlockKind,
+        Chunk,
+        Evidence,
+        Location,
+        Node,
+        NodeKind,
+    )
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.query.engine import QueryEngine
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_blocks([
+        Block(
+            id="d#p1#b0",
+            doc_id="d",
+            page=1,
+            kind=BlockKind.PARAGRAPH,
+            reading_order=0,
+            text="CTRL register enables the PCIe core.",
+        )
+    ])
+    store.upsert_chunks([
+        Chunk(
+            id="d#c1",
+            doc_id="d",
+            page=1,
+            text="CTRL register enables the PCIe core.",
+            block_ids=["d#p1#b0"],
+            kind="section",
+        )
+    ])
+    store.upsert_node(Node(
+        id="d::register:CTRL",
+        kind=NodeKind.REGISTER,
+        name="CTRL",
+        doc_id="d",
+        location=Location(page=1),
+        evidence=Evidence(extractor="table_entity:register", chunk_ids=["d#c1"], pages=[1]),
+        attrs={
+            "source": "table_entity:register",
+            "source_block_ids": ["d#p1#b0"],
+            "source_chunk_ids": ["d#c1"],
+        },
+        summary="Control register",
+    ))
+
+    ctx = QueryEngine(store).context_with_blocks("Implement CTRL", max_nodes=5)
+    assert ctx["nodes"][0]["source_block_ids"] == ["d#p1#b0"]
+    assert ctx["nodes"][0]["needs_source_check"] is True
+    assert ctx["chunks"][0]["id"] == "d#c1"
+    assert ctx["blocks"][0]["id"] == "d#p1#b0"
+    store.close()
+
+
+def test_query_engine_context_with_blocks_returns_l1_when_l2_misses(tmp_path):
+    from docgraph.graph.schema import Block, BlockKind, Chunk
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.query.engine import QueryEngine
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_blocks([
+        Block(
+            id="d#p2#b0",
+            doc_id="d",
+            page=2,
+            kind=BlockKind.PARAGRAPH,
+            reading_order=0,
+            text="MSI-X doorbell write completes interrupt delivery.",
+        )
+    ])
+    store.upsert_chunks([
+        Chunk(
+            id="d#c2",
+            doc_id="d",
+            page=2,
+            text="MSI-X doorbell write completes interrupt delivery.",
+            block_ids=["d#p2#b0"],
+            kind="section",
+        )
+    ])
+
+    ctx = QueryEngine(store).context_with_blocks("MSI-X doorbell", max_nodes=5)
+    assert ctx["nodes"] == []
+    assert ctx["chunk_hits"][0]["chunk_id"] == "d#c2"
+    assert ctx["chunks"][0]["id"] == "d#c2"
+    assert ctx["blocks"][0]["id"] == "d#p2#b0"
+    store.close()
 
 
 def test_migration_v2_adds_block_ids_column(tmp_path):

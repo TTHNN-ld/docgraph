@@ -127,6 +127,7 @@ def audit_l2_candidates(
                     doc["schemas_hit"][schema_name] += 1
                     srow["table_candidates_matched"] += 1
                     srow["candidate_docs"].add(doc_id)
+                    _append_sample(srow, row["id"])
             if not matched:
                 skipped_tables[doc_id].append(row["id"])
             continue
@@ -155,6 +156,7 @@ def audit_l2_candidates(
                 doc["schemas_hit"][schema_name] += 1
                 srow["text_candidates_matched"] += 1
                 srow["candidate_docs"].add(doc_id)
+                _append_sample(srow, row["id"])
         if not matched:
             skipped_texts[doc_id].append(row["id"])
 
@@ -184,11 +186,19 @@ def audit_l2_candidates(
             ))
 
     for schema_name, row in by_schema.items():
-        if row["table_candidates_matched"] + row["text_candidates_matched"] == 0:
+        matched_candidates = row["table_candidates_matched"] + row["text_candidates_matched"]
+        if matched_candidates == 0:
             issues.append(L2AuditIssue(
                 "warning",
                 "l2.schema_no_candidates",
                 f"schema '{schema_name}' has no matched candidates",
+            ))
+        elif row["l2_nodes"] == 0:
+            issues.append(L2AuditIssue(
+                "warning",
+                "l2.matched_but_no_nodes",
+                f"schema '{schema_name}' has {matched_candidates} matched candidates but no materialized L2 nodes",
+                sample_ids=row["sample_candidate_ids"][:5],
             ))
 
     by_doc_rows = [_freeze_doc_row(doc) for doc in by_doc.values()]
@@ -219,10 +229,17 @@ def _schema_row(rows: dict[str, dict[str, Any]], schema_name: str) -> dict[str, 
             "table_candidates_matched": 0,
             "text_candidates_seen": 0,
             "text_candidates_matched": 0,
+            "sample_candidate_ids": [],
             "candidate_docs": set(),
             "l2_nodes": 0,
         }
     return rows[schema_name]
+
+
+def _append_sample(row: dict[str, Any], candidate_id: str) -> None:
+    samples = row["sample_candidate_ids"]
+    if len(samples) < 20 and candidate_id not in samples:
+        samples.append(candidate_id)
 
 
 def _doc_types_by_id(conn) -> dict[str, str]:
@@ -312,6 +329,10 @@ def _freeze_schema_row(row: dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
     out["candidate_docs"] = sorted(row["candidate_docs"])
     out["candidate_doc_count"] = len(out["candidate_docs"])
+    out["materialization_rate"] = _safe_div(
+        row["l2_nodes"],
+        row["table_candidates_matched"] + row["text_candidates_matched"],
+    )
     return out
 
 
@@ -334,3 +355,7 @@ def _totals(doc_rows: list[dict[str, Any]], schema_rows: list[dict[str, Any]]) -
     )
     total["schemas_hit"] = dict(sorted(schemas_hit.items()))
     return dict(total)
+
+
+def _safe_div(num: int | float, den: int | float) -> float:
+    return round(float(num) / float(den), 4) if den else 0.0

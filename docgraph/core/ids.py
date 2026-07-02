@@ -32,6 +32,12 @@ _KIND_SHORT: dict[NodeKind, str] = {
     NodeKind.CODEBLOCK: "code",
     NodeKind.TERM: "term",
     NodeKind.CHUNK: "chunk",
+    NodeKind.INTERRUPT: "irq",
+    NodeKind.CLOCK: "clk",
+    NodeKind.POWER_DOMAIN: "pwr",
+    NodeKind.MEMORY_MAP: "mmap",
+    NodeKind.REQUIREMENT: "req",
+    NodeKind.ERRATA: "err",
 }
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.\-]+")

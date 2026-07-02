@@ -82,8 +82,8 @@ class TableData(BaseModel):
 
 | Parser | 主要场景 | 优先级 |
 |---|---|---|
-| `mineru` | PDF（中英混排、公式、表格） | **P0** 默认生产路径 |
-| `pymupdf` | PDF（轻量、快速预览/兜底） | **P0** 内置轻量路径 |
+| `pymupdf` | PDF（轻量、开箱即用、快速预览/兜底） | **P0** 默认内置路径 |
+| `mineru` | PDF（中英混排、公式、复杂表格/图） | **P0** 高保真推荐路径 |
 | `marker` | PDF（英文为主、速度优先） | P0 备选 |
 | `docling` | PDF（双栏、复杂版式） | P1 |
 | `vlm` | 扫描版 PDF 单页兜底 | P1 |
@@ -92,14 +92,16 @@ class TableData(BaseModel):
 | `xlsx` | Excel（openpyxl，常用于 pin 表） | P1 |
 | `mathpix` | 商用 OCR | P2 |
 
-> **设计要点**：PyMuPDF 作为默认（pip 装即可用），MinerU 作为复杂版面推荐后端（效果更好但安装更重）。用户可在 config 中切换。新增 Docling 等 parser 时，只需要写 adapter 归一到 `ParsedDoc/Block`，下游抽取器不应改动。
+> **设计要点**：PyMuPDF 作为默认（pip 装即可用），MinerU 作为复杂版面推荐后端（效果更好但安装更重）。用户可在可选项目级 `docgraph.yaml` 中切换。新增 Docling 等 parser 时，只需要写 adapter 归一到 `ParsedDoc/Block`，下游抽取器不应改动。
+
+MinerU 的解析缓存、middle JSON 和导出的图片属于项目生成物，放在 `<project>/.docgraph/cache/`；模型权重属于用户级共享资源，默认放在 `~/.docgraph/mineru-models/`，可用 `DOCGRAPH_MINERU_MODELS_DIR` 覆盖，避免每个项目重复下载模型。
 
 ## 4. Parser 选择策略
 
 ```yaml
 parsers:
   pdf:
-    primary: mineru               # 默认生产 parser
+    primary: mineru               # 高保真项目可显式开启
     fallback: [pymupdf]           # parser 级失败才降级
     quality: balanced             # fast | balanced | accurate
     per_page_timeout: 60

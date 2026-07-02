@@ -178,7 +178,7 @@ def test_federation_add_ls_rm(tmp_path):
     local = tmp_path / "local"
     (local / ".docgraph").mkdir(parents=True)
     SQLiteGraphStore(local / ".docgraph" / "graph.db").init_schema()
-    (local / ".docgraph" / "config.yaml").write_text(
+    (local / "docgraph.yaml").write_text(
         "project:\n  family: local\n", encoding="utf-8"
     )
 
@@ -186,7 +186,7 @@ def test_federation_add_ls_rm(tmp_path):
     remote = tmp_path / "remote"
     (remote / ".docgraph").mkdir(parents=True)
     SQLiteGraphStore(remote / ".docgraph" / "graph.db").init_schema()
-    (remote / ".docgraph" / "config.yaml").write_text(
+    (remote / "docgraph.yaml").write_text(
         "project:\n  family: remote-chip\n", encoding="utf-8"
     )
 

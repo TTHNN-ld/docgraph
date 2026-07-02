@@ -9,11 +9,11 @@ from rich.table import Table
 
 from docgraph.core.bootstrap import bootstrap
 from docgraph.core.config import (
-    DEFAULT_CONFIG_YAML,
     config_path,
     docgraph_dir,
     load_config,
     project_root_from_cwd,
+    write_default_user_config,
 )
 from docgraph.core.dotenv import autoload_env
 from docgraph.core.logger import get_logger, set_level
@@ -35,9 +35,24 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+l2_app = typer.Typer(help="L2 quality audit and evaluation.")
+inspect_app = typer.Typer(help="Inspect extracted entities and raw graph nodes.")
+graph_app = typer.Typer(help="Graph context, trace, and impact queries.")
+admin_app = typer.Typer(help="Advanced maintenance and operations.")
+
+app.add_typer(l2_app, name="l2")
+app.add_typer(inspect_app, name="inspect")
+app.add_typer(graph_app, name="graph")
+app.add_typer(admin_app, name="admin")
 
 console = Console()
 log = get_logger("docgraph.cli")
+
+
+def _print_json(data: object) -> None:
+    import json
+
+    typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _open_project() -> tuple[Path, SQLiteGraphStore, QueryEngine]:
@@ -76,17 +91,20 @@ def init(
     root = Path.cwd()
     dg = docgraph_dir(root)
     dg.mkdir(parents=True, exist_ok=True)
+    user_cfg_path = write_default_user_config(overwrite=False)
     cfg_path = config_path(root)
-    if cfg_path.exists() and not force:
-        console.print(f"[yellow]Config already exists:[/yellow] {cfg_path}")
+    project_content = _project_init_config(name=name, family=family)
+    if project_content:
+        if cfg_path.exists() and not force:
+            console.print(f"[yellow]Project config already exists:[/yellow] {cfg_path}")
+        else:
+            cfg_path.write_text(project_content, encoding="utf-8")
+            console.print(f"[green]Created[/green] {cfg_path}")
+    elif cfg_path.exists():
+        console.print(f"[green]Project config[/green] {cfg_path}")
     else:
-        content = DEFAULT_CONFIG_YAML
-        if name:
-            content = content.replace("name: my-chip-spec", f"name: {name}")
-        if family:
-            content = content.replace("family: default", f"family: {family}")
-        cfg_path.write_text(content, encoding="utf-8")
-        console.print(f"[green]Created[/green] {cfg_path}")
+        console.print("[green]Project config[/green] using built-in defaults")
+    console.print(f"[green]User config[/green] {user_cfg_path}")
     for sub in ("cache", "entities", "logs"):
         (dg / sub).mkdir(exist_ok=True)
     # 初始化存储
@@ -95,6 +113,17 @@ def init(
     store.init_schema()
     store.close()
     console.print(f"[bold green]DocGraph initialized[/bold green] at {dg}")
+
+
+def _project_init_config(*, name: str | None, family: str | None) -> str:
+    lines: list[str] = []
+    if name or family:
+        lines.append("project:")
+        if name:
+            lines.append(f"  name: {name}")
+        if family:
+            lines.append(f"  family: {family}")
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 # ---------------------------------------------------------------------------
@@ -191,20 +220,18 @@ def doctor(
     _run_layer_doctor(json_output=json_output, strict=strict)
 
 
-@app.command("l2-audit")
+@l2_app.command("audit")
 def l2_audit(
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
     schema: list[str] = typer.Option(None, "--schema", help="Limit to one or more L2 schemas"),
     strict: bool = typer.Option(False, "--strict", help="Return non-zero on warnings too"),
 ) -> None:
     """Audit L2 candidate coverage without calling LLM/VLM."""
-    import json
-
     _root, store, _qe = _open_project()
     report = audit_l2_candidates(store, schema_names=schema or None)
     store.close()
     if json_output:
-        console.print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        _print_json(report.as_dict())
     else:
         totals = report.totals
         console.print("[bold]L2 candidate audit[/bold] " + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]"))
@@ -221,7 +248,7 @@ def l2_audit(
         console.print(table)
 
         schema_table = Table(title="Schema candidates", show_header=True, header_style="bold")
-        for col in ("schema", "table_seen", "table_hit", "text_seen", "text_hit", "docs", "l2_nodes"):
+        for col in ("schema", "table_seen", "table_hit", "text_seen", "text_hit", "docs", "l2_nodes", "mat_rate"):
             schema_table.add_column(col)
         for row in report.by_schema:
             schema_table.add_row(
@@ -232,6 +259,7 @@ def l2_audit(
                 str(row["text_candidates_matched"]),
                 str(row["candidate_doc_count"]),
                 str(row["l2_nodes"]),
+                str(row.get("materialization_rate", 0)),
             )
         console.print(schema_table)
 
@@ -254,7 +282,7 @@ def l2_audit(
         raise typer.Exit(code=1)
 
 
-@app.command("l2-eval")
+@l2_app.command("eval")
 def l2_eval(
     golden: Path = typer.Option(..., "--golden", help="Golden directory or expected JSON file"),
     kind: list[str] = typer.Option(None, "--kind", help="Limit to one or more entity kinds"),
@@ -263,8 +291,6 @@ def l2_eval(
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
 ) -> None:
     """Evaluate persisted L2 nodes against a golden expected JSON set."""
-    import json
-
     _root, store, _qe = _open_project()
     report = eval_l2_golden(
         store,
@@ -275,7 +301,7 @@ def l2_eval(
     )
     store.close()
     if json_output:
-        console.print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        _print_json(report.as_dict())
     else:
         totals = report.totals
         console.print("[bold]L2 golden eval[/bold] " + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]"))
@@ -310,13 +336,11 @@ def l2_eval(
 
 
 def _run_layer_doctor(*, json_output: bool, strict: bool) -> None:
-    import json
-
     _root, store, _qe = _open_project()
     report = audit_l0_l1(store)
     store.close()
     if json_output:
-        console.print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        _print_json(report.as_dict())
     else:
         totals = report.totals
         console.print("[bold]Layer quality[/bold] " + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]"))
@@ -380,7 +404,7 @@ def search(
     console.print(tbl)
 
 
-@app.command()
+@app.command(hidden=True)
 def query(text: str) -> None:
     search(text)
 
@@ -390,7 +414,7 @@ def query(text: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@inspect_app.command()
 def register(name: str) -> None:
     root, store, qe = _open_project()
     d = qe.register(name)
@@ -420,7 +444,7 @@ def register(name: str) -> None:
     console.print(tbl)
 
 
-@app.command()
+@inspect_app.command()
 def pin(name: str) -> None:
     root, store, qe = _open_project()
     d = qe.pin(name)
@@ -430,7 +454,7 @@ def pin(name: str) -> None:
     _print_node(d.node)
 
 
-@app.command()
+@inspect_app.command()
 def timing(name: str) -> None:
     root, store, qe = _open_project()
     d = qe.timing(name)
@@ -440,7 +464,7 @@ def timing(name: str) -> None:
     _print_node(d.node)
 
 
-@app.command()
+@inspect_app.command()
 def figure(id_or_name: str) -> None:
     root, store, qe = _open_project()
     d = qe.figure(id_or_name)
@@ -458,7 +482,7 @@ def figure(id_or_name: str) -> None:
         console.print(f"  mermaid: {n.attrs['mermaid'][:200]}...")
 
 
-@app.command()
+@inspect_app.command()
 def section(path_or_id: str) -> None:
     root, store, qe = _open_project()
     d = qe.section(path_or_id)
@@ -473,7 +497,7 @@ def section(path_or_id: str) -> None:
             console.print(f"    · {c.name}")
 
 
-@app.command()
+@inspect_app.command()
 def glossary(term: str) -> None:
     root, store, qe = _open_project()
     items = qe.glossary(term)
@@ -492,7 +516,7 @@ def glossary(term: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@graph_app.command()
 def context(task: str) -> None:
     root, store, qe = _open_project()
     cb = qe.context(task)
@@ -509,7 +533,7 @@ def context(task: str) -> None:
         console.print(tbl)
 
 
-@app.command()
+@graph_app.command()
 def trace(from_id: str, to_id: str) -> None:
     root, store, qe = _open_project()
     paths = qe.trace(from_id, to_id)
@@ -523,7 +547,7 @@ def trace(from_id: str, to_id: str) -> None:
         console.print(f"  {i}. {nid}{arrow}")
 
 
-@app.command()
+@graph_app.command()
 def impact(id: str, depth: int = typer.Option(2, "--depth", help="Influence depth")) -> None:
     root, store, qe = _open_project()
     rep = qe.impact(id, depth=depth)
@@ -543,7 +567,7 @@ def impact(id: str, depth: int = typer.Option(2, "--depth", help="Influence dept
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@inspect_app.command()
 def node(id: str) -> None:
     root, store, qe = _open_project()
     n = qe.node(id)
@@ -565,7 +589,7 @@ def _print_node(n) -> None:
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@admin_app.command()
 def watch(paths: list[str] = typer.Option(None, "--path", help="Watch directory")) -> None:
     run_watch_loop(paths)
 
@@ -609,7 +633,7 @@ def version() -> None:
 
 
 plugins_app = typer.Typer(help="Plugin management")
-app.add_typer(plugins_app, name="plugins")
+admin_app.add_typer(plugins_app, name="plugins")
 
 
 @plugins_app.command("ls")
@@ -666,7 +690,7 @@ def plugins_info(name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@admin_app.command()
 def migrate(
     dry_run: bool = typer.Option(False, "--dry-run", help="Only show what would be done"),
 ) -> None:
@@ -700,7 +724,7 @@ def migrate(
 
 
 federate_app = typer.Typer(help="Federation management — mount other docgraph projects as read-only.")
-app.add_typer(federate_app, name="federate")
+admin_app.add_typer(federate_app, name="federate")
 
 
 @federate_app.command("add")
@@ -759,7 +783,7 @@ def federate_rm(name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@admin_app.command()
 def review(
     min_confidence: float = typer.Option(0.85, "--min-confidence",
                                           help="Show items below this confidence"),

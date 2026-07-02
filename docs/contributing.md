@@ -33,7 +33,7 @@ RFC 包括：动机、设计、备选方案、迁移路径、未决问题。
 |---|---|---|
 | 单元测试 | pytest | core 模块覆盖 ≥80% |
 | 集成测试 | pytest | 真实开源 PDF（如 RISC-V spec） |
-| Golden 评估 | docgraph eval | 标注集 precision/recall |
+| Golden 评估 | docgraph l2 eval | 标注集 precision/recall |
 | Property test | hypothesis | schema 健壮性 |
 
 ## CI
@@ -42,7 +42,7 @@ RFC 包括：动机、设计、备选方案、迁移路径、未决问题。
 # .github/workflows/ci.yml
 - pytest tests/unit -v --cov=docgraph
 - pytest tests/integration
-- docgraph eval --golden=examples/golden/ --threshold=0.85
+- docgraph l2 eval --golden=examples/golden/ --min-recall=0.85
 - ruff check
 - mypy docgraph/
 ```
@@ -62,10 +62,10 @@ RFC 包括：动机、设计、备选方案、迁移路径、未决问题。
 | 语言 | Python 3.11+ | LLM 生态 |
 | CLI | Typer | 简洁、自动文档 |
 | 数据校验 | Pydantic v2 | schema 是命根子 |
-| 图存储 | SQLite + sqlite-vec | 单文件、零依赖 |
-| PDF 解析 | MinerU / Marker / Docling / PyMuPDF | 链式 fallback |
-| VLM | Claude Sonnet 4.6 / 可换 | 适配器隔离 |
-| Embedding | bge-m3（默认）/ 可换 | sentence-transformers |
+| 图存储 | SQLite + 可插拔向量后端 | 默认本地轻量，支持 LanceDB |
+| PDF 解析 | PyMuPDF / MinerU / Marker / Docling | 默认 PyMuPDF，复杂版面推荐 MinerU |
+| VLM | OpenAI-compatible / 可换 | 适配器隔离 |
+| Embedding | hash / OpenAI-compatible / 可换 | 低成本默认，可配置真实语义模型 |
 | MCP | FastMCP / mcp-python | 标准协议 |
 | 文件监控 | watchdog | 跨平台 |
 | 任务编排 | 自写轻量 DAG | 避免重依赖 |

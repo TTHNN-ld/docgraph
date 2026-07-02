@@ -22,12 +22,16 @@ from docgraph.extractors.candidates import EntityCandidate, build_entity_candida
 from docgraph.extractors._vlm_backstop import page_needs_vlm_for, vlm_extract
 from docgraph.extractors.base import ExtractContext
 from docgraph.extractors.schema_registry import (
+    ConstraintDef,
     EntitySchema,
     InterfaceDef,
     InterruptDef,
     MemoryMapDef,
+    PhysicalConstraintDef,
+    PinDef,
     RegisterDef,
     SignalDef,
+    TimingParam,
     get_schema,
     schemas_for_doctype,
 )
@@ -159,6 +163,10 @@ class TableEntityExtractor:
                 result = None
                 if sn == "register":
                     result = self._extract_registers_from_table(candidate.table)
+                elif sn == "pin":
+                    result = self._extract_pins_from_table(candidate.table)
+                elif sn == "timing":
+                    result = self._extract_timing_from_table(candidate.table)
                 elif sn == "memory_map":
                     result = self._extract_memory_maps_from_table(candidate.table)
                 elif sn == "interrupt":
@@ -167,6 +175,10 @@ class TableEntityExtractor:
                     result = self._extract_signals_from_table(candidate.table)
                 elif sn == "interface":
                     result = self._extract_interfaces_from_table(candidate.table)
+                elif sn == "constraint":
+                    result = self._extract_constraints_from_table(candidate.table)
+                elif sn == "physical_constraint":
+                    result = self._extract_physical_constraints_from_table(candidate.table)
                 if result is None and ctx.has_llm:
                     result = self._llm_extract(candidate.table, schema, sn, ctx)
                     llm_calls += 1
@@ -465,6 +477,8 @@ class TableEntityExtractor:
         attrs["source"] = f"table_entity:{schema_name}"
         attrs["source_block_ids"] = source_block_ids or []
         attrs["source_chunk_ids"] = source_chunk_ids or []
+        if schema_name in {"constraint", "physical_constraint"}:
+            attrs["entity_type"] = schema_name
         if candidate_id:
             attrs["candidate_id"] = candidate_id
         attrs["schema_name"] = schema_name
@@ -567,10 +581,85 @@ class TableEntityExtractor:
             has_direction = "direction" in pool or "方向" in pool
             if has_interface_group and has_direction:
                 return True
+        if schema.kind == NodeKind.INTERRUPT:
+            return TableEntityExtractor._has_interrupt_definition_columns(table)
+        if schema.kind == NodeKind.INTERFACE:
+            return TableEntityExtractor._has_interface_definition_columns(table)
         hits = sum(1 for h in schema.table_header_hints if h.lower() in pool)
         if not (table.headers or table.rows or table.html):
             return hits >= 1
         return hits >= 2
+
+    @staticmethod
+    def _has_interface_definition_columns(table: TableData | None) -> bool:
+        """Return true for bus/interface definitions, not grouping or map tables."""
+        if table is None or not table.headers:
+            return False
+        headers = [TableEntityExtractor._norm_header(h) for h in table.headers]
+        caption = TableEntityExtractor._norm_header(table.caption or "")
+        pool = " ".join([*headers, caption])
+        if not any(token in pool for token in ("interface", "bus", "protocol", "接口", "总线", "协议")):
+            return False
+
+        address_map_tokens = (
+            "address", "base", "offset", "size", "range", "memory map",
+            "address map", "noc master", "noc slave", "地址", "基地址",
+            "偏移", "大小", "范围", "地址映射",
+        )
+        if any(token in pool for token in address_map_tokens):
+            return False
+
+        has_group_header = any(h in {"interface group", "接口组", "外围接口"} for h in headers)
+        has_direction_only = any(h in {"direction", "dir", "方向"} for h in headers)
+        has_description = any(h in {"description", "desc", "function", "说明", "描述", "功能"} for h in headers)
+        has_protocol_col = any(h in {"protocol", "bus", "协议", "总线"} for h in headers)
+        has_width_col = any("width" in h or "位宽" in h or "宽度" in h for h in headers)
+        has_role_col = any(h in {"role", "master", "slave", "角色", "主", "从"} for h in headers)
+        has_name_col = any(h in {"name", "interface name", "interface", "接口名", "接口"} for h in headers)
+
+        if has_group_header and not has_protocol_col and not has_width_col and not has_role_col:
+            return False
+        if has_direction_only and has_description and not has_protocol_col and not has_width_col and not has_name_col:
+            return False
+        return bool((has_name_col or has_protocol_col) and (has_protocol_col or has_width_col or has_role_col))
+
+    @staticmethod
+    def _has_interrupt_definition_columns(table: TableData | None) -> bool:
+        """Return true only for IRQ/MSI definition lists, not feature summaries.
+
+        Processor datasheets often contain high-level capability tables whose
+        first header says "Nested vectored interrupt controller" or
+        "Interrupt priority levels". Those tables mention interrupts but do not
+        define interrupt entities. L2 should only materialize an interrupt when
+        the table exposes a source/name/vector/number style column.
+        """
+        if table is None or not table.headers:
+            return False
+        headers = [TableEntityExtractor._norm_header(h) for h in table.headers]
+        caption = TableEntityExtractor._norm_header(table.caption or "")
+        pool = " ".join(headers + [caption])
+        if not any(token in pool for token in ("interrupt", "irq", "msi", "vector", "中断", "向量")):
+            return False
+
+        strong_columns = (
+            "irq src", "irq_src", "summary_irq", "interrupt source",
+            "interrupt name", "irq name", "irq number", "vector number",
+            "msi vector", "msi-x vector", "source signal", "irq signal",
+            "中断源", "中断号", "中断信号", "向量号",
+        )
+        if any(any(token in h for token in strong_columns) for h in headers):
+            return True
+
+        has_sourceish = any(h in {"interrupt", "irq", "msi", "vector", "signal", "name", "中断", "信号"} for h in headers)
+        has_structural = any(
+            any(token in h for token in ("number", "priority", "type", "description", "desc", "位宽", "类型", "描述"))
+            for h in headers
+        )
+        caption_declares_list = any(
+            token in caption
+            for token in ("interrupt source", "interrupt list", "irq list", "msi", "中断源", "中断列表")
+        )
+        return bool((caption_declares_list or has_structural) and has_sourceish)
 
     @staticmethod
     def _table_has_cells(table: TableData | None) -> bool:
@@ -783,8 +872,7 @@ class TableEntityExtractor:
         if table is None or not table.rows:
             return None
         headers = [cls._norm_header(h) for h in (table.headers or [])]
-        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
-        if not any(token in pool for token in ("interrupt", "irq", "msi", "vector", "中断", "向量")):
+        if not cls._has_interrupt_definition_columns(table):
             return None
         name_col = cls._find_col(headers, (
             "irq src signal", "irq src", "irq_src信号", "irq_src 信号",
@@ -845,6 +933,86 @@ class TableEntityExtractor:
         return out or None
 
     @classmethod
+    def _extract_pins_from_table(cls, table: TableData | None) -> list[PinDef] | None:
+        """Deterministically parse physical pin / ball / package tables.
+
+        标准 pin 表列：Pin Name / Pin No / Direction / Type / Function / Voltage。
+        只在表头明确含 pin 关键词时解析，避免把信号表误判为 pin 表。
+        """
+        if table is None or not table.rows:
+            return None
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
+        # 必须有 pin/ball/管脚/引脚/package 之一，否则不是物理 pin 表
+        if not any(token in pool for token in ("pin", "ball", "管脚", "引脚", "package", "封装")):
+            return None
+        if "pin list" in pool or "管脚表" in pool:
+            return None
+        name_col = cls._find_col(headers, ("pin name", "pin", "ball name", "name", "管脚名", "引脚名"))
+        no_col = cls._find_col(headers, ("pin no", "pin number", "ball no", "no", "number", "编号", "管脚号"))
+        direction_col = cls._find_col(headers, ("direction", "dir", "type", "i/o", "io", "方向", "类型"))
+        voltage_col = cls._find_col(headers, ("voltage", "power", "电压", "电源"))
+        desc_col = cls._find_col(headers, ("description", "desc", "function", "功能", "描述", "说明"))
+        if name_col is None and no_col is None:
+            return None
+        if name_col is None:
+            name_col = no_col
+        out: list[PinDef] = []
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            name = cls._clean_display_name(cls._cell(cells, name_col))
+            if not name or cls._is_header_echo(name, headers):
+                continue
+            if name_col == no_col and not any(c.isalpha() for c in name):
+                continue
+            out.append(PinDef(
+                name=name,
+                direction=cls._normalize_direction(cls._cell(cells, direction_col)),
+                pin_no=cls._cell(cells, no_col) if no_col != name_col else None,
+                voltage=cls._cell(cells, voltage_col) or None,
+                description=cls._cell(cells, desc_col),
+            ))
+        return out or None
+
+    @classmethod
+    def _extract_timing_from_table(cls, table: TableData | None) -> list[TimingParam] | None:
+        """Deterministically parse timing / electrical parameter tables.
+
+        标准时序表列：Symbol / Min / Typ / Max / Unit / Condition。
+        要求同时有 symbol 列和 min/max/typ 之一才算时序表。
+        """
+        if table is None or not table.rows:
+            return None
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        symbol_col = cls._find_col(headers, ("symbol", "parameter", "name", "param", "参数", "符号"))
+        min_col = cls._find_col(headers, ("min", "minimum", "最小"))
+        typ_col = cls._find_col(headers, ("typ", "typical", "典型"))
+        max_col = cls._find_col(headers, ("max", "maximum", "最大"))
+        unit_col = cls._find_col(headers, ("unit", "units", "单位"))
+        cond_col = cls._find_col(headers, ("condition", "test condition", "note", "条件", "测试条件"))
+        if symbol_col is None:
+            return None
+        if min_col is None and typ_col is None and max_col is None:
+            return None
+        out: list[TimingParam] = []
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            symbol = cls._clean_display_name(cls._cell(cells, symbol_col))
+            if not symbol or cls._is_header_echo(symbol, headers):
+                continue
+            if symbol.replace(".", "").replace("/", "").isdigit():
+                continue
+            out.append(TimingParam(
+                symbol=symbol,
+                min=cls._cell(cells, min_col) or None,
+                typ=cls._cell(cells, typ_col) or None,
+                max=cls._cell(cells, max_col) or None,
+                unit=cls._cell(cells, unit_col) or None,
+                condition=cls._cell(cells, cond_col),
+            ))
+        return out or None
+
+    @classmethod
     def _infer_signal_name_col(
         cls,
         table: TableData,
@@ -888,16 +1056,15 @@ class TableEntityExtractor:
         if table is None or not table.rows:
             return None
         headers = [cls._norm_header(h) for h in (table.headers or [])]
-        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
-        if not any(token in pool for token in ("interface", "bus", "protocol", "接口", "总线", "协议")):
+        if not cls._has_interface_definition_columns(table):
             return None
-        # Avoid signal-list tables that merely have an "Interface Group" column.
-        if any(token in pool for token in ("signal", "port", "信号", "端口")):
-            return None
-        name_col = cls._find_col(headers, ("interface", "interface name", "bus", "protocol", "接口", "总线", "协议"))
+        name_col = cls._find_col(headers, ("name", "interface name", "interface", "接口名", "接口"))
+        protocol_col = cls._find_col(headers, ("protocol", "bus", "协议", "总线"))
         direction_col = cls._find_col(headers, ("direction", "role", "master", "slave", "方向", "角色"))
         width_col = cls._find_col(headers, ("width", "data width", "位宽", "宽度"))
         desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
+        if name_col is None:
+            name_col = protocol_col
         if name_col is None:
             return None
         out: list[InterfaceDef] = []
@@ -908,8 +1075,96 @@ class TableEntityExtractor:
                 continue
             out.append(InterfaceDef(
                 name=name,
+                protocol=cls._cell(cells, protocol_col) if protocol_col != name_col else None,
                 direction=cls._normalize_direction(cls._cell(cells, direction_col)),
                 width=cls._normalize_width(cls._cell(cells, width_col)),
+                description=cls._cell(cells, desc_col),
+            ))
+        return out or None
+
+    @classmethod
+    def _extract_constraints_from_table(cls, table: TableData | None) -> list[ConstraintDef] | None:
+        """Deterministically parse backend timing/design constraint tables."""
+        if table is None or not table.rows:
+            return None
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
+        if not any(token in pool for token in (
+            "constraint", "sdc", "sta", "setup", "hold", "uncertainty",
+            "transition", "fanout", "false path", "multicycle", "约束", "时序",
+        )):
+            return None
+        name_col = cls._find_col(headers, ("name", "id", "constraint", "constraint name", "约束", "名称", "编号"))
+        target_col = cls._find_col(headers, ("target", "object", "path", "clock", "net", "pin", "目标", "对象", "路径", "时钟", "网络"))
+        type_col = cls._find_col(headers, ("type", "constraint type", "kind", "category", "类型", "类别"))
+        value_col = cls._find_col(headers, ("value", "limit", "max", "min", "取值", "值", "限制", "最大", "最小"))
+        unit_col = cls._find_col(headers, ("unit", "单位"))
+        condition_col = cls._find_col(headers, ("condition", "corner", "mode", "scenario", "条件", "工况", "模式"))
+        desc_col = cls._find_col(headers, ("description", "desc", "notes", "说明", "描述", "备注"))
+        if name_col is None and type_col is None:
+            return None
+        out: list[ConstraintDef] = []
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            raw_name = cls._clean_display_name(cls._cell(cells, name_col))
+            constraint_type = cls._clean_display_name(cls._cell(cells, type_col))
+            target = cls._clean_display_name(cls._cell(cells, target_col))
+            if not (raw_name or constraint_type or target):
+                continue
+            if cls._is_header_echo(raw_name, headers):
+                continue
+            name = raw_name or " ".join(x for x in [constraint_type, target] if x).strip()
+            out.append(ConstraintDef(
+                name=name,
+                target=target or None,
+                constraint_type=constraint_type or None,
+                value=cls._cell(cells, value_col) or None,
+                unit=cls._cell(cells, unit_col) or None,
+                condition=cls._cell(cells, condition_col),
+                description=cls._cell(cells, desc_col),
+            ))
+        return out or None
+
+    @classmethod
+    def _extract_physical_constraints_from_table(cls, table: TableData | None) -> list[PhysicalConstraintDef] | None:
+        """Deterministically parse backend floorplan/placement/routing constraint tables."""
+        if table is None or not table.rows:
+            return None
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
+        if not any(token in pool for token in (
+            "floorplan", "placement", "route", "routing", "layer", "region",
+            "macro", "keepout", "blockage", "spacing", "density",
+            "布局", "摆放", "布线", "区域", "宏", "禁布", "阻塞", "间距", "密度",
+        )):
+            return None
+        name_col = cls._find_col(headers, ("name", "id", "constraint", "rule", "名称", "编号", "规则"))
+        object_col = cls._find_col(headers, ("object", "target", "macro", "net", "cell", "对象", "目标", "宏", "网络", "单元"))
+        type_col = cls._find_col(headers, ("type", "constraint type", "category", "kind", "类型", "类别"))
+        value_col = cls._find_col(headers, ("value", "limit", "width", "spacing", "density", "utilization", "取值", "值", "线宽", "间距", "密度", "利用率"))
+        layer_col = cls._find_col(headers, ("layer", "metal", "层", "金属层"))
+        region_col = cls._find_col(headers, ("region", "area", "voltage area", "domain", "区域", "电压区域", "域"))
+        desc_col = cls._find_col(headers, ("description", "desc", "notes", "说明", "描述", "备注"))
+        if name_col is None and type_col is None:
+            return None
+        out: list[PhysicalConstraintDef] = []
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            raw_name = cls._clean_display_name(cls._cell(cells, name_col))
+            constraint_type = cls._clean_display_name(cls._cell(cells, type_col))
+            obj = cls._clean_display_name(cls._cell(cells, object_col))
+            if not (raw_name or constraint_type or obj):
+                continue
+            if cls._is_header_echo(raw_name, headers):
+                continue
+            name = raw_name or " ".join(x for x in [constraint_type, obj] if x).strip()
+            out.append(PhysicalConstraintDef(
+                name=name,
+                object=obj or None,
+                constraint_type=constraint_type or None,
+                value=cls._cell(cells, value_col) or None,
+                layer=cls._cell(cells, layer_col) or None,
+                region=cls._cell(cells, region_col) or None,
                 description=cls._cell(cells, desc_col),
             ))
         return out or None

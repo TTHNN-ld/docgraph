@@ -30,11 +30,12 @@ Extractor 之间通过 `requires` 声明依赖，由 orchestrator 拓扑排序�
 | 名称 | 产出 | 职责 |
 |---|---|---|
 | `section` | `SECTION` | 从 TOC / heading block 构建章节节点 |
-| `table_entity` | 动态：register / pin / signal / interface / requirement / ... | 通用 schema-guided 实体抽取 |
+| `table_entity` | 动态：register / pin / timing / signal / interface / memory_map / interrupt / ... | 通用 schema-guided 表格实体抽取（deterministic normalizer 优先，LLM 兜底） |
+| `text_entity` | `REQUIREMENT` / `ERRATA` | 正文段落确定性抽取需求（`REQ_*`）/ 勘误（`ERR*`）条目 |
 | `figure` | `FIGURE` + 可选芯片语义节点/边 | 从 figure block / image block 生成图节点，并按需用 VLM 做图语义增强 |
 | `glossary` | `TERM` | 抽取术语、缩写、别名 |
 
-旧的 `RegisterExtractor` / `PinExtractor` / `TimingExtractor` 不再作为独立内置类注册。寄存器、管脚、时序、接口、需求等实体通过 `TableEntityExtractor + schema registry` 统一抽取。
+旧的 `RegisterExtractor` / `PinExtractor` / `TimingExtractor` 不再作为独立内置类注册。寄存器、管脚、时序、接口等表格实体通过 `TableEntityExtractor + schema registry` 统一抽取；需求、勘误等正文实体由 `TextEntityExtractor` 确定性抽取。
 
 ## 3. TableEntityExtractor
 
@@ -51,20 +52,28 @@ L1 chunk + L0 blocks
 
 每个候选必须携带 `chunk_ids` / `block_ids` / page / section / text/table/image。普通表格、文本和图候选通常对应一个 L1 chunk；整页渲染图候选对应同页覆盖到的 L1 chunk 集合。L2 物化出的节点必须写回 `source_chunk_ids`、`source_block_ids` 和节点级 `evidence`。
 
-`docgraph l2-audit` 可在不调用 LLM/VLM 的情况下审计候选覆盖：统计 table/text/figure candidate 数量、schema 命中数量、已物化 L2 节点数量和未命中的文档样例。它用于定位漏抽来自候选层、schema 路由还是后续模型抽取。
+`docgraph l2 audit` 可在不调用 LLM/VLM 的情况下审计候选覆盖：统计 table/text/figure candidate 数量、schema 命中数量、已物化 L2 节点数量、materialization rate 和未命中的文档样例。它用于定位漏抽来自候选层、schema 路由还是后续模型抽取。
 
 ### 3.1 确定性 Normalizer
 
 L2 不能把所有结构化事实都交给模型猜测。对于列语义明确的高收益表格，`TableEntityExtractor` 会先运行确定性 normalizer；只有 normalizer 判断为不明确时才进入 LLM/VLM 兜底。
 
-当前确定性路径覆盖 register/bitfield 表，识别以下通用列语义：
+当前确定性 normalizer 覆盖的 schema：
 
-- register：`Reg name` / `Register` / `寄存器`
-- bitfield：`Field` / `Bit field` / `字段`
-- 位段：`Msb` + `Lsb`，或 `Bits 4:3` / `Bit` 列
-- 属性：`SWaccess` / `Access` / `Default` / `Reset` / `Description`
+| normalizer | 识别的列语义 | 排除规则 |
+|---|---|---|
+| register / bitfield | `Reg name` / `Field` / `Msb`+`Lsb` / `SWaccess` / `Default` | 含 `address map`/`中断` 等不抽 |
+| pin | `Pin Name` / `Pin No` / `Direction` / `Type` / `Voltage` | 必须含 `pin`/`ball`/`管脚` 关键词 |
+| timing | `Symbol` / `Min` / `Typ` / `Max` / `Unit` / `Condition` | 必须有 symbol + 至少一个 min/typ/max |
+| memory_map | `Address` / `Offset` / `Size` / `Range` | — |
+| interrupt | `irq_src` / `Interrupt` / `Number` | 专用列结构判断 |
+| signal | `Signal` / `Port` / `Direction` / `Width` | 排除含 `interrupt`/`irq` 的表 |
+| interface | `Interface` / `Protocol` / `Bus` + name 列 | 排除分组目录表、地址映射表 |
+| constraint / physical_constraint | `Constraint`/`SDC`/`Setup`/`Hold` 等 | — |
 
-Normalizer 只依赖表头和单元格结构，不绑定文档名或协议名。它会处理常见 OCR/表格解析错位：寄存器名被移入相邻列、续行为空或纯数字、位段列缺失但同表存在重复 `bit_N` 模式。无法可靠恢复时不强行产出，保留给 LLM/VLM 兜底和 L0/L1 原文回溯。
+Normalizer 只依赖表头和单元格结构，不绑定文档名或协议名。它会处理常见 OCR/表格解析错位。无法可靠恢复时不强行产出，保留给 LLM/VLM 兜底和 L0/L1 原文回溯。
+
+normalizer 之间通过 negative 词表互斥：例如 signal normalizer 遇到含 `interrupt`/`irq` 的表会返回 None，让 interrupt normalizer 处理，避免一张表被重复抽成两种实体。
 
 ### 3.2 Schema Registry
 
@@ -80,10 +89,12 @@ Normalizer 只依赖表头和单元格结构，不绑定文档名或协议名。
 | `interrupt` | `INTERRUPT` | IRQ/MSI/MSI-X 表 | 核心 |
 | `errata` | `ERRATA` | errata 条目 + workaround | 核心 |
 | `signal` | `SIGNAL` | 接口信号表 | 扩展 |
-| `interface` | `INTERFACE` | 总线/协议接口表 | 扩展 |
+| `interface` | `INTERFACE` | 总线/协议接口表；接口实例名与协议分开保存 | 扩展 |
 | `timing` | `PARAMETER` | min/typ/max 时序或电气参数表 | 扩展 |
 | `clock_reset` | `CLOCK` | 时钟、复位、电源域表 | 扩展 |
 | `requirement` | `REQUIREMENT` | requirement / feature 列表 | 扩展 |
+| `constraint` | `REQUIREMENT` + `attrs.entity_type=constraint` | SDC/STA、setup/hold、false path、PVT/corner 等后端时序/设计约束 | 后端 |
+| `physical_constraint` | `REQUIREMENT` + `attrs.entity_type=physical_constraint` | floorplan、placement、routing、keepout、layer、power grid 等物理实现约束 | 后端 |
 
 每个 schema 声明：
 - `table_header_hints`：双语（中英）匹配词，决定哪些表/段落走该 schema。
@@ -108,7 +119,7 @@ EntitySchema(
 ### 3.3 文档类型路由
 
 `TableEntityExtractor` 按 `parsed.metadata.type` 选择默认启用的 schema 子集，
-避免 9 个 schema 对每份文档全扫：
+避免所有 schema 对每份文档全扫，同时保证前端和后端 spec 都有默认覆盖：
 
 | DocType | 默认 schema |
 |---|---|
@@ -116,8 +127,8 @@ EntitySchema(
 | reference_manual / trm | register, memory_map, interrupt, signal, interface, clock_reset, requirement |
 | errata | errata, register |
 | app_note | register, signal, timing, requirement |
-| protocol | signal, interface, timing, memory_map, interrupt |
-| unknown | register, pin, memory_map, interrupt（核心子集） |
+| protocol | register, pin, signal, interface, timing, memory_map, interrupt, constraint |
+| unknown | register, pin, memory_map, interrupt, constraint, physical_constraint |
 
 显式指定 `schema_names` 或环境变量 `DOCGRAPH_TABLE_ENTITY_SCHEMAS` 时覆盖路由，全扫。
 
@@ -214,7 +225,22 @@ L2 是可选增强，失败不得影响 L0/L1。
 
 `GlossaryExtractor` 抽取缩写、术语表和常见定义模式，产出 `TERM` 节点，并可由 linker 建立 `ALIAS_OF` 等关系。
 
-## 7. 写一个新 Extractor
+## 7. TextEntityExtractor（正文实体）
+
+表格之外，芯片 spec 的关键实体还散落在正文段落：
+
+- **requirement**：`REQ_<FAMILY>_<NUM>: <描述>` 形式的需求条目（如 `REQ_PCIE_TRS_004`）
+- **errata**：`ERR<num>` 形式的勘误条目（如 `ERR012345`）
+
+这两类实体有强编号标识，适合纯规则确定性抽取，不依赖 LLM。`TextEntityExtractor` 扫描 L0 `paragraph` / `heading` / `list` block 的 text，用正则匹配编号 + 描述，逐条物化为 `REQUIREMENT` / `ERRATA` 节点。
+
+特点：
+- 多个 REQ 挤在同一个 block（mineru 常把整页文字塞一个 block）也能逐个抽出
+- 节点带 `source_block_ids` 回溯到 L0 原文段落
+- `attrs.extraction_confidence = "deterministic"`（标记为高可信，区别于 LLM/VLM 抽取）
+- 不抽结构、不调 LLM——只认编号格式，零成本
+
+## 8. 写一个新 Extractor
 
 只有当一种任务无法通过 schema registry 表达时，才新增 extractor。
 

@@ -405,31 +405,101 @@ class QueryEngine:
         }
 
     def context_with_blocks(self, task: str, max_nodes: int = 20) -> dict:
-        """增强版 context：返回节点 + 关联的 L0 block 原文。"""
+        """Evidence-first context for agents.
+
+        L2 graph nodes are useful candidates, but agent answers should be grounded
+        in L1 chunks and original L0 blocks. This method returns both in one
+        bundle so MCP clients do not have to infer how to backtrace evidence.
+        """
         bundle = self.context(task, max_nodes=max_nodes)
-        # 收集关联 block（从 L2 节点的 source_block_ids，或同 section chunks）
-        related_blocks: dict[str, list] = {"nodes": [], "blocks": []}
-        for n in bundle.nodes[:max_nodes]:
-            n_info = {
-                "id": n.id, "kind": n.kind.value, "name": n.name,
-                "page": n.location.page, "summary": n.summary,
-                "block_ids": n.attrs.get("block_ids", []) or [],
+
+        chunks: dict[str, dict] = {}
+        blocks: dict[str, dict] = {}
+        nodes: list[dict] = []
+        chunk_hits = self.search_chunks(task, limit=min(max_nodes, 10))
+
+        def add_chunk(chunk_id: str) -> None:
+            if chunk_id in chunks:
+                return
+            chunk = self.store.get_chunk(chunk_id)
+            if chunk is None:
+                return
+            chunks[chunk_id] = {
+                "id": chunk.id,
+                "kind": chunk.kind,
+                "doc_id": chunk.doc_id,
+                "page": chunk.page,
+                "page_start": chunk.page_start or chunk.page,
+                "page_end": chunk.page_end or chunk.page,
+                "section_id": chunk.section_id,
+                "section_node_id": chunk.section_node_id,
+                "text": (chunk.text or "")[:2000],
+                "block_ids": chunk.block_ids,
+                "attrs": chunk.attrs,
             }
-            related_blocks["nodes"].append(n_info)
-        # 从 semantic_hits 取 top-3 chunk → block
+            for block in self.store.get_blocks(chunk.block_ids[:8]):
+                blocks.setdefault(block.id, _block_brief(block))
+
+        def add_block_id(block_id: str) -> None:
+            if block_id in blocks:
+                return
+            got = self.store.get_blocks([block_id])
+            if got:
+                blocks[block_id] = _block_brief(got[0])
+
+        for n in bundle.nodes[:max_nodes]:
+            source_block_ids = (
+                n.attrs.get("source_block_ids") or n.attrs.get("block_ids") or []
+            )
+            source_chunk_ids = (
+                n.attrs.get("source_chunk_ids") or n.evidence.chunk_ids or []
+            )
+            n_info = {
+                "id": n.id,
+                "kind": n.kind.value,
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "doc_id": n.doc_id,
+                "page": n.location.page,
+                "summary": n.summary,
+                "source": n.attrs.get("source") or n.evidence.extractor,
+                "extraction_confidence": n.attrs.get("extraction_confidence"),
+                "needs_source_check": _needs_source_check(n),
+                "source_block_ids": source_block_ids,
+                "source_chunk_ids": source_chunk_ids,
+            }
+            nodes.append(n_info)
+            for chunk_id in source_chunk_ids[:4]:
+                add_chunk(chunk_id)
+            for block_id in source_block_ids[:8]:
+                add_block_id(block_id)
+
+        # Semantic hits may be node vectors or chunk vectors depending on the
+        # configured store; add chunks opportunistically when the ID resolves.
+        for hit in chunk_hits:
+            add_chunk(hit["chunk_id"])
+
         for hit in bundle.semantic_hits[:3]:
             chunk_id = hit.get("id") or hit.get("chunk_id")
             if not chunk_id:
                 continue
-            chunk = self.store.get_chunk(chunk_id)
-            if chunk and chunk.block_ids:
-                for b in self.store.get_blocks(chunk.block_ids[:5]):
-                    related_blocks["blocks"].append({
-                        "id": b.id, "page": b.page, "kind": b.kind.value,
-                        "text": (b.text or "")[:600],
-                        "table_headers": b.table.headers if b.table else None,
-                    })
-        return related_blocks
+            add_chunk(chunk_id)
+
+        return {
+            "task": task,
+            "usage_policy": (
+                "Treat L2 nodes and edges as candidates. Ground final answers in "
+                "the returned L1 chunks / L0 blocks; verify nodes marked "
+                "needs_source_check before using them as facts."
+            ),
+            "nodes": nodes,
+            "edges": [e.model_dump() for e in bundle.edges],
+            "chunk_hits": chunk_hits,
+            "semantic_hits": bundle.semantic_hits,
+            "providers": bundle.providers,
+            "chunks": list(chunks.values()),
+            "blocks": list(blocks.values()),
+        }
 
     def search_chunks(self, query: str, limit: int = 20) -> list[dict]:
         """混合检索 L1 chunk。
@@ -547,3 +617,25 @@ def _score_chunk_hit(query: str, chunk, snippet: str) -> tuple[float, list[str]]
         reasons.append("front-matter-penalty")
 
     return score, reasons
+
+
+def _needs_source_check(node: Node) -> bool:
+    source = str(node.attrs.get("source") or node.evidence.extractor or "").lower()
+    confidence = str(node.attrs.get("extraction_confidence") or "").lower()
+    if confidence in {"deterministic", "verified"}:
+        return False
+    return any(tag in source for tag in ("figure@", "vlm", "llm")) or not confidence
+
+
+def _block_brief(block: Block) -> dict:
+    return {
+        "id": block.id,
+        "doc_id": block.doc_id,
+        "page": block.page,
+        "kind": block.kind.value,
+        "text": (block.text or "")[:2000] if block.text else None,
+        "table": block.table.model_dump() if block.table else None,
+        "image_path": block.image_path,
+        "section_path": block.section_path,
+        "attrs": block.attrs,
+    }
