@@ -373,35 +373,60 @@ class QueryEngine:
         return self.store.blocks_for_page(doc_id, page)
 
     def fetch(self, chunk_id: str) -> dict:
-        """取 Chunk + 其 L0 Block 原文。返回 agent 可直接用的上下文片段。
+        """Return chunk + its L0 blocks + L2 entities that reference them.
 
-        {chunk: ..., blocks: [{id, page, kind, text|table|image_path}, ...]}
+        The primary agent reading path: after search_chunks discovers relevant
+        chunks, fetch delivers the complete original content alongside any L2
+        extraction results. The agent sees both and can judge L2 accuracy against
+        the original table/text/figure.
         """
         chunk = self.store.get_chunk(chunk_id)
         if chunk is None:
             return {"error": "not_found", "chunk_id": chunk_id}
         blocks = self.store.get_blocks(chunk.block_ids) if chunk.block_ids else []
+
+        # Collect L2 entities that reference this chunk or its blocks
+        entities_by_id: dict[str, dict] = {}
+        for node in self.store.get_entities_for_chunk(chunk_id):
+            entities_by_id.setdefault(node.id, _entity_summary(node))
+        for block in blocks:
+            for node in self.store.get_entities_for_block(block.id):
+                entities_by_id.setdefault(node.id, _entity_summary(node))
+
         return {
             "chunk": {
-                "id": chunk.id, "kind": chunk.kind,
-                "doc_id": chunk.doc_id, "page": chunk.page,
+                "id": chunk.id,
+                "kind": chunk.kind,
+                "doc_id": chunk.doc_id,
+                "page": chunk.page,
                 "page_start": chunk.page_start or chunk.page,
                 "page_end": chunk.page_end or chunk.page,
                 "section_id": chunk.section_id,
                 "section_node_id": chunk.section_node_id,
-                "text": chunk.text[:2000],
+                "text": chunk.text,
                 "block_ids": chunk.block_ids,
                 "attrs": chunk.attrs,
             },
             "blocks": [
                 {
-                    "id": b.id, "page": b.page, "kind": b.kind.value,
+                    "id": b.id,
+                    "page": b.page,
+                    "kind": b.kind.value,
                     "text": b.text,
                     "table": b.table.model_dump() if b.table else None,
                     "image_path": b.image_path,
+                    "section_path": b.section_path,
                 }
                 for b in blocks
             ],
+            "entities": list(entities_by_id.values()),
+            "usage_policy": (
+                "The chunk text and blocks are the authoritative source (L0/L1). "
+                "Entities are L2 extraction candidates — check each entity's "
+                "source_quality.needs_source_check before relying on it. "
+                "If false (deterministic/verified), the extraction is table-based and reliable. "
+                "If true (vlm/llm), verify against the original blocks above."
+            ),
         }
 
     def context_with_blocks(self, task: str, max_nodes: int = 20) -> dict:
@@ -617,6 +642,31 @@ def _score_chunk_hit(query: str, chunk, snippet: str) -> tuple[float, list[str]]
         reasons.append("front-matter-penalty")
 
     return score, reasons
+
+
+def _entity_summary(node: Node) -> dict:
+    """Lightweight entity summary for embedding in fetch/search_chunks results.
+
+    Includes source_quality so the agent can decide whether to trust the
+    extraction or verify against L0/L1 source blocks.
+    """
+    source_block_ids = node.attrs.get("source_block_ids") or node.attrs.get("block_ids") or []
+    source_chunk_ids = node.attrs.get("source_chunk_ids") or node.evidence.chunk_ids or []
+    return {
+        "id": node.id,
+        "kind": node.kind.value,
+        "name": node.name,
+        "qualified_name": node.qualified_name,
+        "page": node.location.page,
+        "summary": node.summary,
+        "source_chunk_ids": source_chunk_ids,
+        "source_block_ids": source_block_ids,
+        "source_quality": {
+            "source": node.attrs.get("source") or node.evidence.extractor,
+            "extraction_confidence": node.attrs.get("extraction_confidence"),
+            "needs_source_check": _needs_source_check(node),
+        },
+    }
 
 
 def _needs_source_check(node: Node) -> bool:

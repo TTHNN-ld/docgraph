@@ -620,6 +620,28 @@ class SQLiteGraphStore:
 
     # ------- stats -------
 
+    def get_entities_for_chunk(self, chunk_id: str) -> list[Node]:
+        """Find L2 entities whose source_chunk_ids include this chunk_id.
+
+        Used by fetch() to embed L2 entities alongside L1/L0 content so the
+        agent sees both the extraction result and the original source.
+        """
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT * FROM nodes WHERE json_extract(attrs, '$.source_chunk_ids') LIKE ?",
+            (f"%{chunk_id}%",),
+        ).fetchall()
+        return [self._row_to_node(r) for r in rows]
+
+    def get_entities_for_block(self, block_id: str) -> list[Node]:
+        """Find L2 entities whose source_block_ids include this block_id."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT * FROM nodes WHERE json_extract(attrs, '$.source_block_ids') LIKE ?",
+            (f"%{block_id}%",),
+        ).fetchall()
+        return [self._row_to_node(r) for r in rows]
+
     def count_nodes(self, kind: NodeKind | None = None) -> int:
         conn = self._connect()
         if kind is None:

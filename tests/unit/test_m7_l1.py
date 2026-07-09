@@ -260,6 +260,113 @@ def test_chunker_table_figure_are_separate_chunks():
     assert "section" in kinds
 
 
+def test_fetch_returns_blocks_and_embedded_entities(tmp_path):
+    """fetch() returns complete chunk + blocks + L2 entities with source_quality."""
+    from docgraph.graph.schema import (
+        Block,
+        BlockKind,
+        Chunk,
+        Evidence,
+        Location,
+        Node,
+        NodeKind,
+        TableData,
+    )
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.query.engine import QueryEngine
+
+    store = SQLiteGraphStore(tmp_path / "graph.db")
+    store.init_schema()
+    store.upsert_blocks([
+        Block(
+            id="doc#p13#b1",
+            doc_id="doc",
+            page=13,
+            kind=BlockKind.TABLE,
+            reading_order=1,
+            table=TableData(
+                headers=["Signal", "Direction"],
+                rows=[["cfg_clk", "I"], ["mstr_aclk", "O"]],
+                n_rows=2,
+                n_cols=2,
+                caption="Interfaces",
+            ),
+        ),
+        Block(
+            id="doc#p21#b2",
+            doc_id="doc",
+            page=21,
+            kind=BlockKind.FIGURE,
+            reading_order=2,
+            text="Figure 4-1 PCIe clock structure",
+        ),
+    ])
+    store.upsert_chunks([
+        Chunk(
+            id="doc#c_interfaces",
+            doc_id="doc",
+            page=13,
+            page_start=13,
+            page_end=13,
+            section_id="2",
+            text="Interfaces table lists cfg_clk and mstr_aclk for PCIe subsystem.",
+            block_ids=["doc#p13#b1"],
+            kind="table",
+            chunk_type="table",
+        ),
+        Chunk(
+            id="doc#c_clock",
+            doc_id="doc",
+            page=21,
+            page_start=21,
+            page_end=21,
+            section_id="4.4",
+            text="Clock structure uses CRG PLL GFM DIV MUX and core_clk.",
+            block_ids=["doc#p21#b2"],
+            kind="figure",
+            chunk_type="figure",
+        ),
+    ])
+    store.upsert_node(Node(
+        id="doc#clock#cfg_clk",
+        kind=NodeKind.CLOCK,
+        name="cfg_clk",
+        doc_id="doc",
+        location=Location(page=13),
+        evidence=Evidence(
+            chunk_ids=["doc#c_interfaces"],
+            pages=[13],
+            extractor="table_normalizer",
+        ),
+        attrs={
+            "source_chunk_ids": ["doc#c_interfaces"],
+            "source_block_ids": ["doc#p13#b1"],
+            "source": "table_normalizer",
+            "extraction_confidence": "deterministic",
+        },
+    ))
+
+    result = QueryEngine(store).fetch("doc#c_interfaces")
+
+    # Chunk and block returned in full
+    assert result["chunk"]["id"] == "doc#c_interfaces"
+    assert len(result["blocks"]) == 1
+    assert result["blocks"][0]["table"] is not None
+    assert result["blocks"][0]["table"]["n_rows"] == 2  # full table, not truncated
+
+    # Embedded entity
+    assert len(result["entities"]) == 1
+    entity = result["entities"][0]
+    assert entity["name"] == "cfg_clk"
+    assert entity["source_chunk_ids"] == ["doc#c_interfaces"]
+    assert entity["source_quality"]["needs_source_check"] is False
+    assert entity["source_quality"]["extraction_confidence"] == "deterministic"
+
+    # usage_policy present
+    assert "usage_policy" in result
+    assert "authoritative" in result["usage_policy"] or "ground truth" in result["usage_policy"]
+
+
 def test_chunker_chunk_has_block_ids_traceability():
     """每个 chunk 必须带 block_ids 反查 L0（层次契约）。"""
     from docgraph.chunker import chunk_doc
