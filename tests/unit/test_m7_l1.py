@@ -1057,13 +1057,68 @@ def test_query_engine_context_with_blocks_uses_l2_source_links(tmp_path):
 
     ctx = QueryEngine(store).context_with_blocks("Implement CTRL", max_nodes=5)
     assert ctx["nodes"][0]["source_block_ids"] == ["d#p1#b0"]
-    assert ctx["nodes"][0]["needs_source_check"] is True
+    assert ctx["nodes"][0]["needs_source_check"] is False  # table_entity is deterministic
     assert ctx["chunks"][0]["id"] == "d#c1"
     assert ctx["blocks"][0]["id"] == "d#p1#b0"
     store.close()
 
 
-def test_query_engine_context_with_blocks_returns_l1_when_l2_misses(tmp_path):
+def test_fetch_flags_vlm_entities_for_source_check(tmp_path):
+    """VLM/figure entities must have needs_source_check=True; table entities False."""
+    from docgraph.graph.schema import (
+        Block, BlockKind, Chunk, Evidence, Location, Node, NodeKind,
+    )
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.query.engine import QueryEngine
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_blocks([
+        Block(id="d#p1#b0", doc_id="d", page=1, kind=BlockKind.FIGURE,
+              reading_order=0, text="Clock architecture diagram"),
+    ])
+    store.upsert_chunks([
+        Chunk(id="d#c1", doc_id="d", page=1, text="Clock diagram",
+              block_ids=["d#p1#b0"], kind="figure"),
+    ])
+    # VLM-extracted entity from figure
+    store.upsert_node(Node(
+        id="d::clock:core_clk",
+        kind=NodeKind.CLOCK,
+        name="core_clk",
+        doc_id="d",
+        location=Location(page=1),
+        evidence=Evidence(extractor="figure@vlm", chunk_ids=["d#c1"], pages=[1]),
+        attrs={
+            "source": "figure@vlm",
+            "extraction_confidence": "llm",
+            "source_chunk_ids": ["d#c1"],
+            "source_block_ids": ["d#p1#b0"],
+        },
+    ))
+    # Table-extracted entity
+    store.upsert_node(Node(
+        id="d::signal:cfg_clk",
+        kind=NodeKind.SIGNAL,
+        name="cfg_clk",
+        doc_id="d",
+        location=Location(page=1),
+        evidence=Evidence(extractor="table_entity:signal", chunk_ids=["d#c1"], pages=[1]),
+        attrs={
+            "source": "table_entity:signal",
+            "source_chunk_ids": ["d#c1"],
+            "source_block_ids": ["d#p1#b0"],
+        },
+    ))
+
+    result = QueryEngine(store).fetch("d#c1")
+    entities = {e["name"]: e for e in result["entities"]}
+
+    # VLM entity needs verification
+    assert entities["core_clk"]["source_quality"]["needs_source_check"] is True
+    # Table normalizer entity does not
+    assert entities["cfg_clk"]["source_quality"]["needs_source_check"] is False
+    store.close()
     from docgraph.graph.schema import Block, BlockKind, Chunk
     from docgraph.graph.sqlite_store import SQLiteGraphStore
     from docgraph.query.engine import QueryEngine

@@ -1,0 +1,32 @@
+Benchmark mode: BASELINE_FORCE_TOOL_TRACE.
+
+You are Claude Code acting as the base agent for DocGraph evaluation.
+
+You MUST inspect the source PDF content before answering. Do not answer from memory, repository docs, benchmark hints, or prior context.
+
+Allowed sources:
+- spec/PCIE Subsystem Spec_v3.21.pdf
+- spec/PCIe Subsystem TRS_r2p0.pdf
+
+Forbidden sources/tools:
+- DocGraph / docgraph CLI / .docgraph
+- MCP tools
+- generated JSON/CSV/RDL/index files
+- docs/evaluation/pcie-agent-benchmark.md
+- repository documentation other than the two PDFs
+
+Required execution behavior:
+1. Use Bash or Read to locate the PDFs.
+2. Inspect the PDF pages containing clock and reset structure before answering.
+3. Base the final answer on inspected PDF evidence only.
+
+Task:
+You are clock/reset verification owner. Based on the spec, generate a PCIe subsystem clock/reset verification plan: clock sources, PLL/CRG/GFM/DIV/MUX roles, reset sources, cold/warm/hot reset scenarios, reset release ordering/dependencies, monitor signals, assertions/checkers, coverage items, and evidence pages/figure IDs.
+
+Required answer shape:
+- answer
+- engineering_artifact
+- evidence
+- uncertainty
+
+At the end include compact self-report JSON with estimated tool_calls, pdf_page_reads, docgraph_calls, context_pages_or_blocks, and notes.

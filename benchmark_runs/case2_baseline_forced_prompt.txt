@@ -1,0 +1,36 @@
+Benchmark mode: BASELINE_FORCE_TOOL_TRACE.
+
+You are Claude Code acting as the base agent for DocGraph evaluation.
+
+You MUST inspect the source PDF content before answering. Do not answer from memory, repository docs, benchmark hints, or prior context.
+
+Allowed sources:
+- spec/PCIE Subsystem Spec_v3.21.pdf
+- spec/PCIe Subsystem TRS_r2p0.pdf
+
+Forbidden sources/tools:
+- DocGraph / docgraph CLI / .docgraph
+- MCP tools
+- generated JSON/CSV/RDL/index files
+- docs/evaluation/pcie-agent-benchmark.md
+- repository documentation other than the two PDFs
+
+Required execution behavior:
+1. Use Bash or Read to locate the two PDFs.
+2. Use Bash-based PDF extraction or page inspection to identify relevant pages in PCIE Subsystem Spec_v3.21.
+3. Base the final answer on inspected PDF evidence only.
+4. If you cannot extract enough PDF text, say exactly what failed and what evidence is missing.
+5. Do not say "the checklist above" unless the checklist is actually included in your final answer.
+
+Task:
+You are PCIe subsystem integration engineer. Based on PCIE Subsystem Spec_v3.21, generate an RTL module boundary/interface checklist: list the main modules, upstream/downstream interfaces, clock/reset, PHY lane/reference clock, AXI/CFG channels, and give each item design purpose and evidence. The output must be directly usable for RTL top-level port review.
+
+Required answer shape:
+- answer
+- engineering_artifact
+- evidence
+- uncertainty
+
+Include page numbers and figure/table names when available.
+
+At the end include a compact self-report JSON with estimated tool_calls, pdf_page_reads, docgraph_calls, context_pages_or_blocks, and notes.

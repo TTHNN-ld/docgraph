@@ -270,7 +270,15 @@ def _needs_source_check(node) -> bool:
     confidence = str(node.attrs.get("extraction_confidence") or "").lower()
     if confidence in {"deterministic", "verified"}:
         return False
-    return any(tag in source for tag in ("figure@", "vlm", "llm")) or not confidence
+    # VLM/LLM/figure extraction always needs L0/L1 verification
+    if any(tag in source for tag in ("figure@", "vlm", "llm")):
+        return True
+    # Missing both confidence and source → unknown origin, flag for safety
+    if not confidence and not source:
+        return True
+    # Table normalizer / regex extractor without explicit confidence:
+    # trust by default (deterministic extraction from structured data)
+    return False
 
 
 # ---------------------------------------------------------------------------
