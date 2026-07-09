@@ -2,8 +2,8 @@
 
 > 用于评估 Agent 在接入 DocGraph 前后的效果差异。输入文档限定为：
 >
-> - `case/PCIE Subsystem Spec_v3.21.pdf`
-> - `case/PCIe Subsystem TRS_r2p0.pdf`
+> - `spec/PCIE Subsystem Spec_v3.21.pdf`
+> - `spec/PCIe Subsystem TRS_r2p0.pdf`
 
 ## 评测目标
 
@@ -21,9 +21,10 @@ DocsGraph 模式下，Agent 的 KG 查询精度取决于实体是否已被 L2 �
 
 | Case | 期望实体类型 | 覆盖率 | 缺失示例 | 影响 |
 |---|---|---|---|---|
-| 2 clock | clock | ~14% | core_clk, mstr_clk, slv_clk, dbi_clk | 时钟接口清单不准 |
+| 2 clock | clock | ~14% | core_clk, mstr_aclk, slv_aclk, cfg_clk | 时钟接口清单不准 |
 | 2 module | module | ~70% | PCIe_top, Irq_aggregator | 模块边界清单不完整 |
-| 8 bitfield | bitfield | 100% | — | 无影响 |
+| 8A signal | signal/interrupt_source | ~60% | 部分 irq_src 信号未入库 | 中断源信号清单不完整 |
+| 8B bitfield | bitfield | ~70% | vf, vfactive | RAL 字段不完整 |
 | 9 INT_NUM | bitfield | ~67% | vf, vfactive | RAL 字段不完整 |
 | 11 clock | clock | ~25% | clk_ref_in, axi_clk, core_clk | STA/SDC 时钟源不完整 |
 
@@ -50,8 +51,8 @@ DocsGraph 模式下，Agent 的 KG 查询精度取决于实体是否已被 L2 �
 
 对每个任务跑两组：
 
-- **Baseline**：Agent 只能读取两个 PDF 文件，不允许使用 DocGraph、预生成 JSON、RDL、CSV。
-- **DocGraph**：Agent 可以使用 DocGraph Web/MCP/CLI 查询，但最终答案仍必须给出证据页或来源节点。
+- **Baseline**：Agent 只能读取两个 PDF 文件，不允许使用 DocGraph、预生成 JSON、RDL、CSV。**必须限制页读取量**：每个 case 最多读 15 页 PDF（避免全文抽取淹没检索效率差异）。如果 agent 需要读更多页，必须在答案中明确标注"超出 page budget"并说明需要哪些额外页面。
+- **DocGraph**：Agent 可以使用 DocGraph MCP 工具查询，但最终答案仍必须给出证据页或来源节点。不做调用次数限制，让 agent 自主决定检索路径。
 
 DocGraph 的离线构建成本不计入单题 Agent 运行成本；若评估"首次导入 + 多题摊销"，单独记录并摊到任务数：
 
@@ -196,7 +197,7 @@ DocGraph 模式额外建议记录：
 - `Figure 3-1 PCIe Subsystem Architecture`，p.15。
 - 关键模块：PCIe subsystem、PCIe core、PCIe top、UPCS PIPE、PCIe CRG、MSI、MSIX2DBI、Irq_aggregator、PCIE_SS_CTRL、Debug。
 - 关键接口：AXI master/slave、CFG AXI/AXI Lite、Clock/Reset、PERST#、PHY REF CLK、TX/RX lane。
-- 关键时钟/复位：core_clk、cfg_clk、mstr_clk、slv_clk、dbi_clk、pipe_rx_clk、pipe_tx_clk、cfg_rst_n、mstr_rst_n、slv_rst_n。
+- 关键时钟/复位：core_clk、cfg_clk、mstr_aclk、slv_aclk、pipe_rx_clk、pipe_tx_clk、cfg_rst_n、mstr_rst_n、slv_rst_n。（注：spec PDF 原文使用 mstr_aclk/slv_aclk，非 mstr_clk/slv_clk；dbi_clk 未在 PDF 中以该名称出现。）
 
 **评分重点**
 
@@ -326,31 +327,63 @@ DocGraph 模式额外建议记录：
 - 是否同时覆盖 Spec 的实现/接口侧和 TRS 的需求侧。
 - 是否能生成验证团队可执行的 scenario/checker/coverage。
 
-## Case 8：UVM RAL 输入：USP interrupt/status register
+## Case 8A：Interrupt Source Signal 建模（irq_src 表）
 
 **Prompt**
 
-你是 UVM RAL owner。请基于 spec 为 `USP` interrupt/status register 生成 RAL 建模输入：field 名、bit range、access、reset、description、功能分类、推荐 mirror/predict/check 策略。并指出 hot reset、PLL、LTSSM、refclk、completion timeout 相关 field。
+你是验证工程师。请基于 spec 为 `irq_src` 中断源信号表 (p.25) 生成一份结构化的中断源信号清单：signal name、位宽、功能描述、按功能分类（hot reset / PLL / LTSSM / refclk / completion timeout / PHY / 其他）。说明此表的结构特点（只有信号名+位宽+描述，无 offset/access/reset 字段），并与真正的 register/bitfield 表（如 p.27 的 per_vector_misc）做区分。
 
 **考察点**
 
-- L2 register/bitfield 的结构化收益。
-- 无 DocGraph 时需要从表格中准确读出大量 bit。
+- Agent 是否能识别表格结构：此表是 interrupt source signal 表，不是 register 表。
+- 是否能正确区分"信号名+位宽+描述"型表格与"寄存器字段+access+reset"型表格。
+- 是否避免将 signal name 误当成 bitfield。
 
 **期望证据**
 
-- `USP` register/bitfield，p.25。
-- hot reset：hot_reset_int bit16；link_req_rst_not_deassert_int bit14；link_req_rst_not_assert_int bit13；perst_int bit3。
-- PLL/PHY：pll_lost_lock_int bit15；phy_pll_unlock_int bit10；phy_pll_lock_int bit9；phy_reset_int bit11；phy_lane_rst_int bit12。
-- LTSSM：ltssm_into_gen5_int bit6。
-- refclk：ref_clk_req_deassert_int bit5；ref_clk_req_assert_int bit4。
-- completion timeout：trgt_cpl_timeout bit1；link_down_event_int bit2 可作为 completion TLP timeout 相关状态。
+- `irq_src` 表，spec p.25，约 20+ 个中断源信号。
+- hot reset 相关：hot_reset_int (bit16)、link_req_rst_not_deassert_int (bit14)、link_req_rst_not_assert_int (bit13)、perst_int (bit3)。
+- PLL/PHY 相关：pll_lost_lock_int (bit15)、phy_pll_unlock_int (bit10)、phy_pll_lock_int (bit9)、phy_reset_int (bit11)、phy_lane_rst_int (bit12)。
+- LTSSM 相关：ltssm_into_gen5_int (bit6)。
+- refclk 相关：ref_clk_req_deassert_int (bit5)、ref_clk_req_assert_int (bit4)。
+- completion timeout 相关：trgt_cpl_timeout (bit1)、link_down_event_int (bit2)。
 
 **评分重点**
 
-- bit 号不能错。
-- 不能漏 access。
-- 需要按功能归类，而不是只贴平铺列表。
+- 是否正确识别"这不是 register 表"（关键判断）。
+- 是否按功能分类信号。
+- 是否标注"无 offset/access/reset，无法直接作为 RAL 输入"。
+- 将"正确报告此表缺少寄存器字段"视为有效行为，不扣分。
+
+## Case 8B：UVM RAL 输入：PCIe 子系统寄存器字段
+
+**Prompt**
+
+你是 UVM RAL owner。请基于 spec 找到真正包含寄存器字段定义（offset/access/reset/bit-range）的表格，为其中的寄存器生成 RAL 建模输入：register name、field 名、bit range、access、reset value、description、功能分类。指出哪些表是真正的 register table（有 offset/access/reset），哪些不是。建议 mirror/predict/check 策略。
+
+**考察点**
+
+- Agent 是否能定位到真正包含寄存器字段信息的页面（如 p.27 的 per_vector_misc）。
+- 是否区分真正的寄存器表与中断源信号表 (p.25 irq_src)。
+- L2 register/bitfield 实体的结构化收益。
+
+**期望证据**
+
+- p.27 `per_vector_misc` / MSI-X doorbell 相关字段（这些才是真正带 access/reset/bit-range 的寄存器字段）。
+- `axis_awaddr[31:0]` RW reset `0x1000948`。
+- `mask_bit[20]` RW reset `0x1`。
+- `priority[19:17]` RW reset `0x1`。
+- `pf[16:12]` RW reset `0x0`。
+- `vf[11:4]` RW reset `0x0`。
+- `vfactive[3]` RW reset `0x0`。
+- `tc[2:0]` RW reset `0x0`。
+- 其他 spec 中带完整 access/reset 字段的寄存器表。
+
+**评分重点**
+
+- bit 号和 access/reset 不能错。
+- 是否明确指出 p.25 irq_src 表不是 register table（与 Case 8A 对应）。
+- 需要按功能归类。
 - 是否包含 RAL 建模和寄存器检查策略。
 
 ## Case 9：UVM Sequence：MSI-X doorbell programming
@@ -393,7 +426,7 @@ DocGraph 模式额外建议记录：
 **期望证据**
 
 - LTSSM State debug p.35。
-- Figure `figure_p35` p.35。
+- Figure `figure_p35`（即 spec p.35 LTSSM State debug 框图）。
 - `ltssm_state_reg`：`ltssm_state_vld[6]` RO reset `0x0`，`ltssm_state[5:0]` RO reset `0x0`。
 - 图中模块：pcie controller、shift_reg、freeze_reg、state_reg、DMUX、sync_pulse、APB。
 
@@ -415,9 +448,9 @@ DocGraph 模式额外建议记录：
 
 **期望证据**
 
-- Spec 时钟结构 p.21，图 `figure_p21`。
+- Spec 时钟结构 p.21，Figure 4-1 PCIe 子系统时钟结构。
 - Spec 复位结构 p.23，Figure 4-2 PCIe 子系统 reset 结构。
-- 关键时钟：clk_ref_in、local_phy_ref_clk、axi_clk、core_clk/core_clk_ug、cfg_clk、dbi_clk、pipe_rx/tx、aux_clk。
+- 关键时钟：clk_ref_in、local_phy_ref_clk、axi_clk、core_clk/core_clk_ug、cfg_clk、pipe_rx_clk/pipe_tx_clk、aux_clk。（注：dbi_clk 未在 PDF 中以该名称独立出现。）
 - 关键模块：CRG、PLL、GFM、DIV、MUX、PHY。
 - 关键复位：cfg_rst_n、mstr_rst_n、slv_rst_n、pwr_rst_n、crg_reset_n_out、perst_sync_clk、pll_rst_n。
 
@@ -470,9 +503,9 @@ DocGraph 模式额外建议记录：
 
 **期望证据**
 
-- Spec 时钟结构 p.21，图 `figure_p21`。
+- Spec 时钟结构 p.21，Figure 4-1 PCIe 子系统时钟结构。
 - Spec 复位结构 p.23，Figure 4-2 PCIe 子系统 reset 结构。
-- 关键时钟：clk_ref_in、local_phy_ref_clk、axi_clk、core_clk/core_clk_ug、cfg_clk、dbi_clk、pipe_rx/tx、aux_clk。
+- 关键时钟：clk_ref_in、local_phy_ref_clk、axi_clk、core_clk/core_clk_ug、cfg_clk、pipe_rx_clk/pipe_tx_clk、aux_clk。（注：dbi_clk 未在 PDF 中以该名称独立出现。）
 - 关键模块：CRG、PLL、GFM、DIV、MUX、PHY。
 - 关键复位：cfg_rst_n、mstr_rst_n、slv_rst_n、pwr_rst_n、crg_reset_n_out、perst_sync_clk、pll_rst_n。
 
@@ -569,7 +602,7 @@ DocGraph 模式额外建议记录：
 
 **期望证据**
 
-- 列出 KG 中 clock 节点（21 个），对照 spec 接口表/时钟结构图发现缺失（例如 `core_clk`、`mstr_clk` 虽在原文中出现但未入库）。
+- 列出 KG 中 clock 节点（21 个），对照 spec 接口表/时钟结构图 (Figure 4-1, p.21) 发现缺失（例如 `core_clk`、`mstr_aclk` 在原文中出现但未入库；注意 PDF 原文使用 mstr_aclk 而非 mstr_clk）。
 - 列出 register 节点中 offset 为空的，对照 spec 寄存器表发现可以补的值。
 - 每个发现都给出原文页码/图表号作为证据。
 
@@ -590,7 +623,8 @@ DocGraph 模式额外建议记录：
 | 5 数据路径 RTL/DV 方案 | 1.4 | 多图对比 + 模块关系 |
 | 6 IOMMU/ATS 验证矩阵 | 1.4 | 相邻章节/图对比 |
 | 7 MSI/MSI-X test plan | 1.6 | interrupt + requirement 跨文档合并 |
-| 8 USP RAL 输入 | 1.6 | register/bitfield 结构化准确性 |
+| 8A irq_src 中断源建模 | 1.4 | 表格结构识别：signal vs register |
+| 8B PCIe 寄存器 RAL 输入 | 1.6 | register/bitfield 结构化准确性 |
 | 9 MSI-X UVM sequence | 1.6 | register field/reset/access 到 sequence |
 | 10 LTSSM debug 流程 | 1.3 | 图 + 寄存器联合解释 |
 | 11 Clock/reset 验证计划 | 1.3 | clock/reset 图谱召回 |
