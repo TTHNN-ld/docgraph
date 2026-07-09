@@ -23,8 +23,8 @@ from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.llm.client import CostTracker, LLMClient, make_provider
 from docgraph.llm.vlm import VLMClient, make_vlm_provider
 from docgraph.linker.runner import run_linker
-from docgraph.parsers.base import ParseContext
-from docgraph.parsers.base import registry as parser_registry
+from docgraph.parsers.base import ParseContext, registry as parser_registry
+from docgraph.parsers.pdf_router import inspect_pdf, pdf_parser_chain
 
 log = get_logger(__name__)
 
@@ -331,8 +331,8 @@ def build(
     # Linker stage
     if cfg.extractors.enabled and report.nodes_total > 0:
         try:
-            link_rep = run_linker(root, cfg, store, manifest)
-            report.linker_edges += link_rep.xref_edges + link_rep.alias_edges + link_rep.supersedes_edges + link_rep.fed_alias_edges
+            link_rep = run_linker(root, cfg, store, manifest, llm_client=llm_client)
+            report.linker_edges += link_rep.belongs_to_edges + link_rep.contained_in_edges + link_rep.llm_ie_edges + link_rep.xref_edges + link_rep.alias_edges + link_rep.supersedes_edges + link_rep.fed_alias_edges
         except Exception as e:
             log.warning(f"[link] linker failed: {e}")
 
@@ -405,8 +405,15 @@ def _stage_parse_with_quality(
         raise RuntimeError(f"No parser config for extension {ext}")
 
     parse_quality = _normalize_quality(quality or pcfg.quality)
-    primary, fallback = _parser_chain_for_quality(ext, pcfg.primary, pcfg.fallback, parse_quality)
-    parser = parser_registry.pick(path, primary, fallback)
+    profile = inspect_pdf(path) if ext == ".pdf" else None
+    primary, fallback = _parser_chain_for_quality(
+        ext,
+        pcfg.primary,
+        pcfg.fallback,
+        parse_quality,
+        path=path,
+        profile=profile,
+    )
     metadata = _infer_doc_metadata(path, cfg, root)
     doc_id = make_doc_id(
         cfg.project.family,
@@ -419,16 +426,64 @@ def _stage_parse_with_quality(
     cache_dir = root / ".docgraph" / "cache" / rec.hash.split(":")[-1][:16] if rec.hash else None
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    ctx = ParseContext(
+    parsed = _parse_with_fallback(
+        path,
         doc_id=doc_id,
         cache_dir=cache_dir,
         metadata=metadata,
-        options={"quality": parse_quality},
+        quality=parse_quality,
+        device=pcfg.device,
+        ocr_device=pcfg.ocr_device,
+        pdf_profile=profile,
+        parser_names=[primary, *fallback],
     )
-    parsed = parser.parse(path, ctx)
     rec.stage_log["parse"] = StageRecord(duration_s=round(time.time() - t0, 3), ok=True)
     rec.status = "parsed"
     return parsed
+
+
+def _parse_with_fallback(
+    path: Path,
+    *,
+    doc_id: str,
+    cache_dir: Path | None,
+    metadata: DocMetadata,
+    quality: str,
+    device: str,
+    ocr_device: str | None,
+    pdf_profile: Any | None,
+    parser_names: list[str],
+) -> ParsedDoc:
+    errors: list[str] = []
+    for name in parser_names:
+        cls = parser_registry.get(name)
+        if cls is None:
+            errors.append(f"{name}: not registered")
+            continue
+        parser = cls()
+        if not parser.can_parse(path):
+            errors.append(f"{name}: unavailable or unsupported")
+            continue
+        ctx = ParseContext(
+            doc_id=doc_id,
+            cache_dir=cache_dir,
+            metadata=metadata,
+            options={
+                "quality": quality,
+                "device": device,
+                "ocr_device": ocr_device,
+                "pdf_profile": pdf_profile.__dict__ if pdf_profile else None,
+                "selected_parser": parser.name,
+            },
+        )
+        try:
+            return parser.parse(path, ctx)
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+            log.warning(f"[parse] parser {name} failed for {path.name}: {e}")
+    raise RuntimeError(
+        f"No parser succeeded for {path} (tried: {parser_names}; errors: {errors})"
+    )
 
 
 def _normalize_quality(quality: str | None) -> str:
@@ -443,18 +498,24 @@ def _parser_chain_for_quality(
     primary: str,
     fallback: list[str],
     quality: str,
+    *,
+    path: Path | None = None,
+    profile: Any | None = None,
 ) -> tuple[str, list[str]]:
     """Keep one user command while allowing practical parser profiles.
 
-    `fast` optimizes the first project import path by preferring the built-in
-    PyMuPDF parser for PDFs. Other qualities preserve the configured parser
-    order so projects can choose MinerU/Marker/Docling without another command.
+    `auto` uses a cheap PyMuPDF profile for PDFs and routes to Docling,
+    MinerU, or PyMuPDF. Explicit parser choices still work unchanged.
     """
-    if ext != ".pdf" or quality != "fast":
+    if ext != ".pdf":
         return primary, fallback
-    chain = ["pymupdf", primary, *fallback]
-    deduped = list(dict.fromkeys(name for name in chain if name))
-    return deduped[0], deduped[1:]
+    profile = profile or (inspect_pdf(path) if path is not None else None)
+    return pdf_parser_chain(
+        configured_primary=primary,
+        configured_fallback=fallback,
+        quality=quality,
+        profile=profile,
+    )
 
 
 def _stage_extract(
@@ -490,6 +551,7 @@ def _stage_extract(
             options={
                 "vlm_client": vlm_client,
                 "root": str(root),
+                "vlm_figure_limit": cfg.llm.vlm.figure_limit,
             },
         )
         try:

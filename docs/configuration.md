@@ -25,8 +25,9 @@ API key、base URL 和模型名建议直接写在 `~/.docgraph/config.yaml`。�
 ## 项目级覆盖：`docgraph.yaml`（可选）
 
 普通项目可以不创建 `docgraph.yaml`。默认会扫描 `docs/**/*.pdf` 和
-`spec/**/*.pdf`，PDF 使用轻量 PyMuPDF，其他行为使用内置
-parser/extractor/storage 默认值。
+`spec/**/*.pdf`，PDF 使用自动路由：PyMuPDF 先做轻量预检，born-digital /
+Word 导出 PDF 优先 Docling，扫描或图片密集 PDF 优先 MinerU，最后由
+PyMuPDF 兜底。其他行为使用内置 parser/extractor/storage 默认值。
 
 需要覆盖项目行为时再创建：
 
@@ -56,8 +57,8 @@ docs:
 
 parsers:
   pdf:
-    primary: mineru                  # 默认是 pymupdf；复杂版面项目可显式切到 mineru
-    fallback: [marker, pymupdf]
+    primary: auto                    # auto | docling | mineru | pymupdf
+    fallback: []
     quality: balanced               # fast | balanced | accurate
     per_page_timeout: 60
   docx: { primary: docx }
@@ -146,8 +147,8 @@ PDF 支持 `quality` 档位：
 | 档位 | 用途 | 行为 |
 |---|---|---|
 | `fast` | 首次导入、快速预览 | PDF 优先走轻量 PyMuPDF，保留 L0/L1 可回溯结构 |
-| `balanced` | 高保真项目推荐路径 | 按配置 parser 链执行，推荐 MinerU + PyMuPDF fallback |
-| `accurate` | 复杂版面复核 | 按配置 parser 链执行，保留表格识别等高保真能力 |
+| `balanced` | 日常构建 | 自动路由：born-digital / tagged PDF 优先 Docling，扫描或图片密集 PDF 优先 MinerU |
+| `accurate` | 复杂版面复核 | 自动路由仍匹配文档类型；无法判断时偏向 MinerU 的高保真/OCR 路径 |
 
 日常只需要 `docgraph build`。需要显式覆盖时使用 `docgraph build --quality fast|balanced|accurate`；质量检查统一使用 `docgraph doctor`。
 

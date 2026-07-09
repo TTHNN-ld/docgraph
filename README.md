@@ -28,7 +28,7 @@ docgraph serve --web                     # 启动 Web UI（http://127.0.0.1:8000
 docgraph serve --mcp                     # 启动 MCP server，对接 Claude Code
 ```
 
-默认会扫描 `docs/**/*.pdf` 和 `spec/**/*.pdf`，PDF 默认走轻量 PyMuPDF，适合开箱即用。复杂芯片 PDF 可以在可选的项目级 `docgraph.yaml` 中切到 MinerU；用户级模型、embedding、VLM 和密钥配置放在 `~/.docgraph/`，项目内 `.docgraph/` 只保存生成的数据库、缓存和日志。
+默认会扫描 `docs/**/*.pdf` 和 `spec/**/*.pdf`，PDF 默认走自动路由：PyMuPDF 做轻量预检和兜底，Docling 处理可复制文本质量好的 Word/tagged PDF，MinerU 处理扫描、OCR 和图片密集文档。用户级模型、embedding、VLM 和密钥配置放在 `~/.docgraph/`，项目内 `.docgraph/` 只保存生成的数据库、缓存和日志。
 
 ---
 

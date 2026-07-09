@@ -5,7 +5,7 @@
 <h1>关系图</h1>
 
 {% set default_node_kinds = 'register,bitfield,module,interface,signal,figure'.split(',') %}
-{% set default_edge_kinds = 'has_bitfield,connects_to,controls,illustrated_by,references'.split(',') %}
+{% set default_edge_kinds = 'has_bitfield,belongs_to,contained_in,connects_to,controls,depends_on,references'.split(',') %}
 <form class="filter-bar graph-filters" id="graph-controls">
   <div class="filter-group">
     <span class="filter-label">节点类型</span>
@@ -43,12 +43,12 @@
 </form>
 
 <div id="graph-status" class="muted">加载中…</div>
-<svg id="graph" width="100%" height="700"></svg>
+<div id="graph"></div>
 
 {% endblock %}
 {% block scripts %}
-<script src="https://d3js.org/d3.v7.min.js"></script>
 <script>
+// 3D 力导向图（three.js + d3-force-3d）。多 CDN 回退以适应网络。
 const KIND_COLORS = {
   register: '#5b8def', bitfield: '#92c5fd',
   section:  '#9c8df0', pin:      '#f59e0b',
@@ -59,10 +59,7 @@ const KIND_COLORS = {
   power_domain:'#84cc16', requirement:'#f97316', errata: '#dc2626',
 };
 
-let simulation = null;
-
 function fetchGraph() {
-  // 把复选框勾选值拼成逗号串，匹配 /api/graph 的 kinds/edge_kinds 参数
   const nodeKinds = [...document.querySelectorAll('input[name=node_kind]:checked')].map(cb => cb.value).join(',');
   const edgeKinds = [...document.querySelectorAll('input[name=edge_kind]:checked')].map(cb => cb.value).join(',');
   const limit = document.querySelector('input[name=limit]').value || '300';
@@ -75,11 +72,6 @@ function fetchGraph() {
 }
 
 function render(data) {
-  const svg = d3.select('#graph');
-  svg.selectAll('*').remove();
-  const width = svg.node().clientWidth;
-  const height = +svg.attr('height');
-
   const status = document.getElementById('graph-status');
   status.textContent = `${data.nodes.length} 节点 · ${data.edges.length} 边`;
   if (!data.nodes.length) {
@@ -87,68 +79,74 @@ function render(data) {
     return;
   }
 
-  // 准备 d3 数据
   const nodeIdx = new Map(data.nodes.map(n => [n.id, n]));
   const links = data.edges.map(e => ({
     source: e.src, target: e.dst,
     kind: e.kind, confidence: e.confidence,
   })).filter(l => nodeIdx.has(l.source) && nodeIdx.has(l.target));
 
-  const g = svg.append('g');
+  const elem = document.getElementById('graph');
+  elem.innerHTML = '';
 
-  const zoom = d3.zoom().scaleExtent([0.2, 4])
-    .on('zoom', e => g.attr('transform', e.transform));
-  svg.call(zoom);
-
-  const link = g.append('g').attr('stroke', '#cbd5e1').attr('stroke-opacity', 0.7)
-    .selectAll('line').data(links).join('line').attr('stroke-width', 1);
-
-  const node = g.append('g')
-    .selectAll('g').data(data.nodes).join('g')
-    .call(d3.drag()
-      .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-      .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
-      .on('end',   (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }));
-
-  node.append('circle')
-    .attr('r', d => d.kind === 'register' ? 8 : d.kind === 'section' ? 5 : 4)
-    .attr('fill', d => KIND_COLORS[d.kind] || '#9ca3af')
-    .attr('stroke', '#fff').attr('stroke-width', 1.2);
-  node.append('title').text(d => `${d.kind}: ${d.name}\n${d.id}`);
-  node.append('text')
-    .attr('dx', 10).attr('dy', '0.32em')
-    .style('font-size', '10px').style('pointer-events', 'none')
-    .text(d => d.name);
-  node.on('click', (e, d) => {
-    if (d.kind === 'register') {
-      window.location = '/registers/' + encodeURIComponent(d.id);
-    } else {
-      window.location = '/search?q=' + encodeURIComponent(d.name);
-    }
-  });
-
-  simulation = d3.forceSimulation(data.nodes)
-    .force('charge', d3.forceManyBody().strength(-80))
-    .force('link', d3.forceLink(links).id(d => d.id).distance(50))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collide', d3.forceCollide(14))
-    .on('tick', () => {
-      link
-        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
-      node.attr('transform', d => `translate(${d.x},${d.y})`);
+  ForceGraph3D()(elem)
+    .graphData({ nodes: data.nodes, links })
+    .backgroundColor('#fafafa')
+    .nodeRelSize(4)
+    .nodeVal(d => d.kind === 'register' ? 2 : d.kind === 'section' ? 1.2 : 1)
+    .nodeColor(d => KIND_COLORS[d.kind] || '#9ca3af')
+    .nodeOpacity(0.9)
+    .nodeLabel(d => `<div style="padding:4px 8px;font:12px sans-serif">${d.kind}: ${d.name}</div>`)
+    .linkColor(() => '#9ca3af')
+    .linkOpacity(0.35)
+    .linkWidth(0.4)
+    .cooldownTicks(150)
+    .onNodeClick(d => {
+      if (d.kind === 'register') {
+        window.location = '/registers/' + encodeURIComponent(d.id);
+      } else {
+        window.location = '/search?q=' + encodeURIComponent(d.name);
+      }
     });
 }
 
-document.getElementById('graph-controls').addEventListener('submit', e => {
-  e.preventDefault();
+function initGraphUI() {
+  document.getElementById('graph-controls').addEventListener('submit', e => {
+    e.preventDefault();
+    fetchGraph().then(render);
+  });
+  document.querySelectorAll('#graph-controls input').forEach(el => {
+    el.addEventListener('change', () => fetchGraph().then(render));
+  });
   fetchGraph().then(render);
-});
-// 复选框 / 数量上限变化时自动刷新，无需点按钮
-document.querySelectorAll('#graph-controls input').forEach(el => {
-  el.addEventListener('change', () => fetchGraph().then(render));
-});
+}
 
-fetchGraph().then(render);
+function loadScript(url) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+const CDNS = [
+  'https://registry.npmmirror.com/3d-force-graph/latest/files/dist/3d-force-graph.min.js',
+  'https://cdn.jsdelivr.net/npm/3d-force-graph/dist/3d-force-graph.min.js',
+  'https://unpkg.com/3d-force-graph',
+];
+
+(async () => {
+  for (const url of CDNS) {
+    try {
+      await loadScript(url);
+      if (typeof ForceGraph3D !== 'undefined') {
+        initGraphUI();
+        return;
+      }
+    } catch (e) { /* try next CDN */ }
+  }
+  document.getElementById('graph-status').textContent = '3D 库加载失败，请检查网络后刷新（已尝试 npmmirror / jsdelivr / unpkg）';
+})();
 </script>
 {% endblock %}

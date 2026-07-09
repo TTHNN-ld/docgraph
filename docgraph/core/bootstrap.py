@@ -11,8 +11,8 @@ from docgraph.extractors.section import SectionExtractor
 from docgraph.extractors.table_entity import TableEntityExtractor
 from docgraph.extractors.text_entity import TextEntityExtractor
 from docgraph.parsers.base import registry as parser_registry
+from docgraph.parsers.docling_parser import DoclingParser
 from docgraph.parsers.docx_parser import DocxParser
-from docgraph.parsers.marker_parser import MarkerParser
 from docgraph.parsers.markdown_parser import MarkdownParser
 from docgraph.parsers.mineru_parser import MinerUParser
 from docgraph.parsers.pymupdf_parser import PyMuPDFParser
@@ -34,7 +34,7 @@ def bootstrap(*, disabled_plugins: set[str] | None = None) -> None:
     # 内置 Parsers
     for cls, name in [
         (PyMuPDFParser, "pymupdf"),
-        (MarkerParser, "marker"),
+        (DoclingParser, "docling"),
         (MinerUParser, "mineru"),
         (DocxParser, "docx"),
         (MarkdownParser, "markdown"),

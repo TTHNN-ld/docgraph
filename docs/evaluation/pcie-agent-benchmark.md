@@ -15,6 +15,22 @@
 - 是否能给出页码、章节、图号、需求编号、寄存器/bitfield 证据。
 - 是否减少全文阅读、减少漏答和幻觉。
 
+## 前置检查：实体覆盖
+
+DocsGraph 模式下，Agent 的 KG 查询精度取决于实体是否已被 L2 抽取覆盖。执行每个 case 的 Baseline/DocGraph 跑分之前，**应先检查 DocGraph 中目标实体是否已入库**：
+
+| Case | 期望实体类型 | 覆盖率 | 缺失示例 | 影响 |
+|---|---|---|---|---|
+| 2 clock | clock | ~14% | core_clk, mstr_clk, slv_clk, dbi_clk | 时钟接口清单不准 |
+| 2 module | module | ~70% | PCIe_top, Irq_aggregator | 模块边界清单不完整 |
+| 8 bitfield | bitfield | 100% | — | 无影响 |
+| 9 INT_NUM | bitfield | ~67% | vf, vfactive | RAL 字段不完整 |
+| 11 clock | clock | ~25% | clk_ref_in, axi_clk, core_clk | STA/SDC 时钟源不完整 |
+
+**规则**：若某个 case 依赖的实体类型覆盖率 < 50%，应先修复 KG 构建（调整解析/VLM prompt/alias），再跑 benchmark。否则测的是"KG 没抽到"而非"Agent 用 KG 好不好"。
+
+> 每次 `docgraph build` 之后、跑分之前，执行 `python check_coverage.py`（或等效 SQL）输出当前各实体类型的数量和覆盖率，记录在 run log 的 `notes` 字段中。
+
 ## 生产角色与交付物
 
 | 阶段 | 典型用户 | 评测交付物 |
@@ -37,6 +53,16 @@
 - **Baseline**：Agent 只能读取两个 PDF 文件，不允许使用 DocGraph、预生成 JSON、RDL、CSV。
 - **DocGraph**：Agent 可以使用 DocGraph Web/MCP/CLI 查询，但最终答案仍必须给出证据页或来源节点。
 
+DocGraph 的离线构建成本不计入单题 Agent 运行成本；若评估"首次导入 + 多题摊销"，单独记录并摊到任务数：
+
+| 构建指标 | 说明 |
+|---|---|
+| `docgraph_build_s` | 三份 case 文档的一次 DocGraph 全量构建耗时（含 LLM/VLM） |
+| `docgraph_build_llm_calls` | 构建过程 LLM 调用次数 |
+| `docgraph_build_input_tokens` | 构建过程 LLM/VLM 输入 token |
+| `docgraph_build_output_tokens` | 构建过程 LLM/VLM 输出 token |
+| `amortized_build_s` | `docgraph_build_s / 16`（摊到 16 个 case 的单题均摊耗时） |
+
 建议记录：
 
 | 指标 | 说明 |
@@ -56,6 +82,9 @@
 | docgraph_calls | DocGraph CLI/MCP/Web API 调用次数；Baseline 固定为 0 |
 | pdf_page_reads | 直接读取 PDF 页面的数量；可用于衡量是否在读全文 |
 | context_blocks | 被拉入最终推理上下文的 chunk/block/page/table/figure 数量 |
+| effective_queries | 工具调用（搜索/节点/邻域/block 查询）中返回非空结果的数量 |
+| empty_queries | 工具调用中返回空或无关结果的数量 |
+| query_precision | `effective_queries / (effective_queries + empty_queries)` |
 
 评分建议：每题 0-5 分。3 分表示基本答对但证据或结构不完整；5 分表示答案完整、可追溯、无明显幻觉，并且输出能直接作为前端或后端生产交付物的草案。
 
@@ -125,6 +154,8 @@ DocGraph 模式额外建议记录：
 - `engineering_artifact`：面向该任务的生产交付物，例如端口表、test plan、sequence、coverage、SDC checklist、CDC/RDC checklist、physical integration checklist、DFT checklist、debug 流程或 sign-off action item。
 - `evidence`：至少包含文档名和页码；有图则给 figure caption；有实体则给实体名。
 - `uncertainty`：如果无法确定，说明缺口，不允许编造。
+
+**证据容差**：DocGraph 中的实体名可能与原文略有差异（大小写、下划线/空格、缩写）。评分时**不影响核心信息的名称归一化差异不扣分**，但实体类型必须正确。例如 `core_clk` ↔ `Core Clock` ↔ `CoreClk` 视为证据有效。
 
 ## Case 1：RTL 设计输入包：地址转换与地址空间
 
@@ -523,6 +554,31 @@ DocGraph 模式额外建议记录：
 - 是否输出可执行的 bring-up/DFT 检查步骤。
 - 是否明确证据来源和不确定项。
 
+## Case 17：Agent 自主发现 KG 缺失实体
+
+**Prompt**
+
+你是芯片 spec 审阅人。DocGraph 已构建了两份 PCIe spec 的知识图谱。
+请检查 KG 中 `clock` 和 `register` 两类实体的完整性：找出 KG 中缺失或属性不完整、但在 spec 原文中存在的实体，说明你是如何追溯到原文、发现了什么 KG 没覆盖到的信息，并给出修复建议（缺失实体应加入 KG、缺失属性应补充）。
+
+**考察点**
+
+- Agent 是否能绕过 L2 缺陷直达 L1/L0 原文（架构契约 §2：L2 缺失时，L1/L0 仍然能回答问题）。
+- Agent 是否能自主发现 KG 的覆盖盲区，而非只消费已有图谱。
+- 是否能将发现转化为具体修复建议。
+
+**期望证据**
+
+- 列出 KG 中 clock 节点（21 个），对照 spec 接口表/时钟结构图发现缺失（例如 `core_clk`、`mstr_clk` 虽在原文中出现但未入库）。
+- 列出 register 节点中 offset 为空的，对照 spec 寄存器表发现可以补的值。
+- 每个发现都给出原文页码/图表号作为证据。
+
+**评分重点**
+
+- 是否真的读了原文而不是只看 KG 说"够了"。
+- 是否能区分"KG 没抽到"vs"原文就没有"。
+- 是否能给出可操作的修复建议（具体到哪个 parser/extractor，需补什么 prompt/logic）。
+
 ## 推荐总分表
 
 | Case | 权重 | DocGraph 预期提升点 |
@@ -543,6 +599,7 @@ DocGraph 模式额外建议记录：
 | 14 CDC/RDC sign-off | 1.4 | clock/reset domain 与 reset 风险召回 |
 | 15 P&R/PHY 集成 | 1.4 | 架构图 + 接口 + PHY/JTAG 物理边界 |
 | 16 DFT/JTAG bring-up | 1.4 | JTAG/PHY/debug/register 跨实体整合 |
+| 17 KG 缺失发现 | 1.0 | Agent 自主发现 L2 盲区并回到 L1/L0 原文修复 |
 
 ## 对比报告模板
 
@@ -578,6 +635,11 @@ DocGraph 模式额外建议记录：
 | 总 tokens | | | |
 | 总 tool calls | | | |
 | 总 PDF pages read | | | |
+| DocGraph 构建耗时(s) | — | | — |
+| DocGraph 构建 LLM calls | — | | — |
+| DocGraph 构建 total tokens | — | | — |
+| 构建单题均摊耗时(s) | — | | — |
+| DocGraph 查询精度 | — | | — |
 
 结论：
 - 准确率提升：

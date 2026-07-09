@@ -35,6 +35,7 @@ dependencies = [
 llm = ["anthropic>=0.34", "openai>=1.40"]
 marker = ["marker-pdf>=1.0"]
 mineru = ["magic-pdf>=0.7"]
+docling = ["docling>=2.0"]
 mcp = ["mcp>=1.0"]
 embeddings = ["sentence-transformers>=3.0"]
 lancedb = ["lancedb>=0.16"]
@@ -47,15 +48,16 @@ dev = [
   "mypy>=1.10",
   "httpx>=0.27",
 ]
-all = ["docgraph[llm,marker,mcp,embeddings,lancedb,web]"]
+all = ["docgraph[llm,docling,mineru,mcp,embeddings,lancedb,web]"]
 
 [project.scripts]
 docgraph = "docgraph.cli.main:app"
 
 [project.entry-points."docgraph.parsers"]
 pymupdf  = "docgraph.parsers.pymupdf_parser:PyMuPDFParser"
-marker   = "docgraph.parsers.marker_parser:MarkerParser"
+docling  = "docgraph.parsers.docling_parser:DoclingParser"
 mineru   = "docgraph.parsers.mineru_parser:MinerUParser"
+marker   = "docgraph.parsers.marker_parser:MarkerParser"
 docx     = "docgraph.parsers.docx_parser:DocxParser"
 markdown = "docgraph.parsers.markdown_parser:MarkdownParser"
 xlsx     = "docgraph.parsers.xlsx_parser:XlsxParser"

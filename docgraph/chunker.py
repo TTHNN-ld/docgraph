@@ -21,6 +21,7 @@ from docgraph.graph.schema import Block, BlockKind, Chunk, NodeKind, ParsedDoc, 
 _CHARS_PER_TOKEN = 4
 MAX_CHUNK_CHARS = 2000  # ~500 tokens
 MIN_CHUNK_CHARS = 80
+_CHUNK_OVERLAP_CHARS = 200  # 句子级滑窗重叠，避免检索跨边界丢上下文
 
 
 @dataclass
@@ -38,6 +39,8 @@ def chunk_doc(doc: ParsedDoc) -> list[Chunk]:
 
     L1 is section-aware: continuous prose can span pages within the same
     section, while tables and figures remain independently addressable chunks.
+    Oversized blocks (a single long paragraph, or a 100-row register table) are
+    split last so L0 stays atomic and every sub-chunk still carries block_ids.
     """
     section_index = _section_index(doc)
     chunks: list[Chunk] = []
@@ -45,7 +48,8 @@ def chunk_doc(doc: ParsedDoc) -> list[Chunk]:
         b for page in doc.pages for b in page.blocks
     ]
     chunks.extend(_chunk_blocks(doc.doc_id, blocks, section_index))
-    return _merge_logical_tables(chunks)
+    chunks = _merge_logical_tables(chunks)
+    return _split_oversized_chunks(chunks)
 
 
 def _chunk_blocks(
@@ -269,6 +273,252 @@ def _merge_table_group(group: list[Chunk]) -> Chunk:
             "logical_table_source_chunk_ids": [c.id for c in group],
         },
     )
+
+
+def _split_oversized_chunks(chunks: list[Chunk]) -> list[Chunk]:
+    """Split chunks whose text exceeds MAX_CHUNK_CHARS.
+
+    Runs after logical-table merging so a merged cross-page table is split as a
+    whole. Prose is split sentence-aware with overlap; tables are split into
+    header-preserving row batches. Every sub-chunk inherits the parent's
+    block_ids so L0 traceability (layered-architecture §3.2) is preserved.
+    """
+    out: list[Chunk] = []
+    for chunk in chunks:
+        if len(chunk.text) <= MAX_CHUNK_CHARS:
+            out.append(chunk)
+            continue
+        if chunk.kind == "table":
+            out.extend(_split_table_chunk(chunk))
+        else:
+            out.extend(_split_prose_chunk(chunk))
+    return out
+
+
+def _make_subchunk(
+    parent: Chunk,
+    text: str,
+    part: int,
+    total: int,
+    *,
+    extra_attrs: dict | None = None,
+) -> Chunk:
+    attrs = dict(parent.attrs)
+    attrs["split_part"] = part
+    attrs["split_total"] = total
+    attrs["split_parent_id"] = parent.id
+    if extra_attrs:
+        attrs.update(extra_attrs)
+    return Chunk(
+        id=f"{parent.id}_part{part}of{total}",
+        doc_id=parent.doc_id,
+        page=parent.page,
+        page_start=parent.page_start,
+        page_end=parent.page_end,
+        section_id=parent.section_id,
+        section_node_id=parent.section_node_id,
+        text=text,
+        hash=content_hash(text),
+        source_hash=parent.source_hash,
+        block_ids=list(parent.block_ids),
+        kind=parent.kind,
+        chunk_type=parent.chunk_type,
+        attrs=attrs,
+    )
+
+
+# --- prose splitting (sentence-aware with overlap) ---
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？；!?\.])\s+|(?<=\n)\s*")
+
+
+def _split_sentences(text: str) -> list[str]:
+    out = [s for s in _SENTENCE_SPLIT_RE.split(text.strip()) if s.strip()]
+    return out
+
+
+def _pack_sentences(
+    sentences: list[str], max_chars: int, overlap_chars: int
+) -> list[str]:
+    """Greedily pack sentences into parts of at most max_chars with overlap."""
+    parts: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for s in sentences:
+        if cur and cur_len + len(s) > max_chars:
+            parts.append("".join(cur))
+            overlap: list[str] = []
+            ov_len = 0
+            for t in reversed(cur):
+                if ov_len + len(t) > overlap_chars:
+                    break
+                overlap.insert(0, t)
+                ov_len += len(t)
+            cur = overlap
+            cur_len = sum(len(t) for t in cur)
+        if len(s) > max_chars:
+            # Single sentence longer than the budget: hard-split it.
+            for piece in _hard_split(s, max_chars):
+                if cur and cur_len + len(piece) > max_chars:
+                    parts.append("".join(cur))
+                    cur = []
+                    cur_len = 0
+                cur.append(piece)
+                cur_len += len(piece)
+            continue
+        cur.append(s)
+        cur_len += len(s)
+    if cur:
+        parts.append("".join(cur))
+    return parts
+
+
+def _hard_split(text: str, max_chars: int) -> list[str]:
+    return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
+
+
+def _split_prose_chunk(chunk: Chunk) -> list[Chunk]:
+    text = chunk.text
+    if len(text) <= MAX_CHUNK_CHARS:
+        return [chunk]
+    sentences = _split_sentences(text)
+    if not sentences:
+        parts = _hard_split(text, MAX_CHUNK_CHARS)
+    else:
+        parts = _pack_sentences(sentences, MAX_CHUNK_CHARS, _CHUNK_OVERLAP_CHARS)
+    parts = [p for p in parts if p.strip()]
+    if len(parts) <= 1:
+        return [chunk]
+    total = len(parts)
+    out: list[Chunk] = []
+    offset = 0
+    for i, part_text in enumerate(parts):
+        out.append(_make_subchunk(
+            chunk, part_text, i, total,
+            extra_attrs={"char_offset": offset},
+        ))
+        offset += len(part_text)
+    return out
+
+
+# --- table splitting (header-preserving row batches) ---
+
+def _split_table_chunk(chunk: Chunk) -> list[Chunk]:
+    text = chunk.text
+    if len(text) <= MAX_CHUNK_CHARS:
+        return [chunk]
+    prefix_lines, headers, rows = _parse_table_chunk_text(text)
+    if not headers or not rows:
+        # Cannot re-derive structure; fall back to prose-style split so we never
+        # emit an oversized chunk.
+        return _split_prose_chunk(chunk)
+    header_lines = [
+        "| " + " | ".join(headers) + " |",
+        "|" + "|".join(["---"] * len(headers)) + "|",
+    ]
+    header_cost = sum(len(line) + 1 for line in prefix_lines + header_lines)
+    budget = MAX_CHUNK_CHARS - header_cost
+    if budget < len(headers) * 4 + 8:
+        # Headers alone fill the budget; structural split is not worthwhile.
+        return _split_prose_chunk(chunk)
+    batches = _pack_rows(rows, budget)
+    if len(batches) <= 1:
+        return [chunk]
+    total = len(batches)
+    out: list[Chunk] = []
+    row_cursor = 0
+    for i, batch_rows in enumerate(batches):
+        lines = list(prefix_lines) + list(header_lines)
+        for row in batch_rows:
+            lines.append("| " + " | ".join(str(c) for c in row) + " |")
+        part_text = "\n".join(lines)
+        out.append(_make_subchunk(
+            chunk, part_text, i, total,
+            extra_attrs={
+                "row_batch": True,
+                "row_start": row_cursor,
+                "row_end": row_cursor + len(batch_rows) - 1,
+                "row_total": len(rows),
+            },
+        ))
+        row_cursor += len(batch_rows)
+    return out
+
+
+def _pack_rows(rows: list[list[str]], budget: int) -> list[list[list[str]]]:
+    """Pack table rows into batches whose markdown fits within budget chars."""
+    batches: list[list[list[str]]] = []
+    cur: list[list[str]] = []
+    cur_len = 0
+    for row in rows:
+        # "| " + " | ".join(cells) + " |" + newline
+        cost = sum(len(str(c)) for c in row) + len(row) * 3 + 3
+        if cur and cur_len + cost > budget:
+            batches.append(cur)
+            cur = []
+            cur_len = 0
+        cur.append(row)
+        cur_len += cost
+    if cur:
+        batches.append(cur)
+    return batches
+
+
+def _parse_table_chunk_text(text: str) -> tuple[list[str], list[str], list[list[str]]]:
+    """Parse a table chunk's markdown into (prefix_lines, headers, rows).
+
+    Handles merged logical tables ([logical_table_part] separators) by
+    concatenating rows from each part and keeping the first part's headers and
+    prefix (caption + markers).
+    """
+    parts = re.split(r"\n*\[logical_table_part\]\n*", text)
+    prefix_lines: list[str] = []
+    headers: list[str] = []
+    rows: list[list[str]] = []
+    for part in parts:
+        if not part.strip():
+            continue
+        pre, h, r = _parse_single_table(part)
+        if not headers and h:
+            headers = h
+            prefix_lines = pre
+        rows.extend(r)
+    return prefix_lines, headers, rows
+
+
+def _parse_single_table(part: str) -> tuple[list[str], list[str], list[list[str]]]:
+    lines = part.split("\n")
+    header_idx = None
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("|"):
+            header_idx = i
+            break
+    if header_idx is None:
+        return [], [], []
+    prefix = [ln for ln in lines[:header_idx] if ln.strip()]
+    headers = _split_table_row(lines[header_idx])
+    rows: list[list[str]] = []
+    past_separator = False
+    for ln in lines[header_idx + 1:]:
+        if not ln.lstrip().startswith("|"):
+            continue
+        cells = _split_table_row(ln)
+        if not past_separator:
+            if cells and all(re.fullmatch(r":?-{1,}:?", c.strip()) for c in cells if c.strip()):
+                past_separator = True
+                continue
+            past_separator = True
+        rows.append(cells)
+    return prefix, headers, rows
+
+
+def _split_table_row(line: str) -> list[str]:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
 
 
 def _table_profile(block: Block) -> dict:

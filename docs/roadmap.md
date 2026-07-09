@@ -91,6 +91,11 @@
 - **决定**：用户级配置放在 `~/.docgraph/`；项目级 `docgraph.yaml` 可选；项目 `.docgraph/` 只保存生成物。
 - **理由**：普通用户开箱即用，团队项目不需要提交本地数据库和密钥，新增文档后可直接增量构建。
 
+### ADR-015 语义知识图谱：IP-XACT 对齐本体 + 三层混合抽取
+
+- **决定**：L2 升级为语义知识图谱。本体对齐 IP-XACT（IEEE 1685-2022），关系类型化（`belongs_to` / `contained_in` / `mapped_to` / `drives` / `clocks` / `resets` / `implements`）。抽取分三层：A 确定性事实（表格，保留）、B 确定性关系推断（章节归属 + 地址 join + 名字 join，新增）、C LLM 开放 IE（GraphRAG 式、本体约束，新增）。溯源移出图边（保留在节点 attrs），图谱边只留语义关系 + `has_bitfield`。详见 [RFC 0015](./rfcs/0015-semantic-kg-hybrid-extraction.md)。
+- **理由**：当前图谱 81% 边是溯源/结构，语义关系稀缺，无法回答芯片语义问题；纯规则不可扩展，纯 GraphRAG 对精确事实有幻觉风险。分层各取其长，B 层零 LLM 成本补大半语义边。
+
 ## 未决问题
 
 - 多用户协作、人工 review 和标注数据的产品形态。

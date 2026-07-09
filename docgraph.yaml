@@ -1,0 +1,9 @@
+project:
+  name: case-demo
+  family: arm
+  description: "End-to-end L0-L3 demo on case/ files"
+
+docs:
+  include:
+    - "spec/**/*.pdf"
+  exclude: []

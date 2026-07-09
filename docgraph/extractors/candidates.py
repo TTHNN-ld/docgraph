@@ -45,6 +45,10 @@ def build_entity_candidates(doc: ParsedDoc) -> list[EntityCandidate]:
         for page in doc.pages
         for block in page.blocks
     }
+    blocks_by_page: dict[int, list[Block]] = {
+        page.page_no: sorted(page.blocks, key=lambda b: b.reading_order)
+        for page in doc.pages
+    }
     candidates: list[EntityCandidate] = []
 
     chunks = chunk_doc(doc)
@@ -53,7 +57,7 @@ def build_entity_candidates(doc: ParsedDoc) -> list[EntityCandidate]:
         if not blocks:
             continue
         if (chunk.chunk_type or chunk.kind) in {"table", "logical_table"}:
-            candidates.extend(_table_candidates(chunk, blocks))
+            candidates.extend(_table_candidates(chunk, blocks, blocks_by_page))
         elif (chunk.chunk_type or chunk.kind) == "figure":
             candidates.extend(_figure_candidates(chunk, blocks))
         else:
@@ -81,11 +85,19 @@ def build_entity_candidates(doc: ParsedDoc) -> list[EntityCandidate]:
     return candidates
 
 
-def _table_candidates(chunk: Chunk, blocks: list[Block]) -> list[EntityCandidate]:
+def _table_candidates(
+    chunk: Chunk,
+    blocks: list[Block],
+    blocks_by_page: dict[int, list[Block]],
+) -> list[EntityCandidate]:
     table_blocks = [b for b in blocks if b.kind == BlockKind.TABLE and b.table is not None]
     if not table_blocks:
         return []
     table = _merge_table_data(table_blocks)
+    if not table.caption:
+        caption = _nearest_table_heading(table_blocks, blocks_by_page)
+        if caption:
+            table = table.model_copy(update={"caption": caption})
     image_path = next((b.image_path for b in table_blocks if b.image_path), None)
     table_source = next((b.attrs.get("table_source") for b in table_blocks if b.attrs.get("table_source")), None)
     base = EntityCandidate(
@@ -110,6 +122,46 @@ def _table_candidates(chunk: Chunk, blocks: list[Block]) -> list[EntityCandidate
             **{**base.__dict__, "id": f"{chunk.id}#candidate_table_image", "kind": "table_image"}
         ))
     return out
+
+
+def _nearest_table_heading(
+    table_blocks: list[Block],
+    blocks_by_page: dict[int, list[Block]],
+) -> str | None:
+    """Find the closest preceding heading/text label for captionless tables."""
+    if not table_blocks:
+        return None
+    first = sorted(table_blocks, key=lambda b: (b.page, b.reading_order))[0]
+    page_blocks = blocks_by_page.get(first.page, [])
+    before = [
+        b for b in page_blocks
+        if b.reading_order < first.reading_order
+        and b.kind in {BlockKind.HEADING, BlockKind.CAPTION, BlockKind.PARAGRAPH}
+        and (b.text or "").strip()
+    ]
+    heading_like = [b for b in before if b.kind in {BlockKind.HEADING, BlockKind.CAPTION}]
+    for block in reversed(heading_like[-8:]):
+        text = " ".join((block.text or "").split())
+        if _looks_like_table_context(text):
+            return text[:240]
+    for block in reversed(before[-4:]):
+        if block.kind != BlockKind.PARAGRAPH:
+            continue
+        text = " ".join((block.text or "").split())
+        if len(text) <= 120 and _looks_like_table_context(text):
+            return text[:240]
+    return None
+
+
+def _looks_like_table_context(text: str) -> bool:
+    low = text.lower()
+    if not low or len(low) > 240:
+        return False
+    return any(token in low for token in (
+        "register", "bit", "field", "address", "offset", "pin", "signal",
+        "interface", "interrupt", "memory map", "寄存器", "位域", "地址",
+        "信号", "接口", "中断",
+    ))
 
 
 def _figure_candidates(chunk: Chunk, blocks: list[Block]) -> list[EntityCandidate]:

@@ -1,7 +1,7 @@
 """Parser 层。"""
 from docgraph.parsers.base import Parser, ParseContext, ParserRegistry, registry
+from docgraph.parsers.docling_parser import DoclingParser
 from docgraph.parsers.docx_parser import DocxParser
-from docgraph.parsers.marker_parser import MarkerParser
 from docgraph.parsers.markdown_parser import MarkdownParser
 from docgraph.parsers.mineru_parser import MinerUParser
 from docgraph.parsers.pymupdf_parser import PyMuPDFParser
@@ -13,7 +13,7 @@ __all__ = [
     "ParserRegistry",
     "registry",
     "PyMuPDFParser",
-    "MarkerParser",
+    "DoclingParser",
     "MinerUParser",
     "DocxParser",
     "MarkdownParser",

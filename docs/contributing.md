@@ -63,7 +63,7 @@ RFC 包括：动机、设计、备选方案、迁移路径、未决问题。
 | CLI | Typer | 简洁、自动文档 |
 | 数据校验 | Pydantic v2 | schema 是命根子 |
 | 图存储 | SQLite + 可插拔向量后端 | 默认本地轻量，支持 LanceDB |
-| PDF 解析 | PyMuPDF / MinerU / Marker / Docling | 默认 PyMuPDF，复杂版面推荐 MinerU |
+| PDF 解析 | PyMuPDF / Docling / MinerU | 默认自动路由：PyMuPDF 预检/兜底，Docling 处理 born-digital，MinerU 处理 OCR/图片密集 |
 | VLM | OpenAI-compatible / 可换 | 适配器隔离 |
 | Embedding | hash / OpenAI-compatible / 可换 | 低成本默认，可配置真实语义模型 |
 | MCP | FastMCP / mcp-python | 标准协议 |

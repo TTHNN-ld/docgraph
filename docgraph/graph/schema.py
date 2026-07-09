@@ -64,6 +64,13 @@ class EdgeKind(str, Enum):
     ALIAS_OF = "alias_of"
     SUPERSEDES = "supersedes"
     DERIVED_FROM = "derived_from"
+    # ADR-015 语义关系层（IP-XACT 对齐）
+    CONTAINED_IN = "contained_in"  # memory_map → register
+    MAPPED_TO = "mapped_to"        # interrupt → register
+    DRIVES = "drives"              # signal → pin | interface
+    CLOCKS = "clocks"              # clock → module | signal
+    RESETS = "resets"              # reset_domain → module | register
+    IMPLEMENTS = "implements"      # module → interface
 
 
 class DocType(str, Enum):

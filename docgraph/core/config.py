@@ -20,6 +20,8 @@ class ParserFormatConfig(BaseModel):
     quality: str = "balanced"
     per_page_timeout: int = 60
     page_failure_strategy: str = "skip"
+    device: str = "cpu"
+    ocr_device: str | None = None
 
     @field_validator("quality")
     @classmethod
@@ -29,9 +31,31 @@ class ParserFormatConfig(BaseModel):
             raise ValueError("parser quality must be one of: fast, balanced, accurate")
         return normalized
 
+    @field_validator("device")
+    @classmethod
+    def validate_device(cls, value: str) -> str:
+        # torch device for model-based parsers (MinerU/Marker). pymupdf/docx ignore it.
+        # Only torch backends; rapid_table (onnx) always stays on CPU regardless.
+        normalized = (value or "cpu").strip().lower()
+        if normalized not in {"cpu", "cuda", "mps"}:
+            raise ValueError("parser device must be one of: cpu, cuda, mps")
+        return normalized
+
+    @field_validator("ocr_device")
+    @classmethod
+    def validate_ocr_device(cls, value: str | None) -> str | None:
+        # MinerU OCR device override (paddleocr2pytorch). None -> follow `device`.
+        # Useful on Apple Silicon: layout wins on mps, OCR is faster on cpu.
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if normalized not in {"cpu", "cuda", "mps"}:
+            raise ValueError("parser ocr_device must be one of: cpu, cuda, mps, or null")
+        return normalized
+
 
 class ParsersConfig(BaseModel):
-    pdf: ParserFormatConfig = ParserFormatConfig(primary="pymupdf")
+    pdf: ParserFormatConfig = ParserFormatConfig(primary="auto")
     docx: ParserFormatConfig = ParserFormatConfig(primary="docx")
     xlsx: ParserFormatConfig = ParserFormatConfig(primary="xlsx")
     md: ParserFormatConfig = ParserFormatConfig(primary="markdown")
@@ -83,6 +107,10 @@ class VLMConfig(BaseModel):
 
     允许文本 LLM 与视觉模型使用不同 provider/model。直接配置值优先，
     环境变量仍作为兼容兜底。
+
+    figure_limit: 每文档最多送多少张图给 VLM 做语义增强 (默认 8, 见
+    FigureExtractor.DEFAULT_VLM_FIGURE_LIMIT). 设大一点 (如 200) 即近似 "全量".
+    DOCGRAPH_VLM_FIGURE_LIMIT 环境变量仍可单次覆盖本值.
     """
     provider: str | None = None
     model: str | None = None
@@ -90,6 +118,7 @@ class VLMConfig(BaseModel):
     api_key_env: str = "VLM_API_KEY"
     base_url: str | None = None
     base_url_env: str = "VLM_BASE_URL"
+    figure_limit: int | None = None
 
 
 class LLMConfig(BaseModel):
@@ -194,7 +223,7 @@ docs:
 
 parsers:
   pdf:
-    primary: pymupdf
+    primary: auto     # auto | docling | mineru | pymupdf
     fallback: []
     quality: balanced  # fast | balanced | accurate
 
@@ -239,6 +268,7 @@ llm:
     # model: GLM-4.6V-Flash
     # api_key: sk-...
     # base_url: https://api.example.com/v1
+    # figure_limit: 8   # 每文档送 VLM 的图数上限; 调大 (如 200) 近似全量. 环境变量 DOCGRAPH_VLM_FIGURE_LIMIT 可覆盖
 
 embeddings:
   provider: hash        # hash | bge_m3 | openai_compat | openai
@@ -247,13 +277,11 @@ embeddings:
   # api_key: sk-...
   # base_url: https://api.example.com/v1
 
-# Optional: make MinerU the default PDF parser for all projects.
-# Parser outputs still stay in each project's .docgraph/cache, while MinerU
-# model weights are shared under ~/.docgraph/mineru-models.
+# Optional: override the automatic PDF router.
 # parsers:
 #   pdf:
 #     primary: mineru
-#     fallback: [pymupdf]
+#     fallback: [docling, pymupdf]
 #     quality: balanced
 """
 

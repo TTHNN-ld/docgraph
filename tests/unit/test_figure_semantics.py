@@ -414,3 +414,235 @@ def test_figure_extractor_skips_l0_decoration_blocks(tmp_path):
 
     assert result.nodes == []
     assert result.edges == []
+
+
+def _doc_with_figures(tmp_path: Path, n: int) -> ParsedDoc:
+    """n captioned figure blocks, each on its own page with a real image file."""
+    pages = []
+    for i in range(n):
+        img = tmp_path / f"fig_{i}.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        pages.append(
+            ParsedPage(
+                page_no=i + 1,
+                blocks=[
+                    Block(
+                        id=f"doc::d#p{i + 1}#b0",
+                        doc_id="doc::d",
+                        page=i + 1,
+                        kind=BlockKind.FIGURE,
+                        text=f"Figure {i} block diagram",
+                        image_path=str(img),
+                    )
+                ],
+            )
+        )
+    return ParsedDoc(
+        doc_id="doc::d",
+        source_path="spec.pdf",
+        metadata=DocMetadata(title="Spec"),
+        pages=pages,
+    )
+
+
+def test_vlm_figure_limit_from_config(tmp_path, monkeypatch):
+    """llm.vlm.figure_limit (threaded via options) caps per-doc VLM calls."""
+    monkeypatch.delenv("DOCGRAPH_VLM_FIGURE_LIMIT", raising=False)
+    doc = _doc_with_figures(tmp_path, 12)
+    vlm = FakeVLM({"domain": "general", "summary": "ok", "confidence": 0.5})
+    result = FigureExtractor().extract(
+        doc,
+        ExtractContext(
+            family="fam",
+            options={"vlm_client": vlm, "root": str(tmp_path), "vlm_figure_limit": 5},
+        ),
+    )
+    assert len(vlm.prompts) == 5
+    assert result.stats.llm_calls == 5
+
+
+def test_vlm_figure_limit_env_overrides_config(tmp_path, monkeypatch):
+    """DOCGRAPH_VLM_FIGURE_LIMIT env var overrides the config value."""
+    monkeypatch.setenv("DOCGRAPH_VLM_FIGURE_LIMIT", "3")
+    doc = _doc_with_figures(tmp_path, 12)
+    vlm = FakeVLM({"domain": "general", "summary": "ok", "confidence": 0.5})
+    FigureExtractor().extract(
+        doc,
+        ExtractContext(
+            family="fam",
+            options={"vlm_client": vlm, "root": str(tmp_path), "vlm_figure_limit": 5},
+        ),
+    )
+    assert len(vlm.prompts) == 3
+
+
+def test_vlm_figure_limit_default_when_unset(tmp_path, monkeypatch):
+    """No env, no config -> DEFAULT_VLM_FIGURE_LIMIT (8)."""
+    monkeypatch.delenv("DOCGRAPH_VLM_FIGURE_LIMIT", raising=False)
+    doc = _doc_with_figures(tmp_path, 12)
+    vlm = FakeVLM({"domain": "general", "summary": "ok", "confidence": 0.5})
+    FigureExtractor().extract(
+        doc,
+        ExtractContext(family="fam", options={"vlm_client": vlm, "root": str(tmp_path)}),
+    )
+    assert len(vlm.prompts) == FigureExtractor.DEFAULT_VLM_FIGURE_LIMIT == 8
+
+
+# --- VLM diagram output validation ---
+
+
+def _one_chip_figure(tmp_path: Path, *, caption: str, payload: dict) -> ParsedDoc:
+    image_path = _image(tmp_path)
+    return ParsedDoc(
+        doc_id="chip::doc",
+        source_path="spec.pdf",
+        metadata=DocMetadata(title="PCIe Subsystem Specification", family="pcie"),
+        pages=[
+            ParsedPage(
+                page_no=3,
+                blocks=[
+                    Block(
+                        id="chip::doc#p3#b2",
+                        doc_id="chip::doc",
+                        page=3,
+                        kind=BlockKind.FIGURE,
+                        text=caption,
+                        image_path=image_path,
+                    ),
+                ],
+                figures=[ParsedFigure(image_path=image_path, caption=caption)],
+            )
+        ],
+    ), image_path
+
+
+def _extract_one(tmp_path: Path, payload: dict) -> object:
+    doc, _ = _one_chip_figure(tmp_path, caption="Figure 3-1 block diagram", payload=payload)
+    result = FigureExtractor().extract(
+        doc,
+        ExtractContext(
+            family="chip",
+            options={"vlm_client": FakeVLM(payload), "root": str(tmp_path)},
+        ),
+    )
+    return next(n for n in result.nodes if n.kind == NodeKind.FIGURE)
+
+
+def _chip_payload(**overrides) -> dict:
+    base = {
+        "domain": "chip",
+        "figure_type": "block",
+        "summary": "block diagram of the subsystem",
+        "modules": [],
+        "signals": [],
+        "interfaces": [],
+        "clocks_resets": [],
+        "address_regions": [],
+        "connections": [],
+        "mermaid": None,
+        "wavejson": None,
+        "plantuml": None,
+        "confidence": 0.8,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_valid_mermaid_wavejson_plantuml_pass_through(tmp_path):
+    figure = _extract_one(
+        tmp_path,
+        _chip_payload(
+            mermaid="graph LR\n  A-->B",
+            wavejson={"signal": [{"name": "clk", "wave": "p."}]},
+            plantuml="@startuml\nstate Idle\nIdle --> Running : start\n@enduml",
+        ),
+    )
+    assert figure.attrs["mermaid"] == "graph LR\n  A-->B"
+    assert figure.attrs["wavejson"] == {"signal": [{"name": "clk", "wave": "p."}]}
+    assert "@startuml" in figure.attrs["plantuml"]
+    assert "malformed_mermaid" not in figure.attrs["quality_flags"]
+    assert "malformed_wavejson" not in figure.attrs["quality_flags"]
+    assert "malformed_plantuml" not in figure.attrs["quality_flags"]
+
+
+def test_wavejson_json_string_with_signal_key_is_accepted(tmp_path):
+    figure = _extract_one(
+        tmp_path,
+        _chip_payload(wavejson='{"signal": [{"name": "clk", "wave": "p."}]}'),
+    )
+    assert figure.attrs["wavejson"] == '{"signal": [{"name": "clk", "wave": "p."}]}'
+    assert "malformed_wavejson" not in figure.attrs["quality_flags"]
+
+
+def test_malformed_mermaid_prose_prefix_is_nulled_and_flagged(tmp_path):
+    figure = _extract_one(
+        tmp_path,
+        _chip_payload(mermaid="Here is the diagram:\ngraph LR\n  A-->B"),
+    )
+    assert figure.attrs["mermaid"] is None
+    assert "malformed_mermaid" in figure.attrs["quality_flags"]
+    # semantic_entities stays consistent with the rendering attr
+    assert figure.attrs["semantic_entities"]["mermaid"] is None
+
+
+def test_malformed_mermaid_empty_string_is_nulled_and_flagged(tmp_path):
+    figure = _extract_one(tmp_path, _chip_payload(mermaid="   "))
+    assert figure.attrs["mermaid"] is None
+    assert "malformed_mermaid" in figure.attrs["quality_flags"]
+
+
+def test_malformed_wavejson_invalid_json_is_nulled_and_flagged(tmp_path):
+    figure = _extract_one(tmp_path, _chip_payload(wavejson="not valid json {"))
+    assert figure.attrs["wavejson"] is None
+    assert "malformed_wavejson" in figure.attrs["quality_flags"]
+
+
+def test_malformed_wavejson_missing_wavedrom_key_is_nulled_and_flagged(tmp_path):
+    figure = _extract_one(tmp_path, _chip_payload(wavejson='{"foo": "bar"}'))
+    assert figure.attrs["wavejson"] is None
+    assert "malformed_wavejson" in figure.attrs["quality_flags"]
+
+
+def test_malformed_plantuml_plain_text_is_nulled_and_flagged(tmp_path):
+    figure = _extract_one(
+        tmp_path,
+        _chip_payload(plantuml="this is a state machine description"),
+    )
+    assert figure.attrs["plantuml"] is None
+    assert "malformed_plantuml" in figure.attrs["quality_flags"]
+
+
+def test_multiple_malformed_outputs_all_flagged(tmp_path):
+    figure = _extract_one(
+        tmp_path,
+        _chip_payload(
+            mermaid="prose not mermaid",
+            wavejson="broken{",
+            plantuml="plain text",
+        ),
+    )
+    assert figure.attrs["mermaid"] is None
+    assert figure.attrs["wavejson"] is None
+    assert figure.attrs["plantuml"] is None
+    flags = figure.attrs["quality_flags"]
+    assert "malformed_mermaid" in flags
+    assert "malformed_wavejson" in flags
+    assert "malformed_plantuml" in flags
+
+
+def test_missing_diagram_outputs_produce_no_flags(tmp_path):
+    """None (= VLM did not produce the field) is not a failure."""
+    figure = _extract_one(tmp_path, _chip_payload())  # all three None
+    assert figure.attrs["mermaid"] is None
+    assert figure.attrs["wavejson"] is None
+    assert figure.attrs["plantuml"] is None
+    assert figure.attrs["quality_flags"] == []
+
+
+def test_unwrapped_plantuml_state_keyword_is_accepted(tmp_path):
+    figure = _extract_one(
+        tmp_path,
+        _chip_payload(plantuml="state Idle\nstate Running\nIdle --> Running : go"),
+    )
+    assert figure.attrs["plantuml"] is not None
+    assert "malformed_plantuml" not in figure.attrs["quality_flags"]

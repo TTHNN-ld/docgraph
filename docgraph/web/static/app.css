@@ -214,7 +214,7 @@ button:hover { background: #4c7ee0; }
 .dot-figure    { background: #ec4899; }
 .dot-term      { background: #64748b; }
 
-#graph { background: var(--bg-alt); border-radius: var(--radius); border: 1px solid var(--border); }
+#graph { width: 100%; height: 720px; background: var(--bg-alt); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; }
 
 details summary { cursor: pointer; color: var(--fg-muted); margin: 8px 0; }
 

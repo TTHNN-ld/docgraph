@@ -33,3 +33,4 @@ magic-pdf.json
 .env
 .env.*
 !.env.example
+config.yaml

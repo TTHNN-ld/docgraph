@@ -9,16 +9,19 @@ by document/figure context:
 """
 from __future__ import annotations
 
-import re
+import json
 import os
+import re
 import time
+from functools import partial
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
 from docgraph.core.ids import content_hash, make_node_id
 from docgraph.core.logger import get_logger
+from docgraph.core.concurrency import map_concurrent, llm_concurrency
 from docgraph.extractors.base import ExtractContext
 from docgraph.extractors.candidates import build_entity_candidates
 from docgraph.graph.schema import (
@@ -144,6 +147,83 @@ _OUTPUT_FORMAT: dict[str, str] = {
 }
 
 
+# --- VLM diagram output validation ---
+# Mermaid/WaveJSON/PlantUML are produced by the VLM and stored on the FIGURE node
+# for downstream rendering. A malformed string (prose prefix, truncated JSON, empty
+# output) would break renderers silently, so we validate conservatively and drop
+# bad values to None with a quality_flag. None (= VLM did not produce the field) is
+# not a failure and gets no flag.
+
+# Mermaid diagrams start with a diagram-type keyword. Catches the common failure
+# where the VLM prefixes prose ("Here is the diagram:\ngraph LR ...").
+_MERMAID_START_RE = re.compile(
+    r"^\s*(?:graph|flowchart|sequenceDiagram|classDiagram|stateDiagram"
+    r"|stateDiagram-v2|erDiagram|gantt|pie|journey|gitGraph|mindmap"
+    r"|timeline|requirementDiagram|C4Context|C4Container|C4Component"
+    r"|sankey-beta|block-beta|architecture-beta|sequence)\b",
+    re.I,
+)
+
+# WaveDrom WaveJSON top-level keys. At least one must be present.
+_WAVEDROM_KEYS = {"signal", "assign", "reg", "clock", "edge", "config", "piped"}
+
+# PlantUML unwrapped content keywords (state diagrams without @startuml/@enduml).
+_PLANTUML_KEYWORD_RE = re.compile(
+    r"^\s*(?:state|participant|actor|skinparam|startuml|enduml|agent|usecase|note)\b",
+    re.I | re.M,
+)
+
+
+def _validate_mermaid(value: object) -> tuple[str | None, bool]:
+    """Return (cleaned_value, ok). None input is 'not produced' (ok, no flag)."""
+    if value is None:
+        return None, True
+    text = str(value).strip()
+    if not text:
+        return None, False
+    if _MERMAID_START_RE.match(text):
+        return text, True
+    return None, False
+
+
+def _validate_wavejson(value: object) -> tuple[object, bool]:
+    """WaveDrom WaveJSON: accept dict or JSON string carrying a WaveDrom top-level key."""
+    if value is None:
+        return None, True
+    if isinstance(value, dict):
+        obj: dict = value
+    elif isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None, False
+        try:
+            obj = json.loads(s)
+        except (ValueError, TypeError):
+            return None, False
+        if not isinstance(obj, dict):
+            return None, False
+    else:
+        return None, False
+    if any(k in obj for k in _WAVEDROM_KEYS):
+        return value, True
+    return None, False
+
+
+def _validate_plantuml(value: object) -> tuple[str | None, bool]:
+    """PlantUML: accept @startuml...@enduml wrapping or unwrapped keyword-led content."""
+    if value is None:
+        return None, True
+    text = str(value).strip()
+    if not text:
+        return None, False
+    low = text.lower()
+    if "@startuml" in low and "@enduml" in low:
+        return text, True
+    if _PLANTUML_KEYWORD_RE.search(text):
+        return text, True
+    return None, False
+
+
 def _figure_blocks(page) -> list:
     return [
         block
@@ -250,14 +330,11 @@ class FigureExtractor:
         nodes: list[Node] = []
         edges: list[Edge] = []
         vlm_calls = 0
-        vlm_attempts = 0
         failed = 0
 
         vlm_client = ctx.options.get("vlm_client") if ctx.options else None
         domain = self._infer_domain(doc)
-        vlm_limit = int(
-            os.environ.get("DOCGRAPH_VLM_FIGURE_LIMIT", self.DEFAULT_VLM_FIGURE_LIMIT)
-        )
+        vlm_limit = self._resolve_vlm_limit(ctx)
         count = 0
 
         candidates = [c for c in build_entity_candidates(doc) if c.kind == "figure"]
@@ -272,6 +349,11 @@ class FigureExtractor:
             for block in block_by_id.values()
             if (block.text or "").strip()
         }
+
+        # Phase 1: 顺序建 fig_node，收集可并发的 VLM 任务
+        fig_nodes: list[Node] = []
+        vlm_tasks: list[dict] = []
+        vlm_attempts = 0
         for candidate in candidates:
             page_context = self._page_context(doc, candidate.page)
             for block_id in candidate.block_ids:
@@ -297,6 +379,7 @@ class FigureExtractor:
                     source_chunk_ids=source_chunk_ids,
                     candidate_id=candidate.id,
                 )
+                fig_nodes.append(fig_node)
 
                 can_call_vlm = (
                     vlm_client
@@ -308,51 +391,63 @@ class FigureExtractor:
                     image_path = self._resolve_image_path(block.image_path, ctx)
                     if image_path is not None:
                         vlm_attempts += 1
-                        try:
-                            log.info(
-                                f"[figure] VLM start page={candidate.page} "
-                                f"type={fig_type} image={image_path.name}"
-                            )
-                            semantic = self._analyze_figure(
-                                image_path=image_path,
-                                domain=domain,
-                                fig_type=fig_type,
-                                caption=caption,
-                                page_context=page_context,
-                                vlm_client=vlm_client,
-                            )
-                            vlm_calls += 1
-                            log.info(
-                                f"[figure] VLM done page={candidate.page} "
-                                f"type={semantic.figure_type}"
-                            )
-                            self._apply_semantic_to_figure(fig_node, semantic)
-                            if isinstance(semantic, ChipFigureSemantic) and not self._is_weak_chip_semantic(
-                                semantic, caption=caption
-                            ):
-                                extra = self._materialize_chip_semantics(
-                                    semantic=semantic,
-                                    fig_node=fig_node,
-                                    page_no=candidate.page,
-                                    ctx=ctx,
-                                    doc_id=doc.doc_id,
-                                    source_block_ids=source_block_ids,
-                                    source_chunk_ids=source_chunk_ids,
-                                )
-                                nodes.extend(extra["nodes"])
-                                edges.extend(extra["edges"])
-                            elif isinstance(semantic, ChipFigureSemantic):
-                                fig_node.attrs.setdefault("quality_flags", []).append("weak_semantic")
-                        except Exception as e:
-                            failed += 1
-                            if not getattr(vlm_client, "disabled", False):
-                                log.warning(
-                                    f"[figure] VLM analysis failed for {block.image_path}: {e}"
-                                )
-
-                nodes.append(fig_node)
+                        vlm_tasks.append({
+                            "image_path": image_path, "domain": domain,
+                            "fig_type": fig_type, "caption": caption,
+                            "page_context": page_context, "fig_node": fig_node,
+                            "page": candidate.page, "source_block_ids": source_block_ids,
+                            "source_chunk_ids": source_chunk_ids,
+                            "block_image_path": block.image_path,
+                        })
             if count >= self.MAX_FIGURES_PER_DOC:
                 break
+
+        # Phase 2: 并发调 VLM（不同图互相独立）
+        if vlm_tasks:
+            log.info(
+                f"[figure] {len(vlm_tasks)} figures -> VLM "
+                f"(concurrency={llm_concurrency()})"
+            )
+            results = map_concurrent(
+                partial(self._run_vlm_task, vlm_client=vlm_client), vlm_tasks
+            )
+        else:
+            results = []
+
+        # Phase 3: 顺序应用 VLM 结果 + 物化语义实体
+        for task, res in zip(vlm_tasks, results):
+            semantic, err = res if res else (None, RuntimeError("no result"))
+            if err is not None:
+                failed += 1
+                if not getattr(vlm_client, "disabled", False):
+                    log.warning(
+                        f"[figure] VLM analysis failed for {task['block_image_path']}: {err}"
+                    )
+                continue
+            vlm_calls += 1
+            log.info(
+                f"[figure] VLM done page={task['page']} type={semantic.figure_type}"
+            )
+            fig_node = task["fig_node"]
+            self._apply_semantic_to_figure(fig_node, semantic)
+            if isinstance(semantic, ChipFigureSemantic) and not self._is_weak_chip_semantic(
+                semantic, caption=task["caption"]
+            ):
+                extra = self._materialize_chip_semantics(
+                    semantic=semantic,
+                    fig_node=fig_node,
+                    page_no=task["page"],
+                    ctx=ctx,
+                    doc_id=doc.doc_id,
+                    source_block_ids=task["source_block_ids"],
+                    source_chunk_ids=task["source_chunk_ids"],
+                )
+                nodes.extend(extra["nodes"])
+                edges.extend(extra["edges"])
+            elif isinstance(semantic, ChipFigureSemantic):
+                fig_node.attrs.setdefault("quality_flags", []).append("weak_semantic")
+
+        nodes.extend(fig_nodes)
 
         return ExtractResult(
             nodes=nodes,
@@ -365,6 +460,25 @@ class FigureExtractor:
                 failed=failed,
             ),
         )
+
+    def _run_vlm_task(self, task: dict, *, vlm_client) -> tuple:
+        """单个图的 VLM 调用（供并发）。返回 (semantic, err)。"""
+        try:
+            log.info(
+                f"[figure] VLM start page={task['page']} "
+                f"type={task['fig_type']} image={task['image_path'].name}"
+            )
+            semantic = self._analyze_figure(
+                image_path=task["image_path"],
+                domain=task["domain"],
+                fig_type=task["fig_type"],
+                caption=task["caption"],
+                page_context=task["page_context"],
+                vlm_client=vlm_client,
+            )
+            return (semantic, None)
+        except Exception as e:
+            return (None, e)
 
     # ------- routing -------
 
@@ -471,6 +585,30 @@ class FigureExtractor:
                 return candidate
         return None
 
+    @staticmethod
+    def _resolve_vlm_limit(ctx: ExtractContext) -> int:
+        """每文档送 VLM 的图数上限. 优先级: env > config (via options) > 默认 8.
+
+        - DOCGRAPH_VLM_FIGURE_LIMIT 环境变量: 单次覆盖 (与 autoload_env 语义一致).
+        - ctx.options["vlm_figure_limit"]: 来自 config.yaml 的 llm.vlm.figure_limit.
+        - 兜底: DEFAULT_VLM_FIGURE_LIMIT.
+        """
+        env_val = os.environ.get("DOCGRAPH_VLM_FIGURE_LIMIT")
+        if env_val:
+            try:
+                return max(0, int(env_val))
+            except (TypeError, ValueError):
+                log.warning(
+                    f"[figure] ignoring non-integer DOCGRAPH_VLM_FIGURE_LIMIT={env_val!r}"
+                )
+        cfg_val = ctx.options.get("vlm_figure_limit") if ctx.options else None
+        if cfg_val is not None:
+            try:
+                return max(0, int(cfg_val))
+            except (TypeError, ValueError):
+                log.warning(f"[figure] ignoring non-integer vlm_figure_limit={cfg_val!r}")
+        return FigureExtractor.DEFAULT_VLM_FIGURE_LIMIT
+
     # ------- VLM analysis -------
 
     def _analyze_figure(
@@ -513,9 +651,9 @@ class FigureExtractor:
                 )
                 if domain == "chip":
                     return ChipFigureSemantic(
-                        figure_type=fig_type if fig_type in ChipFigureSemantic.model_fields[
-                            "figure_type"
-                        ].annotation.__args__ else "other",
+                        figure_type=fig_type if fig_type in get_args(
+                            ChipFigureSemantic.model_fields["figure_type"].annotation,
+                        ) else "other",
                         summary=text[:500],
                         confidence=0.65,
                     )
@@ -623,16 +761,41 @@ class FigureExtractor:
     ) -> None:
         data = semantic.model_dump(exclude_none=True)
         summary = data.get("summary") or ""
+
+        # Validate VLM-produced diagram strings; drop malformed ones to None and
+        # record a quality_flag so downstream renderers never see broken input.
+        quality_flags: list[str] = list(fig_node.attrs.get("quality_flags") or [])
+        validated = {
+            "mermaid": _validate_mermaid(data.get("mermaid")),
+            "wavejson": _validate_wavejson(data.get("wavejson")),
+            "plantuml": _validate_plantuml(data.get("plantuml")),
+        }
+        dropped: list[str] = []
+        for key, (clean, ok) in validated.items():
+            if not ok:
+                quality_flags.append(f"malformed_{key}")
+                dropped.append(key)
+            if key in data:
+                # Reflect validated value back into data (None when malformed) so
+                # semantic_entities stays consistent with the rendering attrs.
+                data[key] = clean
+        if dropped:
+            log.info(
+                f"[figure] dropped malformed VLM diagram output: "
+                f"{','.join(dropped)} (figure_type={data.get('figure_type')})"
+            )
+
         fig_node.attrs.update({
             "domain": semantic.domain,
             "figure_type": data.get("figure_type") or fig_node.attrs.get("figure_type"),
             "semantic_summary": summary or None,
             "vlm_desc": summary[:240] or None,
             "semantic_entities": data,
-            "mermaid": data.get("mermaid"),
-            "wavejson": data.get("wavejson"),
-            "plantuml": data.get("plantuml"),
+            "mermaid": validated["mermaid"][0],
+            "wavejson": validated["wavejson"][0],
+            "plantuml": validated["plantuml"][0],
             "confidence": data.get("confidence"),
+            "quality_flags": quality_flags,
         })
         if summary:
             fig_node.summary = summary[:120]

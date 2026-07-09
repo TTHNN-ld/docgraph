@@ -178,3 +178,41 @@ def test_mineru_decorative_table_image_detection(tmp_path):
     }
     assert _is_decorative_table_image(image_path=str(decorative), **kwargs) is True
     assert _is_decorative_table_image(image_path=str(real_table), **kwargs) is False
+
+
+def test_docling_parser_extracts_table_blocks_when_available():
+    pytest.importorskip("docling")
+    import pymupdf
+
+    from docgraph.graph.schema import BlockKind
+    from docgraph.parsers.base import ParseContext
+    from docgraph.parsers.docling_parser import DoclingParser
+
+    with tempfile.TemporaryDirectory() as d:
+        pdf = Path(d) / "docling-table.pdf"
+        doc = pymupdf.open()
+        page = doc.new_page(width=600, height=300)
+        page.insert_text((40, 30), "1 Registers", fontsize=16)
+        for y in [60, 90, 120, 150]:
+            page.draw_line((40, y), (560, y))
+        for x in [40, 200, 560]:
+            page.draw_line((x, 60), (x, 150))
+        page.insert_text((50, 78), "Bit")
+        page.insert_text((210, 78), "Name")
+        page.insert_text((50, 108), "0")
+        page.insert_text((210, 108), "EN")
+        doc.save(str(pdf))
+        doc.close()
+
+        parsed = DoclingParser().parse(
+            pdf,
+            ParseContext(doc_id="t", cache_dir=Path(d)),
+        )
+
+    table_blocks = [b for p in parsed.pages for b in p.blocks if b.kind == BlockKind.TABLE]
+    assert table_blocks
+    table = table_blocks[0].table
+    assert table is not None
+    assert table.headers[:2] == ["Bit", "Name"]
+    assert ["0", "EN"] in table.rows
+    assert any(b.kind == BlockKind.HEADING for p in parsed.pages for b in p.blocks)

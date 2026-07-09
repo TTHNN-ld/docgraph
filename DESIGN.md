@@ -25,6 +25,7 @@
 | 🔌 **插件系统** | [docs/plugins.md](./docs/plugins.md) | entry points、自定义 Parser/Extractor |
 | ⚙️ **配置参考** | [docs/configuration.md](./docs/configuration.md) | 用户级 `~/.docgraph/config.yaml`、可选项目级 `docgraph.yaml`、可选 `.env` |
 | 🛡️ **运维与安全** | [docs/operations.md](./docs/operations.md) | 日志、成本、质量评估、安全边界 |
+| 🧭 **解析工具调研** | [docs/parser-tooling-research.md](./docs/parser-tooling-research.md) | Docling、MinerU、Marker、MarkItDown、PixelRAG/Visual RAG 对比与接入建议 |
 | 🤝 **贡献指南** | [docs/contributing.md](./docs/contributing.md) | 治理、测试、CI、技术栈 |
 | 🗺️ **路线图与决策** | [docs/roadmap.md](./docs/roadmap.md) | 当前产品基线、近期工程重点、ADR 记录 |
 | 📝 **需求变更记录** | [docs/requirements-changelog.md](./docs/requirements-changelog.md) | 稳定记录需求变更、决策和影响范围 |
@@ -45,7 +46,7 @@
 | 项目代号 | DocGraph |
 | 状态 | Active v0.4 |
 | 创建日期 | 2026-06-25 |
-| 最近更新 | 2026-07-02 |
+| 最近更新 | 2026-07-03 |
 | 类型 | 架构设计 |
 | 适用范围 | 芯片 Spec（datasheet、reference manual、TRM、errata、app note 等） |
 | 目标用户 | 芯片设计/验证工程师、Spec-driven Agent 开发者 |

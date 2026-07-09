@@ -33,6 +33,164 @@ def test_fast_quality_prefers_pymupdf_for_pdf_parser_chain():
     assert fallback == ["mineru", "marker"]
 
 
+def test_pdf_auto_router_prefers_docling_for_born_digital_pdf():
+    from docgraph.parsers.pdf_router import PdfProfile, pdf_parser_chain
+
+    profile = PdfProfile(
+        page_count=42,
+        text_chars_per_page=1600,
+        has_extractable_text=True,
+        is_tagged_pdf=True,
+        table_candidate_count=4,
+    )
+    primary, fallback = pdf_parser_chain(
+        configured_primary="auto",
+        configured_fallback=[],
+        quality="balanced",
+        profile=profile,
+    )
+    assert primary == "docling"
+    assert fallback == ["mineru", "pymupdf"]
+
+
+def test_pdf_auto_router_keeps_docling_for_register_dense_balanced_pdf():
+    from docgraph.parsers.pdf_router import PdfProfile, pdf_parser_chain
+
+    profile = PdfProfile(
+        page_count=64,
+        text_chars_per_page=1400,
+        has_extractable_text=True,
+        is_tagged_pdf=True,
+        table_candidate_count=10,
+        register_keyword_count=18,
+    )
+    primary, fallback = pdf_parser_chain(
+        configured_primary="auto",
+        configured_fallback=[],
+        quality="balanced",
+        profile=profile,
+    )
+    assert primary == "docling"
+    assert fallback == ["mineru", "pymupdf"]
+
+
+def test_pdf_auto_router_prefers_mineru_for_register_dense_accurate_pdf():
+    from docgraph.parsers.pdf_router import PdfProfile, pdf_parser_chain
+
+    profile = PdfProfile(
+        page_count=64,
+        text_chars_per_page=1400,
+        has_extractable_text=True,
+        is_tagged_pdf=True,
+        table_candidate_count=10,
+        register_keyword_count=18,
+    )
+    primary, fallback = pdf_parser_chain(
+        configured_primary="auto",
+        configured_fallback=[],
+        quality="accurate",
+        profile=profile,
+    )
+    assert primary == "mineru"
+    assert fallback == ["docling", "pymupdf"]
+
+
+def test_pdf_auto_router_prefers_mineru_for_scanned_or_image_heavy_pdf():
+    from docgraph.parsers.pdf_router import PdfProfile, pdf_parser_chain
+
+    profile = PdfProfile(
+        page_count=80,
+        text_chars_per_page=20,
+        image_count_per_page=2.5,
+        image_area_ratio=0.55,
+        has_extractable_text=False,
+        is_probably_scanned=True,
+    )
+    primary, fallback = pdf_parser_chain(
+        configured_primary="auto",
+        configured_fallback=[],
+        quality="balanced",
+        profile=profile,
+    )
+    assert primary == "mineru"
+    assert fallback == ["docling", "pymupdf"]
+
+
+def test_pdf_auto_router_fast_uses_pymupdf():
+    from docgraph.parsers.pdf_router import PdfProfile, pdf_parser_chain
+
+    primary, fallback = pdf_parser_chain(
+        configured_primary="auto",
+        configured_fallback=[],
+        quality="fast",
+        profile=PdfProfile(has_extractable_text=True, is_tagged_pdf=True),
+    )
+    assert primary == "pymupdf"
+    assert fallback == ["docling", "mineru"]
+
+
+def test_pdf_explicit_parser_bypasses_auto_router():
+    from docgraph.parsers.pdf_router import PdfProfile, pdf_parser_chain
+
+    primary, fallback = pdf_parser_chain(
+        configured_primary="mineru",
+        configured_fallback=["pymupdf"],
+        quality="balanced",
+        profile=PdfProfile(has_extractable_text=True, is_tagged_pdf=True),
+    )
+    assert primary == "mineru"
+    assert fallback == ["pymupdf"]
+
+
+def test_parse_stage_falls_back_when_selected_parser_raises(tmp_path):
+    from docgraph.core.pipeline import _parse_with_fallback
+    from docgraph.graph.schema import DocMetadata, ParsedDoc, ParsedPage
+    from docgraph.parsers.base import registry
+
+    class FailingParser:
+        name = "unit_fail"
+        supports = {".pdf"}
+
+        def can_parse(self, path):
+            return path.suffix == ".pdf"
+
+        def parse(self, path, ctx):
+            raise RuntimeError("boom")
+
+    class PassingParser:
+        name = "unit_pass"
+        supports = {".pdf"}
+
+        def can_parse(self, path):
+            return path.suffix == ".pdf"
+
+        def parse(self, path, ctx):
+            return ParsedDoc(
+                doc_id=ctx.doc_id,
+                source_path=str(path),
+                pages=[ParsedPage(page_no=1)],
+                parser=self.name,
+            )
+
+    registry.register(FailingParser)
+    registry.register(PassingParser)
+    pdf = tmp_path / "x.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    parsed = _parse_with_fallback(
+        pdf,
+        doc_id="d",
+        cache_dir=tmp_path,
+        metadata=DocMetadata(),
+        quality="balanced",
+        device="cpu",
+        ocr_device=None,
+        pdf_profile=None,
+        parser_names=["unit_fail", "unit_pass"],
+    )
+    assert parsed.parser == "unit_pass"
+
+
 def test_mineru_table_recognition_is_disabled_only_for_fast_quality():
     from docgraph.parsers.mineru_parser import _table_enabled_for_quality
 
@@ -887,3 +1045,138 @@ def test_migration_v3_adds_l1_metadata_columns(tmp_path):
     conn.close()
     assert {"page_start", "page_end", "section_node_id", "source_hash", "chunk_type"} <= cols
     assert row == (3, 3, "h", "section")
+
+
+# --- oversized block splitting (item 3: block too long for vector model) ---
+
+
+def _long_paragraph_doc(text: str):
+    from docgraph.graph.schema import Block, BlockKind, ParsedDoc, ParsedPage, TocEntry
+
+    return ParsedDoc(
+        doc_id="d",
+        source_path="x",
+        toc=[TocEntry(level=1, title="Long", page=1, section_path="1")],
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(id="d#p1#b0", doc_id="d", page=1, kind=BlockKind.HEADING,
+                  reading_order=0, text="1 Long paragraph", section_path="1", heading_level=1),
+            Block(id="d#p1#b1", doc_id="d", page=1, kind=BlockKind.PARAGRAPH,
+                  reading_order=1, text=text, section_path="1"),
+        ])],
+    )
+
+
+def _big_table_doc(n_rows: int):
+    from docgraph.graph.schema import (
+        Block, BlockKind, ParsedDoc, ParsedPage, TableData, TocEntry,
+    )
+
+    rows = [[str(i), f"REG_{i}", f"register field {i} description"] for i in range(n_rows)]
+    return ParsedDoc(
+        doc_id="d",
+        source_path="x",
+        toc=[TocEntry(level=1, title="Registers", page=1, section_path="1")],
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(id="d#p1#b0", doc_id="d", page=1, kind=BlockKind.HEADING,
+                  reading_order=0, text="1 Registers", section_path="1", heading_level=1),
+            Block(id="d#p1#b1", doc_id="d", page=1, kind=BlockKind.TABLE,
+                  reading_order=1,
+                  table=TableData(headers=["Bit", "Name", "Description"], rows=rows,
+                                  n_rows=n_rows, n_cols=3, caption="Register table")),
+        ])],
+    )
+
+
+def test_chunker_splits_long_paragraph_into_subchunks():
+    """A single paragraph longer than MAX_CHUNK_CHARS is split sentence-aware."""
+    from docgraph.chunker import MAX_CHUNK_CHARS, chunk_doc
+
+    text = ". ".join(
+        f"Sentence number {i} has some content about registers" for i in range(60)
+    ) + "."
+    assert len(text) > MAX_CHUNK_CHARS
+    doc = _long_paragraph_doc(text)
+    chunks = chunk_doc(doc)
+    section_chunks = [c for c in chunks if c.kind == "section"]
+    assert len(section_chunks) >= 2
+
+    for c in section_chunks:
+        assert len(c.text) <= MAX_CHUNK_CHARS, f"chunk {c.id} still {len(c.text)} chars"
+        assert c.block_ids, f"chunk {c.id} missing block_ids"
+        assert "d#p1#b1" in c.block_ids  # traces back to the paragraph block
+        assert "split_part" in c.attrs
+        assert "split_total" in c.attrs
+
+    totals = {c.attrs["split_total"] for c in section_chunks}
+    assert len(totals) == 1
+    parts = sorted(c.attrs["split_part"] for c in section_chunks)
+    assert parts == list(range(len(parts)))
+
+
+def test_chunker_long_paragraph_does_not_lose_content():
+    """Splitting preserves all content (overlap duplicates, never drops)."""
+    from docgraph.chunker import chunk_doc
+
+    text = ". ".join(f"Topic {i} discussion with detail" for i in range(80)) + "."
+    doc = _long_paragraph_doc(text)
+    section_chunks = [c for c in chunk_doc(doc) if c.kind == "section"]
+    assert len(section_chunks) >= 2
+    combined = "\n".join(c.text for c in section_chunks)
+    for i in range(0, 80, 10):
+        assert f"Topic {i}" in combined
+
+
+def test_chunker_splits_big_table_into_header_preserving_batches():
+    """A 120-row table is split into batches that each keep caption + headers."""
+    from docgraph.chunker import MAX_CHUNK_CHARS, chunk_doc
+
+    doc = _big_table_doc(120)
+    chunks = chunk_doc(doc)
+    table_chunks = [c for c in chunks if c.kind == "table"]
+    assert len(table_chunks) >= 2
+
+    for c in table_chunks:
+        assert len(c.text) <= MAX_CHUNK_CHARS, f"table chunk {c.id} still {len(c.text)} chars"
+        assert "| Bit | Name | Description |" in c.text  # headers preserved
+        assert "Register table" in c.text  # caption preserved
+        assert "d#p1#b1" in c.block_ids  # L0 traceability
+        assert c.attrs.get("row_batch") is True
+
+    starts = sorted(c.attrs["row_start"] for c in table_chunks)
+    ends = sorted(c.attrs["row_end"] for c in table_chunks)
+    assert starts[0] == 0
+    assert ends[-1] == 119
+    for prev_end, next_start in zip(ends[:-1], starts[1:]):
+        assert next_start == prev_end + 1  # no gap between batches
+
+
+def test_chunker_small_table_not_split():
+    """A small table under MAX_CHUNK_CHARS stays a single chunk."""
+    from docgraph.chunker import chunk_doc
+
+    doc = _big_table_doc(3)
+    table_chunks = [c for c in chunk_doc(doc) if c.kind == "table"]
+    assert len(table_chunks) == 1
+    assert "split_part" not in table_chunks[0].attrs
+
+
+def test_chunker_split_subchunk_ids_are_unique():
+    from docgraph.chunker import chunk_doc
+
+    doc = _big_table_doc(120)
+    chunks = chunk_doc(doc)
+    ids = [c.id for c in chunks]
+    assert len(ids) == len(set(ids))
+
+
+def test_chunker_single_huge_sentence_is_hard_split():
+    """A sentence longer than the budget is hard-split instead of overflowing."""
+    from docgraph.chunker import MAX_CHUNK_CHARS, chunk_doc
+
+    huge = "a" * (MAX_CHUNK_CHARS + 500)
+    text = f"Intro sentence. {huge} Trailing sentence."
+    doc = _long_paragraph_doc(text)
+    section_chunks = [c for c in chunk_doc(doc) if c.kind == "section"]
+    for c in section_chunks:
+        assert len(c.text) <= MAX_CHUNK_CHARS
+    assert len(section_chunks) >= 2

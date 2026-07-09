@@ -14,13 +14,14 @@ PDF parser，对中文混排、公式、复杂表格识别效果好。
     parsers:
       pdf:
         primary: mineru
-        fallback: [marker, pymupdf]
+        fallback: [docling, pymupdf]
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,7 @@ class MinerUParser:
     version = "0.1"
 
     def can_parse(self, path: Path) -> bool:
-        return path.suffix.lower() in self.supports
+        return path.suffix.lower() in self.supports and find_spec("magic_pdf") is not None
 
     def parse(self, path: Path, ctx: ParseContext) -> ParsedDoc:
         mid, image_dir = self._parse_with_current_api(path, ctx)
@@ -61,7 +62,7 @@ class MinerUParser:
         config_path = cache_dir.parent.parent / "magic-pdf.json"
         config = {
             "models-dir": str(models_dir),
-            "device-mode": "cpu",
+            "device-mode": _resolve_device(ctx),
             "layout-config": {"model": "doclayout_yolo"},
             "formula-config": {"enable": False},
             "table-config": {
@@ -96,6 +97,12 @@ class MinerUParser:
 
         log.info(f"[mineru] processing {path.name} with magic-pdf current API ...")
         _patch_rapid_table_ocr_result()
+        ocr_device = _resolve_ocr_device(ctx)
+        _patch_ocr_device(ocr_device)
+        if ocr_device and ocr_device != _resolve_device(ctx):
+            log.info(
+                f"[mineru] split device: layout={_resolve_device(ctx)} ocr={ocr_device}"
+            )
 
         # The pip package defaults to external model-list mode; use the bundled model pipeline.
         model_config.__use_inside_model__ = True
@@ -162,6 +169,65 @@ def _mineru_models_dir() -> Path:
     if override:
         return Path(override).expanduser()
     return user_docgraph_dir() / "mineru-models"
+
+
+def _resolve_device(ctx: ParseContext) -> str:
+    """torch device for MinerU layout (doclayout_yolo) + the global default.
+
+    DOCGRAPH_MINERU_DEVICE overrides; else ctx.options['device'] from
+    parsers.pdf.device; else cpu. rapid_table (onnx) ignores this and always
+    runs on CPU. OCR can be split off via ocr_device (see _resolve_ocr_device).
+    """
+    forced = os.environ.get("DOCGRAPH_MINERU_DEVICE", "").strip().lower()
+    if forced in {"cpu", "cuda", "mps"}:
+        return forced
+    cfg_val = (ctx.options or {}).get("device") if ctx.options else None
+    if isinstance(cfg_val, str) and cfg_val.strip().lower() in {"cpu", "cuda", "mps"}:
+        return cfg_val.strip().lower()
+    return "cpu"
+
+
+def _resolve_ocr_device(ctx: ParseContext) -> str | None:
+    """MinerU OCR (paddleocr2pytorch) device override. Priority: env > config > None.
+
+    None -> OCR follows the layout device (device-mode). On Apple Silicon,
+    setting ocr_device=cpu while device=mps keeps layout on MPS (fast) and OCR
+    on CPU (paddleocr2pytorch is faster on CPU than MPS, and avoids the MPS
+    penalty). Side effect: cpu OCR auto-downgrades lang to ch_lite (magic-pdf
+    heuristic), which is the fast path.
+    """
+    forced = os.environ.get("DOCGRAPH_MINERU_OCR_DEVICE", "").strip().lower()
+    if forced in {"cpu", "cuda", "mps"}:
+        return forced
+    cfg_val = (ctx.options or {}).get("ocr_device") if ctx.options else None
+    if isinstance(cfg_val, str) and cfg_val.strip().lower() in {"cpu", "cuda", "mps"}:
+        return cfg_val.strip().lower()
+    return None
+
+
+def _patch_ocr_device(ocr_device: str | None) -> None:
+    """Pin paddleocr2pytorch to a specific device, independent of device-mode.
+
+    PytorchPaddleOCR calls get_device() at __init__; we rebind the module-level
+    name in pytorch_paddle so OCR sees our value while layout keeps using the
+    global device-mode. Idempotent.
+    """
+    if not ocr_device:
+        return
+    try:
+        from magic_pdf.model.sub_modules.ocr.paddleocr2pytorch import (  # type: ignore
+            pytorch_paddle as pp,
+        )
+    except Exception:
+        return
+    if getattr(pp.get_device, "_docgraph_pinned", False):
+        return
+
+    def _pinned() -> str:
+        return ocr_device
+
+    _pinned._docgraph_pinned = True  # type: ignore[attr-defined]
+    pp.get_device = _pinned
 
 
 def _middle_json_to_parsed_doc(

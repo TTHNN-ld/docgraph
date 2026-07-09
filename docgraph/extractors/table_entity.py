@@ -13,8 +13,15 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import time
 from pathlib import Path
+
+try:
+    from tqdm.auto import tqdm as _tqdm
+except ImportError:  # pragma: no cover
+    def _tqdm(iterable, *a, **kw):  # type: ignore[no-redef]
+        return iterable
 
 from docgraph.core.ids import make_node_id
 from docgraph.core.logger import get_logger
@@ -147,22 +154,35 @@ class TableEntityExtractor:
         page_image_candidates = [c for c in candidates if c.kind == "page_image" and c.image_path]
         pages_by_no = {p.page_no: p for p in doc.pages}
         hits_per_page: dict[int, int] = {}
+        register_context: list[str] = []
         vlm_client = ctx.options.get("vlm_client") if ctx.options else None
         vlm_max = int(os.environ.get("DOCGRAPH_VLM_PAGE_LIMIT", self.DEFAULT_VLM_LIMIT))
 
-        for sn, schema in schemas:
-            schema_calls = 0
-            seen.setdefault(sn, set())
-            for candidate in table_candidates:
-                if schema_calls >= self.MAX_LLM_PER_SCHEMA or llm_calls >= self.MAX_LLM_TOTAL:
-                    break
+        # ---- Phase 1: 主表格抽取（表做外层，单次遍历）----
+        schema_calls_by_sn: dict[str, int] = {sn: 0 for sn, _ in schemas}
+        log.info(f"[table_entity] scanning {len(table_candidates)} tables across {len(schemas)} schemas")
+        for candidate in _tqdm(
+            table_candidates, desc="table_entity",
+            disable=not sys.stderr.isatty(),
+        ):
+            if llm_calls >= self.MAX_LLM_TOTAL:
+                break
+            for sn, schema in schemas:
+                if schema_calls_by_sn[sn] >= self.MAX_LLM_PER_SCHEMA:
+                    continue
                 if not self._table_matches(candidate.table, schema):
                     continue
                 if not self._table_has_cells(candidate.table):
                     continue
                 result = None
+                table_for_extract = candidate.table
+                context_name = None
+                if sn == "register" and candidate.table is not None:
+                    context_name = self._next_register_context(candidate.table, register_context)
+                    if context_name:
+                        table_for_extract = candidate.table.model_copy(update={"caption": context_name})
                 if sn == "register":
-                    result = self._extract_registers_from_table(candidate.table)
+                    result = self._extract_registers_from_table(table_for_extract)
                 elif sn == "pin":
                     result = self._extract_pins_from_table(candidate.table)
                 elif sn == "timing":
@@ -182,9 +202,15 @@ class TableEntityExtractor:
                 if result is None and ctx.has_llm:
                     result = self._llm_extract(candidate.table, schema, sn, ctx)
                     llm_calls += 1
-                schema_calls += 1
+                schema_calls_by_sn[sn] += 1
                 if result is None:
                     continue
+                if sn == "register":
+                    if self._is_register_summary_result(result):
+                        register_context.extend(getattr(item, "name", "") for item in result if getattr(item, "name", ""))
+                    elif context_name:
+                        self._consume_register_context(register_context, context_name)
+                seen.setdefault(sn, set())
                 n = self._materialize(
                     result, sn, schema, candidate.page, ctx, doc.doc_id,
                     seen[sn], hits_per_page,
@@ -196,17 +222,23 @@ class TableEntityExtractor:
                 edges.extend(n["edges"])
                 llm_calls = max(llm_calls, n["calls"])
 
-            if vlm_client is not None and vlm_max > vlm_calls:
+        # ---- Phase 2: VLM table_image 兜底（per-schema）----
+        if vlm_client is not None and vlm_max > vlm_calls:
+            for sn, schema in schemas:
+                if vlm_calls >= vlm_max:
+                    break
+                _sc = 0
                 for candidate in table_image_candidates:
-                    if schema_calls >= self.MAX_LLM_PER_SCHEMA or vlm_calls >= vlm_max:
+                    if vlm_calls >= vlm_max or _sc >= self.MAX_LLM_PER_SCHEMA:
                         break
                     if candidate.table is not None and not self._table_matches(candidate.table, schema):
                         continue
                     result = self._vlm_extract_table_image(candidate, sn, schema, vlm_client)
                     vlm_calls += 1
-                    schema_calls += 1
+                    _sc += 1
                     if result is None:
                         continue
+                    seen.setdefault(sn, set())
                     n = self._materialize(
                         result, sn, schema, candidate.page, ctx, doc.doc_id,
                         seen[sn], hits_per_page,
@@ -348,6 +380,7 @@ class TableEntityExtractor:
                 prompt, schema=schema.list_wrapper,
                 tier="balanced", max_tokens=4096,
                 extractor=f"table_entity_text:{schema_name}",
+                extra_body={"enable_thinking": False},
             )
         except Exception as e:
             log.warning(f"[table_entity] text {schema_name} LLM fail: {str(e)[:120]}")
@@ -371,6 +404,7 @@ class TableEntityExtractor:
                 prompt, schema=schema.list_wrapper,
                 tier="balanced", max_tokens=4096,
                 extractor=f"table_entity:{schema_name}",
+                extra_body={"enable_thinking": False},
             )
         except Exception as e:
             log.warning(f"[table_entity] {schema_name} LLM fail: {str(e)[:120]}")
@@ -449,7 +483,19 @@ class TableEntityExtractor:
         calls = 0
         for item in items:
             name = getattr(item, "name", "") or getattr(item, "symbol", "")
-            if not name or name in seen:
+            if not name:
+                continue
+            if name in seen:
+                if schema_name == "register" and getattr(item, "bitfields", None):
+                    result = self._node_from_model(
+                        item, schema_name, schema, page, ctx, doc_id,
+                        source_block_ids=source_block_ids or [],
+                        source_chunk_ids=source_chunk_ids or [],
+                        candidate_id=candidate_id,
+                    )
+                    nodes.extend(result["bitfield_nodes"])
+                    edges.extend(result["bitfield_edges"])
+                    hits_per_page[page] = hits_per_page.get(page, 0) + 1
                 continue
             seen.add(name)
             result = self._node_from_model(
@@ -569,6 +615,7 @@ class TableEntityExtractor:
             strong = (
                 "reg name", "register", "field", "bit", "bits", "msb", "lsb",
                 "swaccess", "hwaccess", "access", "reset", "default", "offset",
+                "register number", "type", "description",
                 "寄存器", "字段", "位域", "复位", "访问", "偏移",
             )
             return sum(1 for x in strong if x in pool) >= 2
@@ -666,6 +713,43 @@ class TableEntityExtractor:
         return bool(table and (table.headers or table.rows or table.html))
 
     @staticmethod
+    def _is_register_summary_result(items: list) -> bool:
+        return bool(items) and all(
+            isinstance(item, RegisterDef) and not (item.bitfields or [])
+            for item in items
+        )
+
+    @classmethod
+    def _next_register_context(cls, table: TableData, register_context: list[str]) -> str | None:
+        if table.caption or not register_context:
+            return None
+        if not cls._looks_like_register_field_table(table):
+            return None
+        return register_context[0]
+
+    @staticmethod
+    def _consume_register_context(register_context: list[str], name: str) -> None:
+        if register_context and register_context[0] == name:
+            register_context.pop(0)
+            return
+        try:
+            register_context.remove(name)
+        except ValueError:
+            pass
+
+    @classmethod
+    def _looks_like_register_field_table(cls, table: TableData | None) -> bool:
+        if table is None or not table.rows:
+            return False
+        headers = [cls._norm_header(h) for h in (table.headers or [])]
+        if not headers:
+            return False
+        has_bit = any(h in {"bit", "bits", "bit number", "bit range"} or "bit" in h for h in headers)
+        has_fieldish = any(h in {"name", "field", "bit field", "bitfield", "description", "function", "type"} for h in headers)
+        has_register_number = cls._find_register_number_col(headers) is not None
+        return has_bit and has_fieldish and not has_register_number
+
+    @staticmethod
     def _table_text(table: TableData) -> str:
         out: list[str] = []
         if table.caption:
@@ -708,20 +792,23 @@ class TableEntityExtractor:
         if not headers:
             return None
 
-        reg_col = cls._find_col(headers, ("reg name", "register name", "register", "reg", "寄存器名", "寄存器"))
+        reg_col = cls._find_register_name_col(headers)
         field_col = cls._find_col(headers, ("field", "bit field", "bitfield", "name", "字段", "位域"))
         msb_col = cls._find_col(headers, ("msb", "bit high", "high", "bit_high"))
         lsb_col = cls._find_col(headers, ("lsb", "bit low", "low", "bit_low"))
-        bits_col = cls._find_col(headers, ("bits", "bit", "位", "位段"))
-        access_col = cls._find_col(headers, ("swaccess", "sw access", "software access", "access", "memory access", "访问"))
-        reset_col = cls._find_col(headers, ("default", "reset", "reset value", "复位", "默认"))
+        bits_col = cls._find_col(headers, ("bits", "bit", "bit number", "bit no", "bit range", "位", "位段", "位号"))
+        access_col = cls._find_col(headers, ("swaccess", "sw access", "software access", "access", "memory access", "type", "访问", "类型"))
+        reset_col = cls._find_col(headers, ("default", "reset", "reset value", "value", "复位", "默认", "值"))
         desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
         offset_col = cls._find_col(headers, ("offset", "address offset", "addr offset", "address", "base address", "偏移", "地址"))
         width_col = cls._find_col(headers, ("width", "reg width", "位宽"))
 
         caption_reg = cls._register_name_from_caption(table.caption or "")
+        summary = cls._extract_register_summary_from_table(table, headers)
+        if summary:
+            return summary
         bits_from_header = cls._bit_range_from_text(" ".join(raw_headers))
-        is_field_table = field_col is not None and (
+        is_field_table = (field_col is not None or desc_col is not None) and (
             (msb_col is not None and lsb_col is not None)
             or bits_col is not None
             or bits_from_header is not None
@@ -736,7 +823,12 @@ class TableEntityExtractor:
         known_bit_ranges: dict[int, tuple[int, int]] = {}
         for row in table.rows:
             cells = [str(c or "").strip() for c in row]
+            desc = cls._cell(cells, desc_col)
             field_name = cls._clean_entity_name(cls._cell(cells, field_col))
+            if not field_name:
+                field_name = cls._field_name_from_description(desc, cls._cell(cells, bits_col))
+            if cls._is_reserved_field_name(field_name, desc):
+                continue
             embedded_reg = cls._register_name_from_cells(cells, skip_indexes={reg_col, field_col})
             raw_reg_name = cls._cell(cells, reg_col)
             if embedded_reg:
@@ -790,7 +882,6 @@ class TableEntityExtractor:
 
             access = cls._normalize_access(cls._cell(cells, access_col))
             reset = cls._cell(cells, reset_col) or None
-            desc = cls._cell(cells, desc_col)
             entry["bitfields"].append(BitFieldDef(
                 name=field_name,
                 bit_high=bit_high,
@@ -820,6 +911,48 @@ class TableEntityExtractor:
                 bitfields=selected,
             ))
         return registers or None
+
+    @classmethod
+    def _extract_register_summary_from_table(
+        cls,
+        table: TableData,
+        headers: list[str],
+    ) -> list[RegisterDef] | None:
+        """Parse register index/summary tables without bitfield rows."""
+        reg_col = cls._find_register_name_col(headers)
+        desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
+        number_col = cls._find_register_number_col(headers)
+        type_col = cls._find_col(headers, ("type", "access", "memory access", "访问", "类型"))
+        location_col = cls._find_col(headers, ("location", "address", "offset", "addr offset", "地址", "偏移", "位置"))
+        pool = " ".join(headers + [cls._norm_header(table.caption or "")])
+        if not any(token in pool for token in ("register", "寄存器")):
+            return None
+        if reg_col is None and number_col is None:
+            return None
+        if reg_col is None and desc_col is None:
+            return None
+
+        out: list[RegisterDef] = []
+        for row in table.rows:
+            cells = [str(c or "").strip() for c in row]
+            if cls._is_header_echo(" ".join(cells), headers):
+                continue
+            raw_name = cls._cell(cells, reg_col) or cls._cell(cells, desc_col)
+            name = cls._register_name_from_text(raw_name)
+            if not name or cls._is_header_echo(name, headers):
+                continue
+            location = cls._cell(cells, location_col)
+            offset = cls._offset_from_text(location)
+            if offset is None:
+                offset = cls._offset_from_register_number(cls._cell(cells, number_col))
+            out.append(RegisterDef(
+                name=cls._clean_entity_name(name),
+                offset=offset,
+                access=cls._normalize_access(cls._cell(cells, type_col)),
+                description=cls._cell(cells, desc_col) or raw_name,
+                bitfields=[],
+            ))
+        return out or None
 
     @classmethod
     def _extract_memory_maps_from_table(cls, table: TableData | None) -> list[MemoryMapDef] | None:
@@ -1187,6 +1320,31 @@ class TableEntityExtractor:
         return None
 
     @staticmethod
+    def _find_register_number_col(headers: list[str]) -> int | None:
+        exact = {
+            "register number", "reg number", "register no", "reg no",
+            "decimal", "binary", "寄存器号", "寄存器编号",
+        }
+        for idx, header in enumerate(headers):
+            if header in exact:
+                return idx
+        for idx, header in enumerate(headers):
+            if "register" in header and any(token in header for token in ("number", "no", "index")):
+                return idx
+        return None
+
+    @staticmethod
+    def _find_register_name_col(headers: list[str]) -> int | None:
+        exact = {"reg name", "register name", "register", "reg", "寄存器名", "寄存器"}
+        for idx, header in enumerate(headers):
+            if header in exact:
+                return idx
+        for idx, header in enumerate(headers):
+            if "register" in header and not any(token in header for token in ("number", "no", "index")):
+                return idx
+        return None
+
+    @staticmethod
     def _cell(cells: list[str], idx: int | None) -> str:
         if idx is None or idx < 0 or idx >= len(cells):
             return ""
@@ -1292,7 +1450,39 @@ class TableEntityExtractor:
             m = re.search(pat, text, re.I)
             if m:
                 return m.group(1).strip().rstrip(".,;，。；")
+        return TableEntityExtractor._register_name_from_text(text)
+
+    @staticmethod
+    def _register_name_from_text(text: str) -> str:
+        raw = " ".join(str(text or "").split())
+        if not raw:
+            return ""
+        patterns = [
+            r"\b([A-Za-z][A-Za-z0-9_ /\-]*?\s+Register)\b",
+            r"\b([A-Za-z_][A-Za-z0-9_]*?(?:REG|CTRL|CFG|STAT|STATUS|PTR|POINTER|COUNT|WIDTH|DEPTH|DATA)[A-Za-z0-9_]*)\b",
+            r"\b([A-Za-z_][A-Za-z0-9_]*_REG[A-Za-z0-9_]*)\b",
+        ]
+        for pat in patterns:
+            m = re.search(pat, raw, re.I)
+            if not m:
+                continue
+            name = TableEntityExtractor._canonical_register_name(m.group(1))
+            if name.lower() in {"register", "register number"}:
+                continue
+            return name
         return ""
+
+    @staticmethod
+    def _canonical_register_name(value: str) -> str:
+        name = " ".join(str(value or "").strip(" .,:;，。；").split())
+        name = re.sub(r"^\d+(?:\.\d+)*\s+", "", name)
+        name = re.sub(r"^(the|a|an)\s+", "", name, flags=re.I)
+        name = re.sub(r"^(read[- ]only|read[-/ ]write|write[- ]only)\s+", "", name, flags=re.I)
+        if re.search(r"\b(is|are|contains?|describes?)\b", name, re.I):
+            return ""
+        if name.lower() in {"register", "the register", "this register"}:
+            return ""
+        return name
 
     @staticmethod
     def _register_name_from_cells(cells: list[str], *, skip_indexes: set[int | None]) -> str:
@@ -1335,6 +1525,48 @@ class TableEntityExtractor:
         return None
 
     @staticmethod
+    def _field_name_from_description(description: str, bits: str = "") -> str:
+        text = " ".join(str(description or "").strip().split())
+        if not text:
+            bit_range = TableEntityExtractor._bit_range_from_text(bits)
+            if bit_range:
+                hi, lo = bit_range
+                return f"bit_{hi}" if hi == lo else f"bits_{hi}_{lo}"
+            return ""
+        first = re.split(r"[.;:。；：]", text, maxsplit=1)[0].strip()
+        first = re.sub(r"\([^)]*\)", "", first).strip()
+        if not first:
+            first = text
+        words = first.split()[:6]
+        name = "_".join(words)[:64]
+        name = re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_")
+        return name or "field"
+
+    @staticmethod
+    def _is_reserved_field_name(name: str, description: str = "") -> bool:
+        norm = TableEntityExtractor._norm_header(name).strip("_- ")
+        desc = TableEntityExtractor._norm_header(description)
+        return norm in {"", "-", "reserved", "reserve"} or desc in {"reserved", "reserve", "reserved."}
+
+    @staticmethod
+    def _offset_from_text(text: str) -> str | None:
+        raw = str(text or "")
+        matches = re.findall(r"0x[0-9a-fA-F]+", raw)
+        if matches:
+            return matches[-1]
+        plus = re.search(r"\+\s*(0x[0-9a-fA-F]+|\d+)", raw)
+        if plus:
+            return plus.group(1)
+        return None
+
+    @staticmethod
+    def _offset_from_register_number(text: str) -> str | None:
+        value = TableEntityExtractor._parse_intish(text)
+        if value is None:
+            return None
+        return f"0x{value * 4:X}"
+
+    @staticmethod
     def _parse_bit_pair(high: str, low: str) -> tuple[int, int] | None:
         hi = TableEntityExtractor._parse_intish(high)
         lo = TableEntityExtractor._parse_intish(low)
@@ -1353,6 +1585,10 @@ class TableEntityExtractor:
             if hi < lo:
                 hi, lo = lo, hi
             return hi, lo
+        m = re.search(r"[\[\(]\s*(\d+)\s*[\]\)]", raw)
+        if m:
+            bit = int(m.group(1))
+            return bit, bit
         m = re.search(r"\bbit[s]?\s*(\d+)\b", raw, re.I)
         if m:
             bit = int(m.group(1))
@@ -1383,6 +1619,14 @@ class TableEntityExtractor:
         text = str(value or "").strip().upper().replace(" ", "")
         if not text:
             return None
+        text = (
+            text.replace("READ/WRITE", "RW")
+            .replace("READ-WRITE", "RW")
+            .replace("READONLY", "RO")
+            .replace("READ-ONLY", "RO")
+            .replace("WRITEONLY", "WO")
+            .replace("WRITE-ONLY", "WO")
+        )
         text = text.replace("R/W", "RW").replace("R/O", "RO").replace("W/O", "WO")
         for token in ("RW", "RO", "WO", "W1C", "W1S", "RC", "RS", "WC", "R", "W"):
             if token in text:

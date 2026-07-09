@@ -22,6 +22,7 @@ from docgraph.graph.schema import (
     NodeKind,
     ParsedDoc,
     ParsedPage,
+    TableData,
     TocEntry,
 )
 from docgraph.graph.sqlite_store import SQLiteGraphStore
@@ -62,6 +63,82 @@ def test_table_entity_no_table_blocks():
     res = TableEntityExtractor(schema_names=["register"]).extract(parsed, ctx)
     assert res.nodes == []
     assert res.stats.llm_calls == 0
+
+
+def test_table_entity_register_summary_table_without_bitfields():
+    parsed = ParsedDoc(
+        doc_id="d",
+        source_path="x.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="d#p1#b0",
+                doc_id="d",
+                page=1,
+                kind=BlockKind.TABLE,
+                reading_order=0,
+                table=TableData(
+                    headers=["Register number", "Type", "Description"],
+                    rows=[
+                        ["0", "Read-only", "Identification Register"],
+                        ["1", "Read-only", "RAMDepth Register"],
+                        ["8", "Read/write", "Control Register"],
+                    ],
+                    n_rows=3,
+                    n_cols=3,
+                ),
+            ),
+        ])],
+    )
+    ctx = ExtractContext(family="t", llm_client=None)
+    res = TableEntityExtractor(schema_names=["register"]).extract(parsed, ctx)
+    names = {n.name for n in res.nodes if n.kind == NodeKind.REGISTER}
+    assert {"Identification_Register", "RAMDepth_Register", "Control_Register"} <= names
+    control = next(n for n in res.nodes if n.name == "Control_Register")
+    assert control.attrs["offset"] == "0x20"
+    assert control.attrs["access"] == "RW"
+
+
+def test_table_entity_captionless_bitfield_table_uses_nearest_heading():
+    parsed = ParsedDoc(
+        doc_id="d",
+        source_path="x.pdf",
+        pages=[ParsedPage(page_no=1, blocks=[
+            Block(
+                id="d#p1#b0",
+                doc_id="d",
+                page=1,
+                kind=BlockKind.HEADING,
+                reading_order=0,
+                text="3.3.8 Control Register, r8",
+                heading_level=2,
+                section_path="3.3.8",
+            ),
+            Block(
+                id="d#p1#b1",
+                doc_id="d",
+                page=1,
+                kind=BlockKind.TABLE,
+                reading_order=1,
+                table=TableData(
+                    headers=["Bit number", "Name", "Type", "Function"],
+                    rows=[
+                        ["[31:3]", "-", "-", "Reserved"],
+                        ["[2]", "SoftwareCntl", "Read/write", "Controls software register access"],
+                        ["[0]", "TraceCaptEn", "Read/write", "Trace capture enable"],
+                    ],
+                    n_rows=3,
+                    n_cols=4,
+                ),
+            ),
+        ])],
+    )
+    ctx = ExtractContext(family="t", llm_client=None)
+    res = TableEntityExtractor(schema_names=["register"]).extract(parsed, ctx)
+    registers = [n for n in res.nodes if n.kind == NodeKind.REGISTER]
+    bitfields = [n for n in res.nodes if n.kind == NodeKind.BITFIELD]
+    assert [n.name for n in registers] == ["Control_Register"]
+    assert {n.name for n in bitfields} >= {"SoftwareCntl", "TraceCaptEn"}
+    assert all(n.attrs["source_block_ids"] == ["d#p1#b1"] for n in [*registers, *bitfields])
 
 
 def test_glossary_extractor():

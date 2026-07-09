@@ -33,7 +33,7 @@ class ParsedPage(BaseModel):
     rendered_image_path: str | None
 ```
 
-**关键设计**：所有格式（PDF / DOCX / MD / XLSX）最终归一为 `ParsedDoc`。下游 Extractor 不感知输入格式，也不感知具体 parser（PyMuPDF / MinerU / Docling / Marker）。
+**关键设计**：所有格式（PDF / DOCX / MD / XLSX）最终归一为 `ParsedDoc`。下游 Extractor 不感知输入格式，也不感知具体 parser（PyMuPDF / Docling / MinerU）。
 
 `TextBlock` / `ParsedTable` / `ParsedFigure` 只允许作为 parser adapter 内部整理数据的轻量视图；跨模块事实入口是 L0 `blocks`，Extractor 和 L1 chunker 不应依赖这些派生视图。
 
@@ -66,7 +66,7 @@ class TableData(BaseModel):
 | 值 | 含义 | 典型来源 | 下游策略 |
 |---|---|---|---|
 | `cells` | 已有单元格结构 | PyMuPDF `find_tables`、Docling、Excel | 直接转 markdown/LLM schema 抽取 |
-| `html` | 有 HTML 表格 | Marker / Docling / 部分 MinerU 配置 | 解析 HTML 后抽取 |
+| `html` | 有 HTML 表格 | Docling / 部分 MinerU 配置 / 可选 Marker | 解析 HTML 后抽取 |
 | `text` | 只有表格文本 | OCR 或 markdown 降级 | 文本窗口抽取 |
 | `image` | 只有表格裁剪图 | 当前 MinerU 配置 | 表格图片 VLM/OCR/table-recognizer |
 
@@ -82,17 +82,17 @@ class TableData(BaseModel):
 
 | Parser | 主要场景 | 优先级 |
 |---|---|---|
-| `pymupdf` | PDF（轻量、开箱即用、快速预览/兜底） | **P0** 默认内置路径 |
-| `mineru` | PDF（中英混排、公式、复杂表格/图） | **P0** 高保真推荐路径 |
-| `marker` | PDF（英文为主、速度优先） | P0 备选 |
-| `docling` | PDF（双栏、复杂版式） | P1 |
+| `pymupdf` | PDF（轻量、开箱即用、预检、快速预览、兜底） | **P0** 基础设施 |
+| `docling` | PDF（Word 导出、tagged PDF、born-digital、表格清晰） | **P0** 默认结构 parser |
+| `mineru` | PDF（图片密集、扫描/OCR、复杂版面、图片资产保留） | **P0** 高保真/OCR parser |
 | `vlm` | 扫描版 PDF 单页兜底 | P1 |
 | `docx` | Word（python-docx） | P1 |
 | `markdown` | Markdown（markdown-it） | P1 |
 | `xlsx` | Excel（openpyxl，常用于 pin 表） | P1 |
+| `marker` | PDF（阅读型 Markdown、章节体验） | 可选插件/评测后端 |
 | `mathpix` | 商用 OCR | P2 |
 
-> **设计要点**：PyMuPDF 作为默认（pip 装即可用），MinerU 作为复杂版面推荐后端（效果更好但安装更重）。用户可在可选项目级 `docgraph.yaml` 中切换。新增 Docling 等 parser 时，只需要写 adapter 归一到 `ParsedDoc/Block`，下游抽取器不应改动。
+> **设计要点**：PDF 默认使用 `auto` 路由。PyMuPDF 先做轻量预检和兜底；Docling 处理可复制文本质量好的 born-digital / Word 导出 PDF；MinerU 处理扫描、图片密集和 OCR 场景。Marker、Unstructured、MarkItDown 等不进入常用主链路，可作为离线评测或插件后端。
 
 MinerU 的解析缓存、middle JSON 和导出的图片属于项目生成物，放在 `<project>/.docgraph/cache/`；模型权重属于用户级共享资源，默认放在 `~/.docgraph/mineru-models/`，可用 `DOCGRAPH_MINERU_MODELS_DIR` 覆盖，避免每个项目重复下载模型。
 
@@ -101,8 +101,8 @@ MinerU 的解析缓存、middle JSON 和导出的图片属于项目生成物，�
 ```yaml
 parsers:
   pdf:
-    primary: mineru               # 高保真项目可显式开启
-    fallback: [pymupdf]           # parser 级失败才降级
+    primary: auto                 # auto | docling | mineru | pymupdf
+    fallback: []                  # 显式 parser 缺失/不可用时才降级
     quality: balanced             # fast | balanced | accurate
     per_page_timeout: 60
   docx:
@@ -117,17 +117,19 @@ parsers:
 
 ### 4.1 文件级 parser 选择
 
-1. 按扩展名找 `primary` parser
-2. `primary` 初始化/解析失败（异常）→ 按 `fallback` 顺序尝试
-3. 如果 primary 能解析，就不会自动切换到 fallback；也就是说**文件级不是多 parser 混用**
+1. PDF 先由 PyMuPDF 生成 `PdfProfile`：页数、文本层、图片密度、表格候选、寄存器/位域关键词密度、tagged/Word 导出特征等。
+2. `primary: auto` 根据 profile 和 `quality` 选择 `docling` / `mineru` / `pymupdf`。
+3. 显式指定 `primary: docling|mineru|pymupdf` 时，按用户配置优先。
+4. parser 未安装或不支持当前文件时，按自动链路或 `fallback` 顺序降级。
+5. 文件级仍然只选择一个主 parser；后续可在 block 级补强表格或图片，但不会默认整篇多 parser 混跑。
 
 `quality` 是面向用户的唯一速度/质量旋钮：
 
 | 档位 | 行为 |
 |---|---|
 | `fast` | PDF 优先走 PyMuPDF，用于首次导入和快速预览 |
-| `balanced` | 按配置 parser 链执行，推荐 MinerU + PyMuPDF fallback |
-| `accurate` | 按配置 parser 链执行，保留表格识别等高保真能力 |
+| `balanced` | 自动路由：普通 born-digital / tagged PDF 优先 Docling；扫描、图片密集或寄存器/位域表格密集 PDF 优先 MinerU |
+| `accurate` | 自动路由仍优先匹配文档类型；无法判断时偏向 MinerU 的高保真/OCR 路径 |
 
 日常只需要 `docgraph build`；需要覆盖时使用 `docgraph build --quality fast|balanced|accurate`。
 
@@ -165,7 +167,7 @@ figure_heavy          → FigureExtractor 可用整页 VLM 描述图
 当前推荐链路不是“某个 extractor 绑定某个 parser”，而是：
 
 ```text
-PyMuPDF / MinerU / Marker / Docling / XLSX
+PyMuPDF / Docling / MinerU / XLSX
   → parser adapter
   → ParsedDoc + L0 Blocks
   → L1 chunks
@@ -175,9 +177,9 @@ PyMuPDF / MinerU / Marker / Docling / XLSX
 后端差异在 adapter 内部消化：
 
 - PyMuPDF：优先填 `table_source=cells`
+- Docling：优先填 `table_source=cells`，保留 HTML、bbox、图片块和图题作为追溯证据
 - MinerU：当前能稳定提供版面分类、bbox、caption、表格/图片裁剪；若未启用表格识别，则填 `table_source=image`
 - MinerU：当前接入 magic-pdf current API；不保留 MinerU 0.x API 分支
-- Docling：接入后应优先填 `html/cells`，保留图片作为追溯证据
 - XLSX：直接填 `cells`
 
 ### 4.4 VLM 调用成本控制

@@ -13,10 +13,33 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 
 
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _pick_device() -> str:
+    """Choose the torch device for bge-m3 inference.
+
+    Priority: explicit DOCGRAPH_BGE_DEVICE env > mps (Apple Silicon) > cuda > cpu.
+    On a CPU-only build this stays on cpu; the env override lets users force a
+    device if autodetection misbehaves.
+    """
+    forced = os.environ.get("DOCGRAPH_BGE_DEVICE", "").strip().lower()
+    if forced:
+        return forced
+    try:
+        import torch  # type: ignore
+
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
 
 
 class HashEncoder:
@@ -59,7 +82,7 @@ class BgeM3Encoder:
                 "sentence-transformers required. "
                 "Install with: pip install 'docgraph[embeddings]'"
             ) from e
-        self._model = SentenceTransformer(self.model)
+        self._model = SentenceTransformer(self.model, device=_pick_device())
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         self._ensure_model()

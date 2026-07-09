@@ -239,6 +239,7 @@ class OpenAICompatProvider:
         max_tokens: int = 2048,
         temperature: float = 0.0,
         system: str | None = None,
+        extra_body: dict | None = None,
     ) -> LLMResponse:
         self._ensure_client()
         messages = []
@@ -246,12 +247,17 @@ class OpenAICompatProvider:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        resp = self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        # DeepSeek V4 等推理模型支持 extra_body={"enable_thinking": False} 关推理，
+        # 大幅降低延迟和 token 消耗（推理不再吃光 max_tokens 导致 content 空）。
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        resp = self._client.chat.completions.create(**kwargs)
         text = (resp.choices[0].message.content or "") if resp.choices else ""
         usage = getattr(resp, "usage", None)
         ti = getattr(usage, "prompt_tokens", 0) if usage else 0
@@ -292,24 +298,33 @@ class CostTracker:
     tokens_out: int = 0
     cost_usd: float = 0.0
     by_extractor: dict[str, dict[str, float]] = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def check_budget_exceeded(self, budget_usd: float | None) -> bool:
+        if budget_usd is None:
+            return False
+        with self._lock:
+            return self.cost_usd >= budget_usd
 
     def record(self, resp: LLMResponse, extractor: str = "_") -> None:
-        self.total_calls += 1
-        if resp.cache_hit:
-            self.cache_hits += 1
-        self.tokens_in += resp.tokens_in
-        self.tokens_out += resp.tokens_out
-        self.cost_usd += resp.cost_usd
-        b = self.by_extractor.setdefault(
-            extractor,
-            {"calls": 0, "cache_hits": 0, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0},
-        )
-        b["calls"] += 1
-        if resp.cache_hit:
-            b["cache_hits"] += 1
-        b["tokens_in"] += resp.tokens_in
-        b["tokens_out"] += resp.tokens_out
-        b["cost_usd"] += resp.cost_usd
+        # 并发安全：LLM/VLM 调用并发时多线程会同时 record
+        with self._lock:
+            self.total_calls += 1
+            if resp.cache_hit:
+                self.cache_hits += 1
+            self.tokens_in += resp.tokens_in
+            self.tokens_out += resp.tokens_out
+            self.cost_usd += resp.cost_usd
+            b = self.by_extractor.setdefault(
+                extractor,
+                {"calls": 0, "cache_hits": 0, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0},
+            )
+            b["calls"] += 1
+            if resp.cache_hit:
+                b["cache_hits"] += 1
+            b["tokens_in"] += resp.tokens_in
+            b["tokens_out"] += resp.tokens_out
+            b["cost_usd"] += resp.cost_usd
 
 
 # ---------------------------------------------------------------------------
@@ -331,11 +346,15 @@ def _llm_timeout_s() -> float:
 
 @contextmanager
 def _llm_deadline(timeout_s: float):
-    """Hard deadline for blocking SDK calls.
+    """Hard deadline for blocking SDK calls (main-thread only).
 
     Some OpenAI-compatible endpoints can block inside SSL reads despite SDK
     timeout settings. On POSIX/main-thread builds, SIGALRM gives the extractor a
     last-resort escape hatch so L2 failures do not stall L0/L1 ingestion.
+
+    注意：SIGALRM 仅在主线程生效。并发 LLM 调用（map_concurrent via
+    ThreadPoolExecutor）的 worker 线程不触发此 deadline，依赖 SDK 层 timeout
+    和 DOCGRAPH_LLM_TIMEOUT_S 的顶层超时。
     """
     if timeout_s <= 0 or threading.current_thread() is not threading.main_thread():
         yield
@@ -416,20 +435,26 @@ class LLMClient:
         temperature: float = 0.0,
         system: str | None = None,
         extractor: str = "_",
+        extra_body: dict | None = None,
     ) -> LLMResponse:
-        if self.budget_usd is not None and self.tracker.cost_usd >= self.budget_usd:
+        if self.tracker.check_budget_exceeded(self.budget_usd):
             raise BudgetExceeded(
                 f"LLM budget {self.budget_usd:.2f} USD already exhausted "
                 f"(spent {self.tracker.cost_usd:.4f})."
             )
 
         model = self.resolve_model(tier)
+        # extra_body 影响推理模式等行为，必须进 cache_key，否则不同 thinking 配置会撞缓存。
+        extra_key = ""
+        if extra_body:
+            extra_key = "|" + json.dumps(extra_body, sort_keys=True, ensure_ascii=False)
         cache_key = content_hash(
-            f"{self.prompt_version}|{model}|{temperature}|{system or ''}|{prompt}"
+            f"{self.prompt_version}|{model}|{temperature}|{system or ''}|{prompt}{extra_key}"
         ).split(":", 1)[-1][:32]
 
         cached = self._read_cache(cache_key)
-        if cached:
+        # 不复用空响应缓存（推理模型截断/瞬时空返回不该被缓存毒化后续调用）
+        if cached and (cached.get("text", "") or "").strip():
             resp = LLMResponse(
                 text=cached.get("text", ""),
                 model=model,
@@ -451,16 +476,19 @@ class LLMClient:
                         max_tokens=max_tokens,
                         temperature=temperature,
                         system=system,
+                        extra_body=extra_body,
                     )
-                self._write_cache(
-                    cache_key,
-                    {
-                        "text": resp.text,
-                        "tokens_in": resp.tokens_in,
-                        "tokens_out": resp.tokens_out,
-                        "model": resp.model,
-                    },
-                )
+                # 只缓存非空响应，避免空返回毒化缓存
+                if (resp.text or "").strip():
+                    self._write_cache(
+                        cache_key,
+                        {
+                            "text": resp.text,
+                            "tokens_in": resp.tokens_in,
+                            "tokens_out": resp.tokens_out,
+                            "model": resp.model,
+                        },
+                    )
                 self.tracker.record(resp, extractor=extractor)
                 return resp
             except Exception as e:
@@ -484,6 +512,7 @@ class LLMClient:
         system: str | None = None,
         extractor: str = "_",
         require_pydantic: bool = True,
+        extra_body: dict | None = None,
     ) -> Any:
         from pydantic import BaseModel, ValidationError
 
@@ -510,6 +539,7 @@ class LLMClient:
                 temperature=temperature,
                 system=sys_prompt,
                 extractor=extractor,
+                extra_body=extra_body,
             )
             try:
                 data = _extract_json(resp.text)
@@ -532,8 +562,6 @@ class LLMClient:
 # JSON 提取（兼容 LLM 加 fence / 多余前后文）
 # ---------------------------------------------------------------------------
 
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.S)
-
 
 def _extract_json(text: str) -> Any:
     text = (text or "").strip()
@@ -543,11 +571,49 @@ def _extract_json(text: str) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    m = _JSON_FENCE_RE.search(text)
-    if m:
-        return json.loads(m.group(1))
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        return json.loads(text[start : end + 1])
+    # 尝试提取 ```json ... ``` fence（括号计数，支持嵌套）
+    fence = _extract_fenced_json(text)
+    if fence is not None:
+        return fence
+    # fallback: 找第一个 { 到最后一个 }（简单的 brace-counting）
+    obj = _extract_balanced(text, "{", "}")
+    if obj is not None:
+        return json.loads(obj)
     raise ValueError("no JSON object found in LLM response")
+
+
+def _extract_fenced_json(text: str) -> Any | None:
+    """从 ```json ... ``` 中提取 JSON，支持嵌套。"""
+    m = re.search(r"```(?:json)?\s*", text)
+    if not m:
+        return None
+    start = m.end()
+    end = text.find("```", start)
+    if end < 0:
+        return None
+    inner = text[start:end].strip()
+    try:
+        return json.loads(inner)
+    except json.JSONDecodeError:
+        # 可能 fence 内有散文前缀，试用 brace-counting
+        obj = _extract_balanced(inner, "{", "}")
+        if obj is not None:
+            return json.loads(obj)
+    return None
+
+
+def _extract_balanced(text: str, opener: str, closer: str) -> str | None:
+    """用括号计数提取从第一个 opener 配对的 closer 之间的文本。"""
+    start = text.find(opener)
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None

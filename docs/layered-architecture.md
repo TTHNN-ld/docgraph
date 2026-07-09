@@ -155,6 +155,16 @@ L2 实体按信息载体分三类，各有抽取路径：
 
 三条路径都遵循同一约束：节点带 `source_block_ids` 回溯、`extraction_confidence` 分层、失败不影响 L0/L1。
 
+### 3.5 语义关系层（ADR-015）
+
+L2 不仅是"实体 + 出处"，还要有实体间的语义关系。本体对齐 IP-XACT（IEEE 1685-2022），关系类型化（`belongs_to` / `contained_in` / `mapped_to` / `drives` / `clocks` / `resets` / `implements`，新增 `EdgeKind`）。抽取分三层：
+
+- **A 确定性事实**：表格 → 实体 + 精确属性 + `has_bitfield`（保留，结构拆解非溯源）。
+- **B 确定性关系推断**（`RelationInferExtractor`，新增）：章节归属（实体 → 所属 module）、地址 join（memory_map → register）、名字 join（跨来源同名实体合并）。零 LLM、高精度，补大半语义边。
+- **C LLM 开放 IE**（`LLMIEExtractor`，新增）：B 未覆盖的文本 chunk 调 LLM 抽三元组，约束在本体关系类型，evidence 必填，confidence 门槛 0.6。受 `llm.enabled` 控制。
+
+**溯源移出图边**：`illustrated_by` / `contains` 标 deprecated（保留节点 attrs 的 `source_block_ids` / `source_chunk_ids`），图谱边只留语义关系 + `has_bitfield`。详见 [RFC 0015](./rfcs/0015-semantic-kg-hybrid-extraction.md)。
+
 ---
 
 ## 4. L2 抽取：从"专用正则"到"通用 schema-guided"
