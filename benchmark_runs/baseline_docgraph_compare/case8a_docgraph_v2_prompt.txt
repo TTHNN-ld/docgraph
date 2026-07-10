@@ -1,0 +1,15 @@
+你是验证工程师。请基于 PCIe Subsystem Spec 为 irq_src 中断源信号表生成结构化的中断源信号清单。
+
+你可以使用 docgraph MCP 工具。推荐工作路径：
+1. docgraph_search_chunks 搜索 "irq_src interrupt source signal" 定位相关 chunks
+2. docgraph_fetch 读取完整原始表格（chunk + L0 blocks，不截断）
+3. 查看 fetch 返回的 entities——注意它们的 kind (signal/interrupt vs register/bitfield) 和 source_quality.needs_source_check
+4. 如果需要查特定信号实体，用 docgraph_search
+
+要求输出：
+1. 表中所有信号名、位宽、功能描述
+2. 按功能分类
+3. 判断此表是否是 register 表（检查原表表头是否有 offset/access/reset 字段）
+4. 答案带页码证据
+
+注意：L2 entities 是候选，原表 (L0 blocks) 才是权威数据。

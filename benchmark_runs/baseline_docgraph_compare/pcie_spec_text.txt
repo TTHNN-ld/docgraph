@@ -1,0 +1,1023 @@
+
+===== PAGE 1 =====
+PCIe Subsystem Spec
+Version 3.21
+28 January 2026
+
+===== PAGE 2 =====
+Sub Block
+DOCUMENT HISTORY
+[TABLE] headers: Version | Date | Author | Change
+  V0.1 | 2025.04.29 | Zhiyi & Zhiwen | 初始版本
+  V0.11 | 2025.05.12 | Zhiyi & Zhiwen | 增加 TBU, CRG 单独 APB
+  V0.12 | 2025.05.13 | Zhiyi & Zhiwen | PHY 采用 pclk 输入， max_pclk 输出的结构； PCIe 的配置接口改为 1 个 AXI-lite ，内部加 NoC 转换为 CRG ， CSR ， PHY 的 CR bus 接口； ELBI 去掉；
+  V1.0 | 2025.06.03 | Zhiyi & Zhiwen | 更新子系统的接口信号 增加 PHY 模块描述 增加 PHY 参考时钟描述 PIPE 结构采用 SerDes PIPE 结构 更新 BAR 控制配置方案： 2 个 32bit BAR ， 2 个 64bit BAR 。 pcie_cfg_clk 从 SoC 输入， phy 的 cr 时钟从 crg 进
+  V1.5 | 2025.06.11 | Zhiyi & Zhiwen | MSI-X Table 和 MSI-X PBA address map 选择从 bit 30 变为 bit 22 PLL 的参考时钟 mux 加入 ucie_ref_clk AMBA 接口 feature 添加
+  V2.0 | 2025.08.01 | Zhiyi & Zhiwen | MSIX2DBI 添加逻辑 删除 FLR 功能 整理系统中断输入输出
+  V2.5 | 2025.08.29 | Zhiyi & Zhiwen | 1.Debug 相关描述添加 (debug IO 和 debug shifter) 2. 中断输出更新 3. 时钟结构更新 4.Reset 结构图更新 5.Hot Reset 的描述添加 6.MSI 和 MSIX2DBI 更新 7. 添加 PCIe 的 Program guide
+  V2.7 | 2025.09.05 | Zhiyi & Zhiwen | 1. 添加 TBU 描述 2.Controller 的 parameters 列表 3.MSI/MSI-X 更新 4.Main Feature 更新 5. 架构图更新 6.Hot Reset block 的描述添加 7.Remap 添加
+  V3.0 | 2025.09.26 | Zhiyi & Zhiwen | 1.Error 相关说明 2. 中断更新 3.low power 、 4.iATU 图表更新
+  V3.01 | 2025.10.15 | Zhiwen | 1. 增加 PHY 支持重要功能点说明
+Version 3.21
+28 January 2026
+Page 2 of 42
+
+===== PAGE 3 =====
+Sub Block
+[TABLE] headers: Version | Date | Author | Change
+  V3.02 | 2025.12.09 | Zhiyi & Zhiwen | 1. AXI 的 wrap 类型只有 slave 方向支持， master 方向不支持； 2. bar0 的 MSI-X pba offset 修改： 0x10000--->0x88000 ； 3. AXI Slave MTU 修改： 512--->256 ； 4. AXI Slave Tag 修改： 128--->256 ； 5. 4.5.1 复位结构， phy_laneX_reset_n 前面的 OR 改成 & ； 6. 修改文档页脚的版本号；
+  V3.1 | 2026.1.05 | Zhiyi & Zhiwen | 1. 增加 List of Requirements 2. 增加 jtag/ijtag 的描述 3. 增加 PAD Ring 和 TSV 的描述 4. 更新了 Lower Power 的支持情况 5. 更新了 AXI clock 仅支持 1GHz 6. 更新架构图和时钟结构图
+  V3.11 | 2026.1.05 | Zhiyi & Zhiwen | 1. 根据 v3.1 评论添加说明 2. 对 Requirements list 编号 3. 增加 Reference 章节
+  V3.20 | 2026.1.15 | Zhiyi & Zhiwen | 1. EP 的 OB 不需要 CFG TLP 和 IO 类型的 TLP ，所以从 NCBE 的类 型中去掉了 CFG 和 IO 类型 TLP ； IB 的 NCBE 不需要 IO 类型 TLP ， 去掉了； IB 的 cfg TLP 对 NCBE 无需求，明确暂时不需要验证覆 盖。 2. ELBI 的 Requirements 位置和序列号更新 3. Add PCIE_MAS_REQ_ISO_2006 4. 添加了 isolation 章节的描述 5. 添加了 jtag decoder 的框图 6. 子系统架构图中新增 RASDP_GLUE 和 irq_aggregator 子模块，新 增对应子模块功能描述 7. 更新 err 类型中断列表 8. 新增 4.11 节的 parity 校验信号列表 9. 更新 Reset 的结构框图
+  V3.21 | 2026.01.28 | Zhiyi&ZhiWen | 1. Fix AXI 地址位宽错误 50bit 改成 48bit 2. 添加 request list 功能点拆分 , 更新 1104,1105, 1214, 1215 3. retry 功能 request list 添加 2501
+Version 3.21
+28 January 2026
+Page 3 of 42
+
+===== PAGE 4 =====
+Sub Block
+目录
+Version 3.21
+28 January 2026
+Page 4 of 42
+
+===== PAGE 5 =====
+Sub Block
+Version 3.21
+28 January 2026
+Page 5 of 42
+
+===== PAGE 6 =====
+Sub Block
+1 List of Requirements
+1.1 Protocol
+PCIE_MAS_REQ_PROTOCOL_101: 支持 PCI Express Base Specification, Revision 5.0, Version 1.0
+PCIE_MAS_REQ_PROTOCOL_102: 支持 Gen1, Gen 2, Gen3, Gen4 and Gen5
+PCIE_MAS_REQ_PROTOCOL_103: 支持 PIPE 5.1.1, lane 位宽 40bit
+1.2 Main Feature
+PCIE_MAS_REQ_VC_201: 支持 2 个 VCs, Traffic Classes (TCs) 和 Quality of Service (QOS)
+PCIE_MAS_REQ_PF_202: 支持 1 个 PF
+PCIE_MAS_REQ_MaxPayloadSize_203: TLP 最大 Payload 256B
+1.3 PCIe Reference Clock Mode
+PCIE_MAS_REQ_RefClkMode_301: Common Clock (CC) 模式。 EP 从 Host 获取参考时钟
+PCIE_MAS_REQ_RefClkMode_302: Separate RefClk Independent SSC(SRIS)/ Separate RefClk No SSC(SRNS) 模式。 EP 从 Host 获取参考时钟
+1.4 Performance
+PCIE_MAS_REQ_PERFORMANCE_401: PCIe 支持 Round Trip Latency 1us. PCIe DMA 读 / 写达到 80%
+PCIE_MAS_REQ_PERFORMANCE_402: PCIe 支持 Round Trip Latency 1us. PCIe IB 读 / 写性能达到 80%
+PCIE_MAS_REQ_PERFORMANCE_403: PCIe 支持 Round Trip Latency 1us. PCIe OB 读 / 写性能达到 80%
+1.5 AXI
+PCIE_MAS_REQ_AXI_SlAVE_501: OB 方向 AXI4 Slave 数据位宽 512Bit, 地址位宽 48Bit. 外接 Main NoC 完成 OB 方向的数据传递
+PCIE_MAS_REQ_AXI_SLAVE_502: OB 方向 AXI4 Slave 最大 AXI length 4 ，最大 AXI Size 64B ，最大 Burst Size 是 256B
+PCIE_MAS_REQ_AXI_SLAVE_503: OB 方向 AXI4 Slave 支持 Non Contiguous Byte Enable(NCBE),OB 方 向可以支持发 MWr 类型的 NCBE 。
+PCIE_MAS_REQ_AXI_SLAVE_504: OB 方向 AXI4 Slave 通过将 WSTRB 位置 0 支持 Zero byte length 写 访问
+PCIE_MAS_REQ_AXI_SLAVE_505: PCIe AXI OB 方向支持 INCR 和 WRAP 类型访问
+PCIE_MAS_REQ_AXI_SLAVE_506: OB 方向 AXI4 Slave 支持 256 Tags
+PCIE_MAS_REQ_AXI_SLAVE_507: OB 方向 AXI4 Slave 支持 W channel 早于 AW channel
+PCIE_MAS_REQ_AXI_MASTER_508: IB 方向 AXI4 Master 数据位宽 512Bit, 地址位宽 48Bit, 负责将 IB 和 DMA 数据访问传递给 Main NoC
+PCIE_MAS_REQ_AXI_MASTER_509: IB 方向 AXI4 Master 单笔访问 length 最大 4,Size 最大 64B, Burst 最大是 256B
+Version 3.21
+28 January 2026
+Page 6 of 42
+
+===== PAGE 7 =====
+Sub Block
+PCIE_MAS_REQ_AXI_MASTER_510: PCIe AXI IB 方向仅支持 INCR 类型访问
+PCIE_MAS_REQ_AXI_MASTER_511: IB 方向 AXI4 Master 支持最多 256 IDs
+PCIE_MAS_REQ_AXI_MASTER_512: IB 方向 AXI Master 会发出 W channel 早于 AW channel
+PCIE_MAS_REQ_AXI_MASTER_513: IB 方向 AXI Master 支持 MWr/MRd 类型 1,2 DWORD NCBE; 支持 CfgWr/CfgRd 类型长度 1 DWORD NCBE.
+Note: CfgWr/CfgRd  TLP 只有配置 CDM 寄存器会发生。实际配置中仿真和 linux 都是发的非 NCBE 的 CFG TLP, 无 CfgWr/CfgRd  NCBE 需求。
+PCIE_MAS_REQ_AXI_MASTER_514: IB 方向 AXI Master 支持 Zero-Byte 访问控制器内部 drop 或在发往 AXI ，支持可配 . 默认是 Drop 状态，具体参考 PCIe Controller DataBook [1].
+PCIE_MAS_REQ_AXI_MASTER_515: IB 方向 AXI Master 的 QoS 和 User 信息支持寄存器静态配置
+PCIE_MAS_REQ_CFG_516: 配置总线 1 个 AXI Lite 。内部接 CFG_NOC 转换到本地的多个配置空间，置空 间分配参考 ' Address Map ' .
+PCIE_MAS_REQ_CFG_517: 配置总线需要对 CFG 空间能够正常访问。 Reserved 空间访问可以回复 Error 或正常返回 0 ，但不能挂死 .
+PCIE_MAS_REQ_ELBI_518: PCIe 控制器 ELBI 总线子控制器外部没有使用，需要保证 ELBI 被访问时不挂 死
+1.6 BAR
+PCIE_MAS_REQ_BAR_601: 支持 4 个 BARs: 2 个 32bit non-prefetchable BARs, 2 个 64bit prefetchable BARs
+PCIE_MAS_REQ_BAR_602: 4 个 BAR 都是 ReSize BAR 。所有 BAR 默认大小都是 1MB, 需要软件根据应 用进行 ReSize
+PCIE_MAS_REQ_BAR_603: Host 可以通过 BAR0 映射访问 PCIe 的内部配置空间 DMA ， IATU, MSIX PBA 和 MSIX TABLE. 具体映射参考 BAR 空间
+PCIE_MAS_REQ_BAR_604: Host 可以通过 BAR1/BAR2/BAR4 映射访问 SoC 的地址空间，具体分配根据 应用确定可配
+PCIE_MAS_REQ_WIRE_605: Host 可以通过 CFG TLP 访问 PCIe 的 CDM 空间
+1.7 iATU
+PCIE_MAS_REQ_IATU_701: iATU: 16 IB regions, 64 OB regions
+PCIE_MAS_REQ_IATU_702: IATU region size 最小 4KB ，最大 128TB
+PCIE_MAS_REQ_IATU_703: 支持 BAR Match Mode 和 Address Match Mode
+1.8 HDMA
+PCIE_MAS_REQ_HDMA_801: PCIe HDMA 支持 16 读 channel 和 16 写 channel
+PCIE_MAS_REQ_HDMA_802: HDMA 支持 256 Tags
+Version 3.21
+28 January 2026
+Page 7 of 42
+
+===== PAGE 8 =====
+Sub Block
+PCIE_MAS_REQ_HDMA_803: 每个 HDMA channel 支持独立触发 local 和 remote 中断
+PCIE_MAS_REQ_HDMA_804: HDMA 支持 Signal Descriptor 和 LL 模式
+PCIE_MAS_REQ_HDMA_805: HDMA 支持 LL 的 Prefetch 功能能够提升访问效率。全部 32 channel enable 情况单个 channel 的 LL prefetch 能力支持 1~64 个 element 可配。部分 Channel 使能情况，使 能 channel 可以均分 1024 个 Prefetch 能力 . 具体参考 PCIe controller databook [1].
+1.9 Low Power
+PCIE_MAS_REQ_POWER_901: PCIe 支持 L0s, 且 RX 和 TX 可以同时和分别进入 L0s
+PCIE_MAS_REQ_POWER_902: PCIe 支持 ASPM L1 and PM L1 ，会停 core_clk/pipe_clk
+PCIE_MAS_REQ_POWER_903: PCIe 支持 L1 Substate, 停 PHY 的参考时钟
+PCIE_MAS_REQ_POWER_904: Controller Power state 支持 D0,D1,D2 和 D3hot
+PCIE_MAS_REQ_POWER_905: PHY Power state 支持 P0, P0S 和 P1
+1.10 MSI/MSIX
+PCIE_MAS_REQ_MSI/MSIX_1001: MSI/MSIX 支持 level 和 pulse 类型的硬件中断触发 MSI/MSIX
+PCIE_MAS_REQ_MSI/MSIX_1002: MSI 支持软件写 MSI 控制器的寄存器触发中断 Message 。最多支持 32 个 MSI
+PCIE_MAS_REQ_MSI/MSIX_1003: MSIX 支持软件写 MSI2DBI 的寄存器或者直接写 PCIe 控制器的 doorbell 寄存器触发中断 Message 。最多支持 1024 个 MSIX
+PCIE_MAS_REQ_MSI/MSIX_1004: MSI/MSIX 支持最多 14 个硬件中断触发 MSI/MSIX
+PCIE_MAS_REQ_INTX_1005: PCIe 支持 INT-X 中断，但 INT-X 仅支持软件进行中断的 assert 和 deassert
+1.11 Lane Reversal and Flip
+PCIE_MAS_REQ_REVERSAL_1101: 支持 Auto Lane Reversal 功能
+PCIE_MAS_REQ_REVERSAL_1102: 支持 Full 的 Reversal 和 Flip
+PCIE_MAS_REQ_REVERSAL_1103: 支持在 lane broken 的时候通过外部配置寄存器使能 lane flip 功能
+PCIE_MAS_REQ_REVERSAL_1104: 支持 Auto Lane Flip 功能
+PCIE_MAS_REQ_REVERSAL_1105: 支持 Partial 的 Reversal 和 Flip
+1.12 PHY
+PCIE_MAS_REQ_PHY_1201: 4 个 X4 PHY 组成 X16
+PCIE_MAS_REQ_PHY_1202: 支持 lane 配置 x1, x2, x4, x8 and x16
+PCIE_MAS_REQ_PHY_1203: PHY 参考时钟模式 1 ： PHY0 从 PAD 输入 100MHz 差分时钟。 PHY1 ， PHY2 和 PHY3 从前一级 PHY 获取参考时钟
+Version 3.21
+28 January 2026
+Page 8 of 42
+
+===== PAGE 9 =====
+Sub Block
+PCIE_MAS_REQ_PHY_1204: PHY 参考时钟模式 2 ： PHY0 ， PHY1 ， PHY2 和 PHY3 均从 PAD 输入 100MHz 差分时钟，且 4 个 PHY 的参考时钟为同一个时钟源
+PCIE_MAS_REQ_PHY_1205: PHY 参考时钟模式 3 ： PHY0 从 Local PLL 的输出获取参考 100MHz 时钟。 PHY1 ， PHY2 和 PHY3 从前一级 PHY 获取参考时钟
+PCIE_MAS_REQ_PHY_1206: PHY 需要支持 Fast Mode
+PCIE_MAS_REQ_PHY_1207: PHY boot 模式 1 ： ROM 直接 Boot 模式
+PCIE_MAS_REQ_PHY_1208: PHY boot 模式 2 ：从 ROM 读入 SRAM ， SRAM Boot 模式
+PCIE_MAS_REQ_PHY_1209: PHY boot 模式 3 ： Bypass ROM 从配置总线 load FW 到 SRAM 的 boot 模 式
+PCIE_MAS_REQ_PHY_1210: CR bus 能够访问 PHY 的寄存器空间和 SRAM 空间
+PCIE_MAS_REQ_PHY_1211: 支持 DFT TDR 控制 cr_para_sel[1:0], 默认值 2 ' b01 选择 CR BUS 保证配置 总线可以正常访问 PHY 内部寄存器，测试模式通过配置 TDR 寄存器选择 JTAG 和 IJTAG
+PCIE_MAS_REQ_PHY_1212: PHY0, PHY1, PHY2 PHY3 支持 JTAG 访问 PHY 内部寄存器
+PCIE_MAS_REQ_SRAM_ECC_1213: 支持 PHY 的 SRAM 支持 ECC 功能，并能上报 SRAM ECC 的 single 和 double Bit Error 中断
+PCIE_MAS_REQ_PHY_1214: PHY 需要支持 Normal Mode
+PCIE_MAS_REQ_PHY_1215: PHY0, PHY1, PHY2 PHY3 支持 BERT Test ， BERT 支持 Error inject 功能
+1.13 JTAG
+PCIE_MAS_REQ_JTAG_1301: 支持 PCIe 的 4 个 PHY 的 jtag 和 BD 的 jtag 以 MUX 方式复用 TSV JTAG 的 PAD 。
+PCIE_MAS_REQ_JTAG_1302: JTAGMUX 的选择信号 TM[2:0] 由 TDR 寄存器静态配置
+PCIE_MAS_REQ_JTAG_1303: JTAG 需要能够访问 PHY 的内部寄存器
+1.14 IJTAG
+PCIE_MAS_REQ_JTAG_1401: IJTAG 接到 SoC 的 DFT 控制器， DFT 控制器将外部的 JTAG 访问转换为 IJTAG 访问 PHY 的内部寄存器空间。 DFT 使用 IJTAG 接口需要配置 TDR 寄存器 cr_para_sel 为 2 ' b10
+1.15 PCIE CRG
+PCIE_MAS_REQ_CRG_1501: 功能模式 PLL 输出最高 1GHz 时钟输出，测试模式 PLL 输出时钟 2GHz 最 高频率
+PCIE_MAS_REQ_CRG_1502: 支持 PLL 参考时钟可以从 ref_clk 获取 20MHz ，主要在测试模式和 debug 使用
+PCIE_MAS_REQ_CRG_1503: 支持 PLL 参考时钟从 PHY 获取同源参考时钟 100MHz ，正常功能时钟
+Version 3.21
+28 January 2026
+Page 9 of 42
+
+===== PAGE 10 =====
+Sub Block
+PCIE_MAS_REQ_CRG_1504: PCIE CRG 功能模式时钟 axi_clk 1GHz ， cr_para_clk 125Mhz 和 local_phy_ref_clk 100MHz
+PCIE_MAS_REQ_CRG_1505: PCIE CRG 测试模式支持输出 clk_test0 2GHz ， clk_test1 1GHz ， clk_test_2 125MHz ， clk_test_3 100MHz
+PCIE_MAS_REQ_CRG_1506: PCIE 控制器使用 PCIe lane0 的固定 1GHz max pclk 作为 PCIe 控制的逻辑 时钟，控制器根据实际 lane rate 对 max pclk 分频生成 core_clk 和 pclk
+1.16 Reset
+PCIE_MAS_REQ_HotReset_1601: Hot Reset 支持 flush timer 设置，可以通过拉低 app_ltssm_enable 来 延长 PCIe 控制器的 flush 时间， timeout 默认 2us 。 Timer 支持软件 flush 来提前结束 timer 计时
+PCIE_MAS_REQ_HotReset_1602: Hot Reset 时 flush 完成， PCIe 控制器 Reset 时会将 app_ltssm_enable 拉低， SoC 在完成 Reset 并配置完成以后需要重新配置 PCIe 的 app_ltssm_enable 进 行建连
+PCIE_MAS_REQ_HotReset_1603: 支持 Hot Reset. Hot Reset 会对 SoC 进行 Reset, PCIe 子系统不会进 行 Reset(HotResetBlock, TBU 和 ReMap 除外 ). 具体描述参考 Hot Reset Sequence
+PCIE_MAS_REQ_Disable_1604: Link Disable 等同于 HotReset 处理
+PCIE_MAS_REQ_WarmReset_1605: Warm reset 会对全芯片进行 Reset
+PCIE_MAS_REQ_FLR_1606: 不支持 FLR Reset
+1.17 Interrupts
+PCIE_MAS_REQ_IRQ_1701: PCIe 输出到 SoC 中断都是 level 中断
+PCIE_MAS_REQ_IRQ_1702: PCIe DMA 32 个通道中断独立输出到子系统接口，具体参考 Function and Error Interrupt
+PCIE_MAS_REQ_IRQ_1703: PCIe TBU 的 2 个中断独立输出的子系统接口，具体参考 Function and Error Interrupt
+PCIE_MAS_REQ_IRQ_1704: PCIe 的 Error 中断组合后输出 1 bit 的 error 中断到子系统接口，具体参考 Function and Error Interrupt
+PCIE_MAS_REQ_IRQ_1705: PCIe 的 function 中断组合后输出 1 bit 的 error 中断到子系统接口，具体参 考 Function and Error Interrupt
+PCIE_MAS_REQ_IRQ_1706: PCIe 需要保证重要中断能够正常上报 DMA 中断， link down 中断， hot reset 中断， remap 的 error 中断， TBU 的 error 中断， flush done 中断， PLL lock/unlock, PHY reference clock turnoff/turn on 中断， PCIe 控制器的重要 Error 中断等，具体参考 Function and Error Interrupt
+1.18 ReMap
+PCIE_MAS_REQ_REMAP_1801: 参考 SoC MAS 的 Feature 介绍
+Version 3.21
+28 January 2026
+Page 10 of 42
+
+===== PAGE 11 =====
+Sub Block
+1.19 TBU
+PCIE_MAS_REQ_TBU_1901: TBU 输出的是 Pulse 中断，内部实现将 Pulse 中断转成 Level 中断，当中断 发生需要写 top_csr 的 irq_tbu_clr 寄存器对中断状态进行 clear
+PCIE_MAS_REQ_TBU_1902: 其它 TBU feature 参考 SoC MAS 的 Feature 介绍
+1.20 Isolation
+PCIE_MAS_REQ_ISO_2001: PCIe DFT 支持 pcie_core 的 partial good
+PCIE_MAS_REQ_ISO_2002: PCIe 支持 partial good, 在 PCIe 子系统的顶层实现 isolation 。 SoC 有 isolation enable 寄存器控制，默认是 1. 需要保证能正常开关，在 isolation disable 的时候能够正常工 作。
+PCIE_MAS_REQ_ISO_2003: PCIe 的 partial Good 的 Isolation 需要保证在 isolation 状态 AXI slave 在 NoC 发起访问不 hang 死， AXI Master 不主动发起对 NoC 的访问，配置总线在 SoC 发起访问配置空间 访问不 hang 死。
+Note ：确认在 PCIe isolation 情况下。 PCIe 的 MainNoC AXI 无时钟不影响除 PCIe 数据接口外的数据通 路正常工作， MainNoC Soft reset 受限。 AXI 有 20MHz 时除 PCIe 数据接口外的数据通路正常工作且可以正 常完成 Soft Reset(550 MainNoC 无 soft reset 需求 ) 。
+PCIE_MAS_REQ_ISO_2004: PCIe 子系统有 TSV 直穿，在进入 BD 的 port 上有 Isolation 和 level shifter ，默认是 isolation 是 enable 状态，控制寄存器在 PCIe 子系统软件可配。需要保证 isolation 正常 开关， TSV 信号在 isolation 具体参考 SoC MAS SOC_MAS_REQ_BD 的相关介绍。
+PCIE_MAS_REQ_DISABLE_2005: PCIe 需要 PHY 和 controller 能够 disable 。 PHY 需要 PCB 保证 PHY 不工作是正常断电， controller 可以 isolation 。
+1.21 HotResetBlock
+PCIE_MAS_REQ_HotResetBlock_2101: HotResetBlock 支持 Bypass ， firewall 和 hot reset 三种模式可 配；当 Isolation 使能的时候强制进入 firewall 模式
+PCIE_MAS_REQ_HotResetBlock_2102: HotResetBlock 支持软件和硬件触发 Block AXI 数据流
+PCIE_MAS_REQ_HotResetBlock_2103: HotResetBlock 支持 firewall 和 hot reset 模式 AXI resp Error 或 OK 软件可配
+1.22 Loopback
+PCIE_MAS_REQ_LOOPBACK_2201: 支持 Controller 内部 loopback
+PCIE_MAS_REQ_LOOPBACK_2202: 支持 PHY 内部和外部 PAD loopback
+1.23 Debug
+PCIE_MAS_REQ_DEBUG_2301: LTSSM 的 debug shifter 功能，支持在 PCIe 挂死以后读取最新的 128 个 LTSSM 状态
+PCIE_MAS_REQ_DEBUG_2302: 支持 PCIe PLL 时钟或者状态拉到 debug IO 进行 debug
+PCIE_MAS_REQ_DEBUG_2303: 支持 PHY 的主要时钟和状态拉到 debug IO 进行 debug
+Version 3.21
+28 January 2026
+Page 11 of 42
+
+===== PAGE 12 =====
+Sub Block
+PCIE_MAS_REQ_DEBUG_2304: 支持将 PCIe 控制器的重要状态拉到 debug IO 进行 debug
+1.24 RAS
+PCIE_MAS_REQ_RAS_2401: PCIe 控制器 AXI 支持 Parity ， SRAM 支持 ECC and 据通路支持 8bit 的 Parity
+PCIE_MAS_REQ_RAS_2402: PCIe 控制器支持 Error Injection. 具体参考 PCIe controller databook[1]
+PCIE_MAS_REQ_RAS_2403: 支持 PCIe Advanced Error Reporting(AER). 具体参考 PCIe controller databook[1]
+PCIE_MAS_REQ_RAS_2404: 支持 Parity Error 中断上报
+1.25 Retry
+PCIE_MAS_REQ_RETRY_2501:PCIe 的 retry 功能
+Version 3.21
+28 January 2026
+Page 12 of 42
+
+===== PAGE 13 =====
+Sub Block
+2 Interfaces
+Table 2-1 PCIe 外围接口
+[TABLE] headers: Interface Group | 方向 | Description
+  Clock/Reset | Clock/Reset | Clock/Reset
+  mstr_aclk | O | AXI master 的 NoC 接口时钟
+  mstr_rst_n | O | AXI master 的 NoC 接口复位
+  slv_aclk | O | AXI slave 的 NoC 接口时钟
+  slv_rst_n | O | AXI slave 的 NoC 接口复位
+  cfg_clk | I | AXI DBI 接口时钟
+  cfg_rst_n | I | AXI DBI 接口复位
+  pll_rst_n | I | CRG PLL 的外部 reset 输入
+  clk_ref_clk | I | CRG 的外部输入的 20MHz 参考时钟
+  aux_clk | I | PCIe 的低功耗模式 L2 的逻辑时钟。从 clk_ref_clk 接入。
+  PERST# | I | PCIe 控制器的暖复位接口
+  DTI 接口 | 内置 TBU ， DTI | 接口连接 TCU 。
+  AXI Master 接口 | 标准 AXI4 接口， 512bit 数据位宽，远端访问 PCIe 设备的 数据接口。 | 标准 AXI4 接口， 512bit 数据位宽，远端访问 PCIe 设备的 数据接口。
+  AXI Slave 接口 | 标准 AXI4 接口， 512bit 数据位宽，本地设备访问 PCIe 远 端设备的数据接口。 | 标准 AXI4 接口， 512bit 数据位宽，本地设备访问 PCIe 远 端设备的数据接口。
+  AXI Lite | 系统仅一个 AXI-lite 配置接口， local NoC 完成 AXI-lite 到 | 系统仅一个 AXI-lite 配置接口， local NoC 完成 AXI-lite 到
+  Interrupts | 具体参考章节 4.6 | 具体参考章节 4.6
+  PHY 接口 | PHY 接口 | PHY 接口
+  TXx_P/N | IO | 16 lane 差分串行输出数据
+  RXx_P/N | IO | 16 lane 差分串行输入数据
+  PHY0_RESREF | IO | PHY0 适配电阻器接口
+  PHY1_RESREF | IO | PHY1 适配电阻器接口
+  PHY2_RESREF | IO | PHY2 适配电阻器接口
+  PHY3_RESREF | IO | PHY3 适配电阻器接口
+  PHY0_PAD_REF_CLK_N/P | IO | PHY0 的参考时钟
+  PHY1_PAD_REF_CLK_N/P | IO | PHY1 的参考时钟
+  PHY2_PAD_REF_CLK_N/P | IO | PHY2 的参考时钟
+  PHY3_PAD_REF_CLK_N/P | IO | PHY3 的参考时钟
+  其他接口 | 其他接口 | 其他接口
+Version 3.21
+28 January 2026
+Page 13 of 42
+
+===== PAGE 14 =====
+Sub Block
+[TABLE] headers: WAKE# | IO | PCIe 控制器输出的 Wake up 信号，低有效， 连接到电源管理模块。
+  PERST# | I | PCIe 控制器的暖复位接口
+  CLKREQ# | IO | PCIe 连接器的双向信号 CLKREQ# 输入， PCIe 控制器通过检测 CLKREQ# 决定是进入还是退 出 L1 子状态，低功耗控制的关键信号。
+Version 3.21
+28 January 2026
+Page 14 of 42
+
+===== PAGE 15 =====
+Sub Block
+3 Architecture
+3.1 架构简介
+主要接口简介：
+⚫ AMBA 接口
+◼ 1 个 AXI4 主接口，数据位宽 512, 对端 RC/EP 通过 PCIe 的 AXI 主接口访问本地空间。
+◼ 1 个 AXI4 从接口，数据位宽 512, 本地设备通过 AXI 从接口访问远端 PCIe 。
+◼ 1 个 AXI-lite 接口，数据位宽 32bit ，数据位宽 32bit 。作为 PCIe 子系统的配置接口，内部通过 NoC 转换为 9 子模块的配置接口。 NoC 输出配置接口如下：
+◆ 1 个 CRG 的配置接口
+◆ 1 个 PCIe 子系统控制器寄存器的 AXI-lite 接口
+◆ 1 个控制器的 DBI 配置接口
+◆ 4 个 PHY 的配置接口
+◆ 1 个 MSIX2DBI 的配置接口
+◆ 1 个 ReMap 的配置接口
+⚫ PIPE 接口：
+◼ UPS 和 PCIe 控制器接口 PIPE5.1.1
+◼ PIPE 类型选择 SerDes PIPE
+⚫ 串行数据接口：
+◼ PHY 有 16 对数据 lane ，每个对 lane 有 RX 方向和 TX 方向 2 对差分串行数据线构成。
+Version 3.21
+28 January 2026
+Page 15 of 42
+
+===== PAGE 16 =====
+Sub Block
+⚫ 外部时钟和 reset ：
+◼ PHY 的参考时钟从 PAD 同一个参考时钟源来，参考时钟源是芯片的外部输入的 100MHz 的差分 输入时钟。
+◼ PERST# 控制器的 perst_n ，控制器生成 reset 控制器信号，进而复位控制器和 PHY 的相关逻辑；
+◼ PCIe 子系统支持 Power On Reset
+◼ SoC 在 Hot Reset 阶段输入 Reset 对 PCIe 子系统部分逻辑进行 Reset
+子模块简介：
+⚫ PCIe 控制器模块：
+◼ 负责接收和发送 TLP 包，完成 PCIe5.0 事务层和数据链路层协议相关处理。
+◼ 通过 PIPE 接口与 PHY 。
+⚫ PHY 模块：
+◼ 负责将接收方向的串行 SerDes 数据转换成并行数据，通过 PIPE 接口发送给 PCIe 控制器。
+◼ 负责将 PCIe 控制器发送方向的并行数据转换成 SerDes 串行数据发送给远端 RC 或 EP 。
+◼ 完成 PCIe5.0 物理层协议相关处理，低功耗状态管理等功能。
+◼ 通过 PIPE 接口与 PCIe 控制器相连。
+⚫ UPCS 模块：
+◼ 负责将 SerDes 接口转换成 SerDes PIPE 接口。
+◼ 负责适配 PHY 。
+◼ 负责接收方向的数据的异步处理。
+◼ 负责 PIPE 接口和 SerDes 接口之间数据位宽转换。
+⚫ PCIE_CRG 模块：
+◼ 内置 PLL ， PLL 产生 AMBA 总线时钟 Root 时钟。
+◼ 管理 PCIe 子系统的时钟生成 core 时钟， AMBA 总线时钟， PIPE 接口时钟，低功耗时钟管理等。
+◼ 管理 PCIe 子系统的 reset 。负责 power on reset ，暖复位，低功耗时部分复位等。
+⚫ 中断处理模块：
+◼ 负责接口外部中断转化成 PCIe 的 MSI 中断。
+◼ 负责接口外部中断转化成 PCIe 的 MSIX 中断。
+◼ 负责将子系统的中断转换为电平中断输出到子系统外部。
+◼ 负责中断状态管理。
+⚫ RASDP_GLUE 模块：
+◼ 负责生成、校验各路径的 Parity bit 。
+⚫ RAMs ：
+◼ PCIe 控制器外接 RAMs 负责本地数据存储如描述符，数据等。
+◼ PHY RAMs 负责 PHY 数据存储。
+⚫ CFG 模块：
+◼ PCIe 子系统顶层逻辑控制寄存器。
+Version 3.21
+28 January 2026
+Page 16 of 42
+
+===== PAGE 17 =====
+Sub Block
+◼ PCIe 控制器外围接口控制相关的寄存器和逻辑。
+◼ PHY 的外围接口控制相关寄存器。
+◼ 负责 APB 协议到 CR 协议转换。
+⚫ TBU 模块
+◼ 通过 DTI 接口外接 TCU
+◼ 和 TBU 和 TCU 共同完成 SMMU 功能
+⚫ HotResetBlock 模块
+◼ 在 Hot Reset 阶段负责 OutBound 方向数据流管理
+⚫ Remap 模块
+◼ 负责地址的重映射
+Version 3.21
+28 January 2026
+Page 17 of 42
+
+===== PAGE 18 =====
+Sub Block
+4 功能介绍
+4.1 Controller
+4.1.1 Main Parameter
+见飞书表格《 PCIE Consultant 参数配置》
+[TABLE] headers: Group | 配置选项 | 配置值
+  Main feature config | Device Type | EP
+  Pcie basic features | MAX PCIE Speed | GEN5 (32GT/S)
+   | Core Gen1 Freq/Width | g1_2s (125Mhz)
+   | Core Gen2 Freq/Width | g2_2s (250Mhz)
+   | Core Gen3 Freq/Width | g3_4s (250Mhz)
+   | Core Gen4 Freq/Width | g4_4s (500Mhz)
+   | Core Gen5 Freq/Width | g5_4s (1000Mhz)
+   | Maximum Link Width | x16
+   | Phy Gen1 Freq/Width | g1_2s (125Mhz)
+   | Phy Gen2 Freq/Width | g2_2s (250Mhz)
+   | Phy Gen3 Freq/Width | g3_4s (250Mhz)
+   | Phy Gen4 Freq/Width | g4_4s (500Mhz)
+   | Phy Gen5 Freq/Width | g5_4s (1000Mhz)
+   | PIPE Version Options | PIPE5.1.1
+   | SerDes Architecture | SerDes architecture
+   | Lanes Turn - off for SerDes Architecture | Enabled
+   | PIPE PCLK Mode | PCLK as PHY input Fixed MAXPCLK
+  iATU | Number of Outbound Address Translation Regions | 64
+  iATU | Number of Inbound Address Translation Regions | 16
+  iATU | Minimum size of an Address Translation Region | 64k
+  iATU | Maximum size of an Address Translation Region | 128T
+  DMA configuration | Number of DMAWrite Channels | 16
+  DMA configuration | Number of DMARead Channels | 16
+  DMA configuration | Hyper - DMA | √
+  Basic AXI config | Support Slave Wrap Bursts | √
+  Basic AXI config | Max Number of Outstanding AXI Slave NP Write Requests | 64
+  Basic AXI config | AXI Master Address Width | 48
+  Basic AXI config | AXI Master Data Width | 512
+  Basic AXI config | AXI Master Interface Burst Length | 4
+  Basic AXI config | AXI Master MTU | 256
+  Basic AXI config | AXI Master IDs | 256
+  Basic AXI config | AXI Slave Address Width | 48
+  Basic AXI config | AXI Slave Data Width | 512
+  Basic AXI config | AXI Slave Interface Burst Length | 4
+  Basic AXI config | AXI Slave MTU | 256
+  Basic AXI config | AXI Slave Tags | 256
+Version 3.21
+28 January 2026
+Page 18 of 42
+
+===== PAGE 19 =====
+Sub Block
+[TABLE] headers: Group | 配置选项 | 配置值
+   | DBI Slave Address Width | 32
+   | DBI Slave Data Width | 32
+   | Max Outbound NP Requests | 256
+   | PCIe Max Payload | 256
+  MSI/MSIX Capability | MSI Capability | √
+   | MSI PVM Support | √
+   | MSI - X Capability | √
+   | MSI - X Table Size | 0x7ff
+   | MSI - X Table BIR | BAR0
+   | MSI - X Table Offset | 0x10000
+   | MSI - X PBA BIR | BAR0
+   | MSI - X PBA Offset | 0x20000
+   | Active State Link PM Support | L0s and L1 Supported
+   | Clock PM Support | √
+  Virtual Channel Capability | Number of Virtual Channels | 2
+  First Bar Setup for PF0 | Include BAR_0 | Yes
+   | BAR_0 is Memory or I/O | Memory
+   | BAR_0 is Prefetchable | No
+   | BAR_0 Bit Size | 32-bit
+   | BAR_0 Sizing Scheme | Resizable BAR
+  second Bar Setup for PF0 | Include BAR_1 | √
+   | BAR_1 is Memory or I/O | Memory
+   | BAR_1 is Prefetchable | No
+   | BAR_1 Bit Size | 32-bit
+   | BAR_1 Sizing Scheme | Resizable BAR
+  third Bar Setup for PF0 | Include BAR_2 | √
+   | BAR_2 is Memory or I/O | Memory
+   | BAR_2 is Prefetchable | Yes
+   | BAR_2 Bit Size | 64-bit
+   | BAR_2 Sizing Scheme | Resizable BAR
+   | Specify Target Interface for BAR_2 | Target_1
+  fourth Bar Setup for PF0 | Include BAR_4 | √
+   | BAR_4 is Memory or I/O | Memory
+   | BAR_4 is Prefetchable | √
+   | BAR_4 Bit Size | 64-bit
+   | BAR_4 Sizing Scheme | Resizable BAR
+  Advanced PHY config | Max PCLK frequency (MHz) | 1 GHz
+4.1.2 PCIe 控制器 Interface
+见飞书文档《 DWC PCIE Interface 》
+Version 3.21
+28 January 2026
+Page 19 of 42
+
+===== PAGE 20 =====
+Sub Block
+4.2 Address Map
+Table 4-1 PCIe 子系统空间基地址
+[TABLE] headers: Interface | Base Address
+  AXI-lite | 0x2C000000
+Table 4-2 本地 NoC 的地址映射
+[TABLE] headers: NoC | NoC Slave | Offset | Size | Description
+  Master pcie_ss_noc | Top CFG | 0x00000000 | 1MB | PCIe 的子系统顶层寄存器空间
+  Master pcie_ss_noc | CRG CFG | 0x00100000 | 1MB | PLL 配置接口
+  Master pcie_ss_noc | PHY0 CFG | 0x00200000 | 1MB | PCIe PHY0 寄存器空间
+  Master pcie_ss_noc | PHY1 CFG | 0x00300000 | 1MB | PCIe PHY1 寄存器空间
+  Master pcie_ss_noc | PHY2 CFG | 0x00400000 | 1MB | PCIe PHY2 寄存器空间
+  Master pcie_ss_noc | PHY3 CFG | 0x00500000 | 1MB | PCIe PHY3 寄存器空间
+  Master pcie_ss_noc | Msix2Dbi CFG | 0x00600000 | 1MB | MSIX2DBI 寄存器空间
+  Master pcie_ss_noc | ReMap CFG | 0x00700000 | 1MB | Address Remap 寄存器空间
+  Master pcie_ss_noc | DBI CFG | 0x01000000 | 16MB | PCIe 控制器 DBI 寄存器空间
+Table 4-3 DBI AXI 地址映射
+[TABLE] headers: 访问 类型 | 31 | 30 | 29 | 28-23 | 22 | 21 | 20 | 19 | 18-16 | 15 | 14-13 | 12 | 11 | 10 | 9 | 8-2 | 1 0
+  CDM | 0 | 0 | 0 | 0 | 0 | 0 | 0 |  | 0 | 0 | 0 | 0 | 4KB 寄存器空间 | 4KB 寄存器空间 | 4KB 寄存器空间 | 0 | 0
+  iATU | 0 | 0 | 0 | 0 | 1 | 1 | 0 | iATU 地址空间， 18-12bit 具体映射 | iATU 地址空间， 18-12bit 具体映射 | iATU 地址空间， 18-12bit 具体映射 | iATU 地址空间， 18-12bit 具体映射 | iATU 地址空间， 18-12bit 具体映射 | iATU 地址空间， 18-12bit 具体映射 | iATU 地址空间， 18-12bit 具体映射 | iATU 地址空间， 18-12bit 具体映射 | 0 | 0
+  DMA | 0 | 0 | 0 | 0 | 1 | 1 | 1 | DMA 地址空间 | DMA 地址空间 | DMA 地址空间 | DMA 地址空间 | DMA 地址空间 | DMA 地址空间 | DMA 地址空间 | DMA 地址空间 | 0 | 0
+  MSI-X Table | 0 | 0 | 0 | 1 | 1 | 1 | 0 |  | 0 | 0 | 32KB MSI-X 表格空间 | 32KB MSI-X 表格空间 | 32KB MSI-X 表格空间 | 32KB MSI-X 表格空间 | 32KB MSI-X 表格空间 | 0 | 0
+  MSI-X PBA | 0 | 0 | 0 | 1 | 1 | 1 | 0 |  | 0 | 1 | 32KB MSI-X PBA 地址空间 | 32KB MSI-X PBA 地址空间 | 32KB MSI-X PBA 地址空间 | 32KB MSI-X PBA 地址空间 | 32KB MSI-X PBA 地址空间 | 0 | 0
+4.3 BAR 空间
+PCIe 的 EP 有 5 个访问地址区域可供远端访问：
+⚫ 4KB 大小的 PCIe 的配置寄存器空间。
+⚫ BAR0 映射的 32 位 memory 类型的 Resizable 的地址空间，覆盖 DMA ， iATU ， MSI-X table 和 MSI-X PBA 。
+⚫ BAR1 映射的 32 位 memory 类型的 Resizable 的地址空间，用于远端访问本地的 memory 地址空间。
+⚫ BAR2 映射的 64 位 memory 类型的 Resizable 的地址空间，用于远端访问本地的 memory 地址空间。
+⚫ BAR4 映射的 64 位 memory 类型的 Resizable 的地址空间，用于远端访问本地的 memory 地址空间。
+Table 4-4 远端主机访问的地址映射
+[TABLE] headers: 访问类型 | 访问区域 | 访问地址
+  Cfg Request | Configure space | BDF + 配置空间寄存器偏移
+Version 3.21
+28 January 2026
+Page 20 of 42
+
+===== PAGE 21 =====
+Sub Block
+[TABLE] headers: 访问类型 | 访问区域 | 访问地址
+  MRd/MWr | BAR0 | BAR0 +DMA 寄存器偏移
+  MRd/MWr | BAR0 | BAR0 +0x8000+ iATU 寄存器偏移
+  MRd/MWr | BAR0 | BAR0+0x80000+MSI-X 表格寄存器偏移
+  MRd/MWr | BAR0 | BAR0+0x88000+MSI-X PBA 寄存器偏移
+  MRd/MWr | BAR1 | BAR1 + memory 访问偏移
+  MRd/MWr | BAR2 | BAR2 + Memory 访问偏移
+  MRd/MWr | BAR4 | BAR4 + Memory 访问偏移
+4.4 Clock
+4.4.1 时钟结构
+Version 3.21
+28 January 2026
+Page 21 of 42
+
+===== PAGE 22 =====
+Sub Block
+时钟源介绍：
+⚫ PCIe 子系统有 3 类时钟源
+◼ SoC 的 PLL 输入时钟源，主要提供 pcie_cfg_clk
+◼ PCIe 子系统的本地 PLL 参考时钟从 PHY 或者 PAD 输入，为 AMBA 相关逻辑提供时钟
+◼ PHY 的内置 PLL ，参考时钟从 PAD 的差分时钟输入。主要提供 PHY,PIPE 和 Controller 的主时钟
+⚫ PCIe 子系统 PLL 的参考时钟有 3 个时钟可选
+◼ PHY 的 mplla 的 refa_dig_fr_clk 100MHz
+◼ PHY 的 mpllb 的 refb_dig_fr_clk 100MHz
+◼ 芯片的参考时钟 clk_ref_clk 20MHz
+⚫ PCIe PHY 的内置 PLL 的参考时钟有三种形态
+◼ PHY0 的参考时钟从 PAD 输入， PHY1~3 参考时钟依次从前一级 PHY 输出时钟接
+◼ PHY0 的参考时钟从本地 PLL 输出接入 ,PHY1~3 参考时钟依次从前一级 PHY 输出时钟接
+◼ PHY0~4 的参考时钟从各自 PAD 输入，且 4 个 PHY 的时钟源必须一致
+时钟介绍：
+⚫ core_clk 和 pipe_rx_clk 异步
+◼ core_clk 是 PCIe 控制器的逻辑时钟
+◼ pipe_rx_clk 是 PCIe 控制器 PIPE RX 接口时钟
+⚫ core_clk 和 aux_clk 异步
+◼ core_clk 和 aux_clk 通过 GFM 进行动态切换
+◼ core_clk 用在 normal 模式， aux_clk 用在低功耗模式
+◼ core_clk 和 aux_clk 之间无 CDC 处理
+⚫ 本地 PLL 提供 AXI 和 PHY 的配置接口提供时钟
+◼ axi_clk 为 AXI master, AXI slave ， TBU ， remap 和 HotResetBlock 提供时钟
+◼ cr_clk 为 PHY 的 CR 接口提供时钟
+◼ local_ref_clk 为 PHY 提供备用时钟
+⚫ ABMA 时钟和 core 时钟异步
+◼ AMBA 时钟和 core 时钟之间异步
+⚫ pcie_cfg_clk 为 NoC 和系统寄存器的逻辑时钟 250MHz
+Figure 4-1 PCIe 子系统 clock 结构
+Version 3.21
+28 January 2026
+Page 22 of 42
+
+===== PAGE 23 =====
+Sub Block
+4.5 PCIe 子系统复位描述
+4.5.1 复位结构
+4.5.2 硬复位描述
+硬件冷复位 power_on_rst_n ，整个芯片通过外部 PAD 控制复位。冷复位会导致 PCIe 设备重新初始化，恢复 到初始状态。
+暖复位， Host 通过拉低边带信号 PERST# 对 PCIe 进行复。芯片需要将 PERST# 直接接到硬件冷复位 power_on_rst_n 对全芯片进行复位。整个芯片包括 PCIe 需要在 PERST# 复位以后重新启动建连。
+4.5.3 Hot Reset
+PCIe 接收上游设备 (RC/Switch) 发起的连续 2 个带热复位为 1 的 TS1 Order Set ，对应 TS1 携带的 link 和 lane 将会进入 Hot Reset 状态。 PCIe 子系统收到 Hot Reset 回向 SoC 发出 Hot Reset 标志开始对未完成访问进行 flush 。 Hot Reset 控制器时序参考 PCIe Controller Databook 的' 2.4.3 Hot Reset '章节。
+Version 3.21
+28 January 2026
+Page 23 of 42
+
+===== PAGE 24 =====
+Sub Block
+为了保证 Hot Reset 顺利完成在 PCIe 子系统和 SoC 添加了 Hot Reset 控制逻辑。具体实现参考了文档 [1] ' Hot Reset '章节时序图。
+4.5.3.1 Outbound AXI blocking
+在 PCIe 控制器接收到 Hot Reset 指令以后，会产生 Hot Reset 标志输出到给 HotResetBlock 模块。为了防止 SoC 对 AXI Slave 的不间断访问影响 PCIe 的 Flush ，导致 Flush 不能结束。 HotResetBlock 在接收到 Hot Reset 标志以后主动管理 AXI Slave 访问。
+HotResetBlock 保证 PCIe 控制器已接收的 AXI 访问正常完成，主动截获新的 AXI 访问阻止新访问到达 PCIe 控制器，保证 PCIe 控制器能够正常 flush 完成。
+另因为 HotResetBlock 不能主动退出 Hot Reset 状态， SoC 在进行 Hot Reset 期间需要对 HotResetBlock 模块 进行 Reset 以此保证模块可以正常退出 Hot Reset 状态。
+4.5.3.2 Hot Reset Flush timer
+在收到 PCIe Hot Reset 标志后激活 PCIe 的 Flush Timer ，拉低 PCIe 的 LTSSM 使能信号，等待 timer 计时完 成以后重新使能 LTSSM 。通过 timer 计时方式延长 PCIe 控制器的 flush 时间，方便调整 PCIe 的 flush 时间。 Flush Timer 的 timeout 时间从 0 到 134ms 可控。
+4.5.3.3 Hot Reset LTSSM Enable Disable
+在 PCIe 控制器 flush 完成并发出给 SoC Hot Reset 标志同时，会主动拉低 LTSSM 的使能信号。等待 SoC 的 Reset 完成可重新配置 PCIe 并主动使能 LTSSM 状态机建连。
+4.5.3.4 SoC Hot Reset 控制
+SoC 的 CPU 收到 PCIe flush done 中断以后，触发 watchdog timer ，在 time timeout 时触发 Reset 对 SoC 进 行 reset( 包括 PCIe 子系统内部的 HotResetBlock 以及 TBU) ， SoC Reset 完成重新进行 boot(PCIe 除外 ) 。 SoC boot 完成以后开始配置 PCIe 的 LTSSM Enable 重新进行 link training 建连。
+4.6 Interrupts controller
+4.6.1 Function and Error Interrupt
+[TABLE] headers: type | irq_src 信号 | 位宽 | Description
+  function | radm_cpl_timeout | 1 | Indicates that the completion TLP for a request has not been received within the expected time window.
+  function | pm_xtlh_block_tlp | 1 | Indicates that your application must stop generating new outgoing request TLPs due to the current power management state. Your application can continue to generate completion TLPs.
+  function | rdlh_link_up | 1 | Data link layer up/down indicator: This status from the flow control initialization state machine indicates that flow control has been initiated and the Data link layer is ready to transmit and receive packets. For multi-VC designs, this signal indicates status for VC0 only. 1: Link is up 0: Link is down
+  function | smlh_link_up | 1 | PHY Link up/down indicator: 1: Link is up 0: Link is down
+Version 3.21
+28 January 2026
+Page 24 of 42
+
+===== PAGE 25 =====
+Sub Block
+[TABLE] headers: type | irq_src 信号 | 位宽 | Description
+   | cfg_link_eq_req_int | 1 | Interrupt indicating to your application that the Link Equalization Request bit in the Link Status 2 Register has been set and the Link Equalization Request Interrupt Enable (Link Control 3 Register bit 1) is set.
+   | usp_eq_redo_executed_int | 1 | Interrupt indicating the EQ redo is executed by USP. You can use mac_phy_rate to know the data rate at which the interrupt occurred.
+   | trgt_cpl_timeout | 1 | Indicates that the application has not generated a completion for an incoming request within the required time interval. Information about the time out completion is available the trgt_timeout_* outputs listed later. When a completion timeout occurs, the controller does not clear the corresponding entry from the completion lookup table. The completion timeout value is approximately 10 ms.
+   | link_down_event_int | 1 | Indicates that the completion TLP for a request has not been received within the expected time window.
+   | perst_int | 1 | warm reset interrupt
+   | ref_clk_req_assert_int | 1 | refclk remove ouput signal local_ref_clk_req_n assert
+   | ref_clk_req_deassert_int | 1 | refclk remove ouput signal local_ref_clk_req_n deassert
+   | ltssm_into_gen5_int | 1 | ltssm enter L0 , and 32.0 GT/s signaling rate
+   | core_rst_int | 1 | core_rst assert
+   | pcie_flush_done_int | 1 | pcie flush done interrupt
+   | phy_pll_lock_int | 1 | MPLL is powered up and phase-locked
+   | phy_pll_unlock_int | 1 | MPLL is powered down and phase-unlocked
+   | phy_reset_int | 1 | phy reset assert
+   | phy_lane_rst_int | 1 | per_lane phy reset assert
+   | link_req_rst_not_assert_int | 1 | hot reset request signal link_req_rst_not assert
+   | link_req_rst_not_deassert_int | 1 | hot reset request signal link_req_rst_not deassert
+   | pll_lost_lock_int | 1 | PCIe local PLL lost lock
+   | hot_reset_int | 1 | ltssm enter HOT_RESETstate
+   | wr_ost_flush_done | 1 | During hot reset no write Outstanding pending in PCIe controller
+   | rd_ost_flush_done | 1 | During hot reset no read Outstanding pending in PCIe controller
+   | all_ost_flush_done | 1 | During hot reset all read and write outstanding in PCIe controller are feedback
+   | remap_err_irq |  | remap error interrupt
+  error | cfg_uncor_internal_err_sts | 1 | Indication from the controller that the controller has detected an Uncorrectable Internal Error.
+  error | cfg_rcvr_overflow_err_sts | 1 | Indication from the controller that the controller has detected a Receiver Overflow Error.
+  error | cfg_fc_protocol_err_sts | 1 | Indication from the controller that the controller has detected a Flow Control Protocol Error.
+  error | cfg_mlf_tlp_err_sts | 1 | Indication from the controller that the controller detected a Malformed TLP Error.
+  error | cfg_surprise_down_er_sts | 1 | Indication from the controller that the controller detected a Surprise Down Error.
+  error | cfg_dl_protocol_err_sts | 1 | Indication from the controller that the controller detected a Data Link Protocol Error.
+  error | cfg_ecrc_err_sts | 1 | Indication from the controller that the controller detected an ECRC Error.
+  error | cfg_corrected_internal_err_omt_ sts | 1 | Indication from the controller that the controller detected a Corrected Internal Error.
+  error | cfg_replay_number_rollover_err_ sts | 1 | Indication from the controller that the controller detected a REPLAY_NUMBER Rollover Error.
+  error | cfg_replay_timer_timeout_err_st s | 1 | Indication from the controller that the controller detected a Replay Timer Timeout.
+  error | cfg_bad_dllp_err_sts | 1 | Indication from the controller that the controller detected a Bad DLLP Error.
+  error | cfg_bad_tlp_err_sts | 1 | Indication from the controller that the controller detected a Bad TLP Error.
+  error | cfg_rcvr_err_sts | 1 | Indication from the controller that the controller detected a Receiver Error.
+  error | cfg_advisory_nf_sts | 1 | Indication from the controller that the controller detected an Advisory Non-Fatal Error.
+  error | cfg_hdr_log_overflow_sts | 1 | Indication from the controller that the controller detected a Header Log Overflow Error.
+Version 3.21
+28 January 2026
+Page 25 of 42
+
+===== PAGE 26 =====
+Sub Block
+[TABLE] headers: type | irq_src 信号 | 位宽 | Description
+   | radm_trgt1_atu_cbuf_err | 16 | ATU Error indication per ATU region.Set for 1 core_clk period pulse when the ATU region matched received VDMsize (payload + 3rd and 4th DWof Header) is greater than the programmed Circular Buffer Increment size (CBUF_INCR) for Single Location Address translation.
+   | ctl_rasdp_irq | 1 | pcie controller parity error, 1-bit ctl_rasdp_irq aggregated from multi-bit parity, multi-bit parity see ' 4.11 PCIe RAS ' .
+   | phy_sram_sec_irq | 1 | pcie phy sram corrected ecc error.
+   | phy_sram_ded_irq | 1 | pcie phy sram uncorrected ecc error.
+  edma_int | edma_int | 32 | Indicates that the DMAtransfer has completed or that an error has occurred. This is a level interrupt.
+  tbu_ras | tbu_ras | 1 | ATC RAS interupt.
+  tbu_pmu | tbu_pmu | 1 | ATC performance monitor interupt.
+Table 4-6 PCIe 子系统中断输出 summary_irq 列表
+[TABLE] headers: summary_irq 信号 | 位宽 | Description
+  irq_func | 1 | 功能类型的中断输出
+  irq_err | 1 | 错误类型的中断输出
+  edma_int | 32 | 单独输出的中断信号，具体描述见 PCIe 子系统原始中断 irq_src 列表
+  tbu_ras | 1 | tbu 中断输出
+  tbu_pmu | 1 | tbu 中断输出
+中断情况介绍：
+⚫ PCIe 子系统仅支持电平中断（ pulse 类型的中断输入会被转成 level ）
+⚫ 应用可以通过写寄存器形式控制常规中断 INTA, INTB, INTC 和 INTD 的 assert 和 deassert 。
+⚫ 输出中断内部独立输出到 PCIe 子系统外部，子系统有对应中断的状态寄存器。
+4.6.2 Message Interrupt
+4.6.2.1 MSI
+支持 MSI 类型的 message 中断， MSI 的中断数量 14 个。
+MSI 的 priority 可配置（位宽 1bit ， MSI 在一般情况下， host 可能只会分配 1 个或者 2 个，所以 1bit 优先级 是足够的），相同 priority 下，编号小的优先级高；
+具体机制参考 PCIe 的 databook section 3.8.1.2 和 4.8.1.
+4.6.2.2 MSI-X
+支持 MSI-X 类型的 message 中断， MSI-X 的中断数量是 14 个。仅支持软件控制生成中断向量，触发 MSIX 中断。
+MSI-X 支持 Table 和 PBA 均映射到 memory 存储中断信息， MSI-X Table 和 PBA 可已通过 DBI 访问或者通过 Host 访问。具体参考文档 4.2 和 4.3.
+具体机制参考 PCIe 的 databook section 3.8.1.2 和 4.8.1.
+（ 1 ）功能
+Version 3.21
+28 January 2026
+Page 26 of 42
+
+===== PAGE 27 =====
+Sub Block
+将 14 根（最多 2048 根）中断输入，转为 axi write transaction ，经过 noc 的路由，最终写入到 pcie_ctrl_wrap 的 doorbell 寄存器，触发 msix 组装 TLP 包的逻辑。
+（ 2 ）实现框图
+[TABLE] headers: Signal | Width | I/O | Description
+  clk | 1 | I | 
+  rst_n | 1 | I | 
+  int | INT_NUM | I | 中断输入
+  APB_Slave |  |  | 
+  AXI_Master |  |  | 
+[TABLE] headers: Reg name | reg_num | Field | Msb | Lsb | SWaccess | HWaccess | Default | Description
+  per_vector_misc | INT_NUM | mask_bit | 20 | 20 | RW | RO | 0x1 | Hardware per_vector mask bit.
+  per_vector_misc | INT_NUM | priority | 19 | 17 | RW | RO | 0x1 | Hardware per_vector qos. 有效中断的 priority 不支持配成 0
+  per_vector_misc | INT_NUM | pf | 16 | 12 | RW | RO | 0x0 | Msi doorbell physical function.
+  per_vector_misc | INT_NUM | vf | 11 | 4 | RW | RO | 0x0 | Msi doorbell virtual function.
+  per_vector_misc | INT_NUM | vfactive | 3 | 3 | RW | RO | 0x0 | Msi doorbell virtual function active.
+  per_vector_misc | INT_NUM | tc | 2 | 0 | RW | RO | 0x0 | MSIX Doorbell Traffic Class. This register determines which traffic class to generate the MSI - X transaction with.
+  axi_awaddr | 1 | axi_awaddr | 31 | 0 | RW | RO | 0x1000948 | Axi master AWchannel address.
+（ 6 ）实现
+1. 中断源
+每 bit 中断做边沿检测，输出到 pending_bit 寄存器，在 mask_bit 未拉高的情况下给到仲裁器做仲 裁，在仲裁器输出 vector 后 clear 对应 pending_bit ，可以接收新的中断。
+Version 3.21
+28 January 2026
+Page 27 of 42
+
+===== PAGE 28 =====
+Sub Block
+2.arb ：
+priority 可配的固定优先级仲裁，相同 priority 的请求，编号小的优先级高；
+3.AXI master
+⚫ doorbell 寄存器可以连续覆盖写，每一笔 AXI 的写触发一次中断，在中断未处理完毕之前， awready 信 号不会拉高，直到当前中断处理完毕后才会拉高 awready 接收下一个中断；
+⚫ b 通道握手成功后， awvld 和 wvld 随仲裁输出使能拉高。
+⚫ awaddr 的值可由寄存器配置，默认值为 0x1000948 路由到 dbi （ msix_doorbell_off 寄存器在每个 function config space 的 offset ）；也可配置成 msix_address_match 寄存器的地址，走 axi slave 去写 doorbell 寄存器；
+⚫ wdata 取仲裁出的 vector 以及 APB 配置的对应 doorbell filed ，按下图格式拼成 32bits 的信号；
+⚫ b 通道的 vld/rdy 握手可以知道每个中断处理完毕；
+⚫ ar/r 通道不使用
+[TABLE] headers: MSIX DOORBEL 含义 | MSIX DOORBEL 含义
+  域 | 参数定义
+  10:0 | VECTOR
+  11 | RESERVED
+  14:12 | TC
+  15 | VF_ACTIVE
+  23:16 | VF
+  28:24 | PF
+  31:29 | RESERVED
+4.7 ReMap
+PCIE Inbound 方向提供地址 remap 功能，功能与 iATU 类似，且窗口更多。用于将离散地址映射成连续的地 址供 Inbound 方向使用。同时 ReMap 只有本地 AON 可配置，可用于保护内部配置空间。
+最多支持 256 个 window ，在 ReMap 工作时 iATU 工作在 Bar Match Mode ，且输出地址 offset 为 0. ReMap 的具体细节参考文档' tc550x_ccd_soc_mas.pdf '的' Address ReMap '章节。
+Version 3.21
+28 January 2026
+Page 28 of 42
+
+===== PAGE 29 =====
+Sub Block
+4.8 TBU
+PCIe inbound AXI master 可选使能 TBU 做 memory address remap 的管理 . 将 SoC 的零散的 Memory address 映射成连续的地址空间方便软件访问。为了区分 PCIe 的 DMA 和系统 DMA 的访问，添加了 SID 寄存 器软件根据需求自由配置。 TBU 的具体介绍参看参考文档 [4] 的' SMMU '章节。
+4.9 PIPE 5.1.1
+PIPE architecture select SerDes PIPE. PIPE PCLK mode select PCLK as PHY input and PCIe Select PHY output fixed MAXPCLK.
+[TABLE] headers: Group | Signal | I/O | Description
+  Clock/reset | pipe_msgbus_rst_n | I | pipe_clk 时钟域的复位信号
+  Clock/reset | pipe_rx_clk | I | SerDes 架构下用于 phy_mac_rxdata 的恢复时钟
+  Clock/reset | pipe_rx_rst_n | I | pipe_rx_clk 时钟域的复位信号
+  Clock/reset | mac_phy_pclk_rate | O | Controls the PIPE PCLK rate
+  Clock/reset | mac_phy_maxpclkreq_n | O | The controller asserts this signal to request the PHY to remove MAXPCLK. The controller de- asserts this signal to request the PHY to enable MAXPCLK.
+  Clock/reset | phy_mac_maxpclkack_n | I | The PHY asserts this signal indicating the removal of MAXPCLK. The PHY de-asserts this signal to indicate that MAXPCLK is enabled and is stable.
+  Data Interface | phy_mac_rxdata | I | Parallel received data
+  Data Interface | mac_phy_txdata | O | Parallel data for transmission
+  Data Interface | mac_phy_txdatavalid | O | Txdata 有效位
+  Data Interface | mac_phy_rxwidth | O | Controls the PIPE receive datapath width. （ only used in the SerDes architecture ）
+  Data Interface | mac_phy_width | O | Controls the PIPE datapath width. For SerDes architecture, this applies only to the transmit side and mac_phy_rxwidth controls the receive side.
+  Message bus Interface | mac_phy_messagebus | O | PIPE Compliant MAC driven message bus commands to PHY.
+  Message bus Interface | phy_mac_messagebus | I | PIPE Compliant PHY driven message bus commands to MAC.
+  Status Interface | phy_mac_rxvalid | I | 用于指示 pipe_rx_clk stable
+  Status Interface | phy_mac_rxelecidle | I | Indicates receiver detection of an Electrical Idle for each lane.
+  Status Interface | mac_phy_txelecidle | O | Forces transmit output to Electrical Idle for each lane which it is asserted.
+  Status Interface | phy_mac_rxstatus | I | Receive status and error codes for each lane.
+  Status Interface | phy_mac_phystatus | I | Communicates completion of PHY functions, including power management transitions, receiver detection, speed change, and EQ evaluation at Gen3 rate.
+  Status Interface | mac_phy_pclkchangeack | O | MAC asserts this signal when a PCLK rate change is complete and stable.
+  Status Interface | phy_mac_pclkchangeok | I | The PHY asserts this signal when it is ready for the MAC to change the PCLK rate.
+Version 3.21
+28 January 2026
+Page 29 of 42
+
+===== PAGE 30 =====
+Sub Block
+[TABLE] headers: Group | Signal | I/O | Description
+   | mac_phy_rxstandby | O | Determines if the PHY RX is active when the PHY is in P0 or P0s.
+   | phy_mac_rxstandbystatus | I | The PHY uses this signal to indicate its RxStandby state.
+  Phy configue Interface | mac_phy_powerdown | O | Power control bits that drive the PHY power state.
+   | mac_phy_serdes_arch | O | Indicates whether SerDes architecture is enabled.
+   | mac_phy_txdetectrx_loopback | O | For SerDes architecture, this signal is only used for receiver detection.
+   | phy_cfg_status | I | Input bus that can optionally be used to read PHY status.
+   | serdes_pipe_rxready | O | Indicates symbol lock/block alignment is done for each lane. Bit 0 corresponds to lane 0.
+   | serdes_pipe_turnoff_lanes | O | Indicates lanes are turned off. Bit 0 corresponds to lane 0. This signal behavior follows the 'turn off' functionality described in PIPE specification.
+   | pm_current_data_rate | O | The current link operating rate.
+   | cfg_phy_control | O | Output bus that can optionally be used for additional PHY control purposes.
+  Gen2/3-only PIPE | mac_phy_rate | O | Controls the link signaling rate.
+   | cfg_hw_auto_sp_dis | O | Autonomous speed disable. Used in downstream ports only.
+  Gen4-only marging | app_margining_ready | I | Margining Ready. Indicates when the PHY or Margining software is ready to accept margining commands.
+   | app_margining_software_ready | I | Margining Software Ready. Indicates that the required margining software has performed the required initialization when margining is partially implemented using Device Driver software.
+More detail please refer PIPE5.1.1 protocol, PHY and PCIe controller Databook.
+4.10 Virtual Channel
+PCIe 子系统支持 2 个 VC channel 设置。 VC channel 内部有 TC 和 VC 的映射表可供修改 TC 和 VC 之间的映 射关系。
+具体参考 PCIe gen5 协议的 ' VC Capability Structure ' 部分。
+4.11 PCIe RAS
+PCIe 子系统支持 PCIe Controller 原生 RAS DES(Debug/Statistics/Error Injection) 功能。功能包括 Event counter ， Time Based Analysis ， Error Injection ， Silicon Debug 和 Debug Signals 。
+具体功能参考 PCIe 的 databook ' 3.8.2 RAS Debug ， Error Injection ， and Statistics(DES) ' .
+PCIe 支持 RAS DP 的 RAM ECC 保护，具体参考 Databook 的' 3.8.1 RAS Data Protection(RAS DP) ' .
+AXI 接口的支持 ' Legacy Mode ' ，数据和地址受 Parity 保护。具体参考 Databook 的' 3.8.1 RAS Data Protection(RAS DP) ' .
+Version 3.21
+28 January 2026
+Page 30 of 42
+
+===== PAGE 31 =====
+Sub Block
+PCIe controller 所有 parity 校验信号如下，校验结果最终汇聚成 1bit err 类型的中断 ctl_rasdp_irq ，见' 4.6.1 Function and Error Interrupt '
+[TABLE] headers: RASDP_GLUE parity check signals | RASDP_GLUE parity check signals | RASDP_GLUE parity check signals
+  app_parity_errs | ob_pdcmp_hdr_ram_addrb | edma_wr_eng_ovrl_addrb_ram
+  mstr_awaddr | ob_pdcmp_data_ram_addra | edma_wr_eng_c2w_lut_addra_ram
+  mstr_wdata | ob_pdcmp_data_ram_addrb | edma_wr_eng_c2w_lut_addrb_ram
+  mstr_araddr | ob_ccmp_data_ram_addra | edma_wr_eng_stsh_lut_addra_ram
+  ib_rreq_ordr_ram_addra | ob_ccmp_data_ram_addrb | edma_wr_eng_stsh_lut_addrb_ram
+  ib_rreq_ordr_ram_addrb | edmarbuff2ram_addra | edma_wr_eng_msi_addra_ram
+  ib_rreq_c2a_cdc_ram_addra | edmarbuff2ram_addrb | edma_wr_eng_msi_addrb_ram
+  ib_rreq_c2a_cdc_ram_addrb | edma_rd_eng_ll_addra_ram | xdlh_retryram_addr
+  ib_wreq_c2a_cdc_ram_addra | edma_rd_eng_ll_addrb_ram | msix_table_addr
+  ib_wreq_c2a_cdc_ram_addrb | edma_rd_eng_ovrl_addra_ram | msix_pba_addr
+  ib_mcpl_sb_ram_addra | edma_rd_eng_ovrl_addrb_ram | xdlh_retrysotram_waddr
+  ib_mcpl_sb_ram_addrb | edma_rd_eng_c2w_lut_addra_ram | xdlh_retrysotram_raddr
+  ib_mcpl_a2c_cdc_ram_addra | edma_rd_eng_c2w_lut_addrb_ram | p_dataq_addra
+  ib_mcpl_a2c_cdc_ram_addrb | edma_rd_eng_stsh_lut_addra_ram | p_dataq_addrb
+  slv_rdata | edma_rd_eng_stsh_lut_addrb_ram | p_hdrq_addra
+  slv_npw_sab_ram_addra | edma_rd_eng_msi_addra_ram | p_hdrq_addrb
+  slv_npw_sab_ram_addrb | edma_rd_eng_msi_addrb_ram | radm_formqram_addra
+  ob_npdcmp_ram_addra | edma_wr_eng_ll_addra_ram | radm_formqram_addrb
+  ob_npdcmp_ram_addrb | edma_wr_eng_ll_addrb_ram | 
+  ob_pdcmp_hdr_ram_addra | edma_wr_eng_ovrl_addra_ram | 
+4.12 Low Power
+4.12.1 low power state 支持情况
+PCIe 支持 ASPM L0s, L1 和 L1 substate. 支持 PCIe-PM L1 和 L1 substate.
+PCIeD-State 支持 D0uninitialzed, D0active, D1, D2 和 D3hot.
+Table 4-1 Power/Clock Supply Status in Low-Power States of Interest
+[TABLE] headers: D-State | Permissible Quiescent Link States | Link State Change Trigger | Active Clock Supplies ᵃ | pipe_clk core_clk | PHY State
+  D0uninitialized | L0 | NA | REFCLK A AUXCLK | ON B | P0, P0S
+  D0active | L0 | ASPM | REFCLK A AUXCLK | ON B | P0, P0S
+  D0active | L0S | ASPM | REFCLK A AUXCLK | ON B | P0, P0S
+  D0active | L1 | ASPM | REFCLK A AUXCLK | ON B | P1
+  D1, D2, D3 hot | L1 | PCI-PM | REFCLK A AUXCLK | ON B | P1
+Note:
+Version 3.21
+28 January 2026
+Page 31 of 42
+
+===== PAGE 32 =====
+Sub Block
+Link states 默认支持情况（ default value ）：  L0 ：支持；  L1 ：支持；  L0s ：支持（支持 SRIS 的情况下不能使用 L0s ， SRIS 情况下可通过配置 Link Capabilities register 关闭 L0s ）；  L1 substates ：不支持（可通过配置 L1 Substates Capability Register 支持 L1 substate ）；  L2 ：不支持；  L3 ：不支持； Device state 支持情况（ default value ）：  D0 、 D3 ：支持；  D1 、 D2 ：不支持（可通过配置 Power Management Capabilities Register 的 D1 support bit 和 D2 support bit 支持）； 4.12.2 L0s L0s 是 ASPM 独有的低功耗状态。允许链路两端不同时进入 L0s 。 4.12.2.1 L0s entry ( 见' EP Controller Databook 3.18.3.2 L0s Entry ' ) 4.12.2.2 L0s exit ( 见' EP Controller Databook 3.18.3.3 L0s Exit ' ) 4.12.3 L1 4.12.3.1 L1-ASPM entry 有以下 3 种 L1-ASPM 的进入方式  L1 Idle Timeout in L0s ； ( 见' EP Controller Databook 3.18.5.1.2 L1-ASPM Entry (Scenario 1): L1 Idle Timeout in L0s ' )  L1 Idle Timeout in L0 ； ( 见' EP Controller Databook 3.18.5.1.2 L1-ASPM Entry (Scenario 2): L1 Idle Timeout in L0 ' )  Application Controlled ； ( 见' EP Controller Databook 3.18.5.1.4 L1-ASPM Entry (Scenario 3): Application Controlled (USP only) ' ) 4.12.3.2 L1-PM entry 状态），控制器必须启动链路状态向
+通过写 PMCSR 将设备状态更改为 D1 、 D2 或 D3hot 时（即非 D0 L1 -PM 的转换。 ( 见' EP Controller Databook 3.18.5.1.6 L1-PM Entry ' )
+Version 3.21
+28 January 2026
+Page 32 of 42
+
+===== PAGE 33 =====
+Sub Block
+4.12.3.3 L1-ASPM/ L1-PM exit
+( 见' EP Controller Databook 3.18.5.1.7 L1-PM/L1-ASPM Exit ' )
+4.12.3.4 L1 Clock PM
+允许在 L1 （非 L1 substates ） 期间关闭 PLL 和 reference clock ， sequence 详见' EP Controller Databook Figure 3-92 PIPE 5.0 L1 CPM Operation for PCLK as PHY Input '。
+4.12.4 L1 substates
+4.12.4.1 overview
+L1 substates 适用于 ASPM 和 PM 。
+L1 substates 状态下移除参考时钟的 sequence 详见' EP Controller Databook Figure 3-81 PIPE 5.0 L1 SS Operation for PCLK as PHY Input '。
+4.12.4.2 L1 substates ASPM
+同 L1-ASPM 。通过配置 Link Ctrl register/Link Status register 的域段，自动控制 L1 substates 的 entry 和 exit 。
+4.12.4.3 L1 substates entry
+( 见' EP Controller Databook 3.18.2.2.8 PIPE 5.0 or Later L1 Substates Entry ' )
+4.12.4.4 L1 substates exit
+L1 substate exit 满足条件同 L1 ， exit 流程见：
+( 见' EP Controller Databook 3.18.2.2.9 PIPE 5.0 or Later Substates Exit (Locally Initiated) ' )
+( 见' EP Controller Databook 3.18.2.2.10 PIPE 5.0 or Later Substates Exit (Remotely Initiated) ' )
+4.12.4.5 L1 substate Software Control
+L1 substate 软件配置： ( 见' EP Controller Databook 3.18.2.2.11 L1 Substates Software Control ' ) ；
+控制器进入 L1 后，会根据设备的 D 状态来确定是进入 ASPM 模式还是 PCI - PM 模式的 L1 ， Target L1 substates 取决于相关可编程寄存器字段，详见' EP Controller Databook Table 3-84 Target L1 Substate as a Function of Software Controls (USP) '。
+4.12.5 PME 流程
+1 、 function 在非 D0 状态下如果希望恢复到 D0 ，可以在本地配置 PMCSR 中的 PME_enable 位， PME_Status 会被硬件同时拉高，这表明该 function 产生了 PME 请求；
+Version 3.21
+28 January 2026
+Page 33 of 42
+
+===== PAGE 34 =====
+Sub Block
+2 、 PME message 是一种 TLP ，只能在链路处于 L0 活动状态时发送。当链路进入 L0 后，在 PME_en 拉 高的情况下，设备自动构造并向上游发送 PME message 。该 message 采用隐式路由，经过 Switch 等中间组 件，最终抵达 RC ；
+3 、 RC 接收到 PME message 后，会将其内容转发给电源管理控制器；电源管理控制器通知系统软件，通 常产生一个中断，系统软件利用 PME message 中携带的 Requester ID 来定位触发事件的设备；软件通过配置 读写操作清除该设备的 PME_Status 位，并使其返回 D0 状态。
+4.13 Debug
+4.13.1 Debug IO
+软件通过 apb 配置寄存器，选择 pcie controller 的 diag_state_bus 以及其他 debug 信号的域段输出到 pad 。
+[TABLE] headers: Reg name | reg_num | Field | Msb | Lsb | SWaccess | HWaccess | Default | Description
+  cfg_dbg_sel_group | 1 | cfg_dbg_sel_group | 1 | 0 | RW | RO | 0x0 | debug group 选择位： 00 ： group 0 ； 01 ： group 1 ； 10 ： group 2 ； 11 ： group 3 ；
+  cfg_dbg_sel_sig0 | 1 | bit_0 | 7 | 0 | RW | RO | 0x0 | 软件配置值为 0~255 中的某一 个，代表选择输出 256bits group 的哪一 bit 到 PAD0
+  cfg_dbg_sel_sig0 | 1 | bit_1 | 15 | 8 | RW | RO | 0x0 | 软件配置值为 0~255 中的某一 个，代表选择输出 256bits group 的哪一 bit 到 PAD1
+  cfg_dbg_sel_sig0 | 1 | bit_2 | 23 | 16 | RW | RO | 0x0 | 软件配置值为 0~255 中的某一 个，代表选择输出 256bits group 的哪一 bit 到 PAD2
+  cfg_dbg_sel_sig0 | 1 | bit_3 | 31 | 24 | RW | RO | 0x0 | 软件配置值为 0~255 中的某一 个，代表选择输出 256bits group 的哪一 bit 到 PAD3
+  cfg_dbg_sel_sig1 | 1 | bit_4 | 7 | 0 | RW | RO | 0x0 | 软件配置值为 0~255 中的某一 个，代表选择输出 256bits group 的哪一 bit 到 PAD4
+  cfg_dbg_sel_sig1 | 1 | bit_5 | 15 | 8 | RW | RO | 0x0 | 软件配置值为 0~255 中的某一 个，代表选择输出 256bits group 的哪一 bit 到 PAD5
+  cfg_dbg_sel_sig1 | 1 | bit_6 | 23 | 16 | RW | RO | 0x0 | 软件配置值为 0~255 中的某一 个，代表选择输出 256bits group 的哪一 bit 到 PAD6
+  cfg_dbg_sel_sig1 | 1 | bit_7 | 31 | 24 | RW | RO | 0x0 | 软件配置值为 0~255 中的某一 个，代表选择输出 256bits group 的哪一 bit 到 PAD7
+配置流程：
+1 、配置 cfg_dbg_sel_group ，来选择包含 debug 信息的 group0~group3 中的某一个 group ；
+Version 3.21
+28 January 2026
+Page 34 of 42
+
+===== PAGE 35 =====
+Sub Block
+2 、分别配置 bit0~bit7 ，对应到 group 的 8bits 信号，输出到 PAD ；
+3 、如果软件想挑选的 debug 信息超过 8bits ，需要重复操作步骤 2 ；
+4.13.2 LTSSM State debug
+流程描述：
+1 、 pcie_ctrl_wrap 将每次变化的 ltssm_state 信号存在移位寄存器 shift_reg 中，每个位置的 1bit vld 信号指 示状态是否有效。在 shift_reg 存满后，每进 1 个新的状态，会挤掉 1 个最旧的状态；
+2 、 软件在需要查询 shift_reg 的时候，将向 1bit 的 freeze_reg 写入 1 ，然后等待 freeze_reg 被硬件写成 0 ；
+3 、 持续对 freeze_reg 进行上升沿检测，将检测到的脉冲信号同步到 core_clk 时钟域，作为 shift_reg 的 clear 信号和 DMUX 写使能：
+（ 1 ） DMUX 写使能拉高 1 拍，将当拍 shift_reg 的内容全部写入 DMUX ；
+（ 2 ） shift_reg 的 clear 拉高 1 拍，在下拍将 shift_reg 清空；
+4 、 DMUX 输出使能拉高后，将输出数据写入 state_reg ，并且向 freeze_reg 写 0 ；
+5 、 软件查询到 freeze_reg 从 1 变成 0 ，通过 APB 从 state_reg 中取出 ltssm 状态；
+寄存器描述：
+[TABLE] headers: Reg name | reg_num | Field | Msb | Lsb | SWaccess | HWaccess | Default | Description
+  freeze_reg | 1 | freeze_reg | 0 | 0 | RW | RW | 0x0 | 软件查询开关
+  ltssm_state_reg | 128 | ltssm_state | 5 | 0 | RO | WO | 0x0 | 状态信息
+   |  | ltssm_state_vld | 6 | 6 | RO | WO | 0x0 | 有效位
+4.14 iATU
+配置寄存器见《 DWC_pcie_ctl_ep_register 》中的 PF0_ATU_CAP Registers ，包含了对每个 ATU Region ， TLP header 等参数的配置。
+4.14.1 Outbound
+⚫ address translate operation 仅支持 Address Match mode ：
+Version 3.21
+28 January 2026
+Page 35 of 42
+
+===== PAGE 36 =====
+Sub Block
+iATU 会检查每个 MEM 、 I/O TLP request 的 address 字段，看其是否落入由起始地址和结束地址定义的 任何已启用的地址 region 内。当找到地址匹配时， TLP 地址字段将按如下方式修改： ( 详见' EP Controller Databook Figure 3-46 64-bit Region Mapping: Outbound and Inbound (Address Match Mode) ' )
+转换后的地址 = 原始地址 -基地址 + 目标地址
+当 TLP 地址字段与多个 CX_ATU_NUM_OUTBOUND_REGIONS 地址 Region 匹配时，将使用编号最小（从 0 到 CX_ATU_NUM_OUTBOUND_REGIONS - 1 ）的第一个已启用 Region 。
+并且， TYPE 、 TC 、 AT 、 TH 、 PH 、 ST 、 Function Number 、 ATTR 这些 header 字段，将被 IATU_REGION_CTRL_1_OFF_OUTBOUND_0 寄存器中的相应字段替换。（如果要改变 TLP 的类型，仅支持 MEM 、 I/O 类型到 MSG/CFG 类型的转换）
+4.14.2 Inbound
+Inbound 不会改变 TLP 的类型。
+每种类型的 TLP 支持不同的 Match mode ， IATU_REGION_CTRL_2_OFF_INBOUND_i 寄存器中 MATCH_MODE 字段的设置，决定了 iATU 如何针对每种 TLP 类型进行 inbound 匹配。
+[TABLE] headers: TLP Type | MATCH_MODE =0 | MATCH_MODE =1
+  CFG0 | Routing ID Match Mode | Accept Mode
+  MEM or I/O | Address Match Mode | BAR Match Mode
+  MSG/MSGD | Address Match Mode | Vendor ID Match Mode
+⚫ MEM or I/O TLP
+（ 1 ） Address Match mode ：
+同 outbound 的 Address Match mode.
+（ 2 ） BAR Match mode ：
+检查 MEM 和 I/O 请求 TLP 的地址字段，是否落入由已启用的 BAR 地址和掩码定义的任何地址区域。当找 到匹配的 BAR 时， iATU 会将 BAR ID 与 IATU_REGION_CTRL_2_OFF_INBOUND_i 寄存器中所有已启用区域的 BAR 编号（ BAR_NUM ）字段进行比较。
+详见' EP Controller Databook Figure 3-49 iATU Address Region Mapping: Inbound (BAR Match Mode), 64-bit BAR '
+⚫ CFG TLP
+Controller 通常对 CFG TLP 进行路由（到内部的 CDM 或 ELBI ），且不进行转换。 iATU 仅转换已路由到 TRGT1 的 CFG0 TLP 。
+（ 1 ） Accept Mode
+在 Accept Mode 下，即使 CFG bus number 与 device 当前的 bus number 不匹配， controller 也始终接受 CFG0 TLP 。在确定匹配时，收到的 CFG0 TLP 的路由 ID 将被忽略。
+（ 2 ） Routing ID Match Mode
+Version 3.21
+28 January 2026
+Page 36 of 42
+
+===== PAGE 37 =====
+Sub Block
+Routing ID Match Mode 与 Address Match mode 类似。 iATU 将 routing ID （ TLP header 的第 8 - 11 字 节 ）视为一个地址， inbound CFG0 TLP 的 routing ID 必须落在配置的 iATU Region 范围内才算成功匹配。
+4.15 UPCS PIPE 介绍
+4.15.1 UPCS 结构
+UPCS PIPE 的子系统包含 1 个 x16 的 UPCS 和 4 个 x4 的 PHY 。共同组成 UPCS PIPE 子系统。 UPCS 和 PCIe 控制器之间通过 PIPE 接口相连。
+4.15.2 PIPE 接口
+UPCS 支持 SerDes PIPE 或 Original PIPE, UPCS 的 PIPE 接口采用的是 SerDes PIPE 结构。
+SerDes PIPE 接口和 PHY 的 parallel 数据接口都采用单个 40bit 的数据结构。 PHY 的 PIPE 接口细节可参考文 档 4.7.
+4.15.3 时钟源
+PHY 的外部参考时钟情况， 4 个 PHY 独立差分参考时钟输入，在 4 对差分参考时钟输入需要再 PAD 端连同一 个时钟源。
+或板级提供 1 个 PHY 时钟源，板级时钟源从 PHY0 的 pad_ref_clk_n/m 输入， PHY1 的参考时钟从 PHY0 的 ref_repeat_clk_p/m 输入，依次类推。
+PCIe 子系统会生成 lock_phy_ref_clk 给到 PHY 作为参考时钟，作为调试手段备用。
+4.15.4 时钟输出
+UPCS 的 16 个 lane 每个 lane 都有 1GHz 的 max_pclk 输出， max_pclk 用于生成 core_clk 作为 controller 的 主要逻辑时钟和同时生成 pipe_pclk 作为 PIPE TX 的接口时钟。
+UCPS 同时输出根据 RX 数据流恢复的 pipe_rx_clk 时钟输出给 Controller 的 PIPE RX 方向作为 PIPE 的逻辑时 钟使用。
+4.15.5 PHY 重要功能点
+支持 CC 和 SRIS/SRNS 模式：
+⚫ PHY 支持 CC(Common clock) 模式
+⚫ PHY 支持 SRIS/SRNS(Separate Clock 模式 )
+Version 3.21
+28 January 2026
+Page 37 of 42
+
+===== PAGE 38 =====
+Sub Block
+支持多种启动模式：
+⚫ ROM 加载 FW 到 SRAM ， SRAM boot 模式
+⚫ 从 ROM 加载 FW 启动模式
+⚫ 通过 CR bus 加载 FW 到 SRAM 启动
+支持功能 loopback 测试：
+⚫ PHY 可以支持在内部的 serial 接口或者外部 pad 实现数据还回测试功能；
+支持 BERT 测试：
+⚫ 通过 JTAG or IJTAG 接口控制 PHY 内部寄存器完成 PHY 的自测试功能。
+⚫ 支持内部和外部 loopback 的 BERT 。
+支持多种低功耗：
+⚫ 支持 P0s
+⚫ P1
+⚫ P1.CPM, P1.1 和 P1.2
+⚫ 支持部分 lane 的 turnoff
+4.16 JTAG
+PHY0/PHY1/PHY2/PHY3 和 BD 的 JTAG 共 5 个 JTAG 接口以 MUX 方式共用 TSV 的 JTAG PAD 。 DFT 通过 TDR 寄存器配置选择任一 JTAG 接口。
+JTAG 主要完成对 PHY 内部寄存器访问完成功能测试如 BERT 测试。 DB 的 JTAG 穿过 PCIe 后通过 TSV 输出 到 BD ， DFT 使用这一组 JTAG 接口进行 BD 的测试 .
+4.17 PAD
+PCIe 有 3 个 PAD ： CLKREQ# ， WAKE# 和 PERESET# 。
+Version 3.21
+28 January 2026
+Page 38 of 42
+
+===== PAGE 39 =====
+Sub Block
+CLKREQ# 输入 PAD 在 L1 SubState 时控制开关参考时钟。
+WAKE# 是输出 PAD ，用在 L2/L3 做唤醒控制。
+PERESET# 是输入 PAD ，用于对 PCIe 的控制器进行 warm Reset 。
+4.18 TSV
+具体参考 SoC MAS.
+4.19 Partial good
+PCIe 内部实现 partial good 逻辑，在测试发现 PCIe 的 partial good 域的逻辑单元问题可以通过 isolation 方式 disable partial good 域的逻辑。
+Partial good 域范围是整个 pcie_core 的功能单元 . CFG NoC, Hotreset, pcie_atc 和 pcie_crg 不在 partial good 域。
+Isolation 需要保证 MainNoC 对 PCIe 的 AXI slave 的访问不夯死。在 PCIe isolation 的时候不能影响 MainNoC 的正常工作。
+4.20 Program guide
+4.20.1 Initialization sequence
+Version 3.21
+28 January 2026
+Page 39 of 42
+
+===== PAGE 40 =====
+Sub Block
+第六步：写 SRAM 的握手寄存器 phy_ss_reg.phyX_sram_ctrl.sram_ext_ld_done 为'' 1 ''，通知 PHY 外部 FW 更 新完成； Note ：仅需写需要 enable PHY 的 SRAM ； 第七步：配置 PCIE TOP ， PCIe Controller 和 PCIE CRG 的寄存器； 第八步：配置中断相关寄存器 ( 可选 ) ； 第九步：写 pcie_ss_ctl_reg. app_hold_phy_rst. app_hold_phy_rst 为 0 ； 第十步：配置 pcie_ss_ctl_reg.sii_core_ctrl.app_ltssm_enable 为 1 ； 第十一步：读等 pcie_ss_ctl_reg.rdlh_link_up.rdlh_link_up 为' 1 '标志 PCIe 的 Link Training 完成； 第十二步： RC 对 EP 进行枚举； 第十三步：开始传递数据；
+4.20.2 PERST# sequence 在 PCIe 成功枚举之后， RC 可以随时拉低 PERST# 对 EP 进行复位； 第十四步： EP 的 CPU 接收 link down 中断； 第十五步： CPU 收到 core_rst_int 开始配置 PCIe 的配置 ( 控制器和 PCIe 子系统的配置寄存器 ) ； 第十六步：配置 pcie_ss_ctl_reg.sii_core_ctrl.app_ltssm_enable 为 1 ； 第十七步：读等 pcie_ss_ctl_reg.rdlh_link_up.rdlh_link_up 为' 1 '标志 PCIe 的 Link Training 完成； 第十八步： RC 对 EP 进行枚举； 第十九步：开始传递数据； 4.20.3 HOT Reset sequence 在 PCIe 成功枚举之后， RC 可以随时发送连续 2 个 Hot reset 位为 1 的 TS1 给 EP 进行 Hot Reset ；处理步骤 与 PERST# 类似； 第十四步：收到 hot_reset_int 中断，处理中断； 第十五步： EP 的 CPU 接收 link down 中断； 第十六步： HotResetBlock 模块开始屏蔽在 link down 之后的新的传输，保证在 Link Down 之前的传输正常完 成； 同时 PCIe Controller 开始 flush ，因为没有新的传输会到 PCIe Controller ，等已经发出的 Outstanding 完成以 后 PCIe Controller 完成 flush 。 同时硬件可选拉低 app_ltssm_enable 在 flush timer timeout 后重新拉高 app_ltssm_enable ，以增加 PCIe controller 的 flush 时间。且 timer 的 timeout 时间软件配置 ( 具体参考寄存器 pcie_ss_ctl_reg.flush_time_ctrl) 。 时间配置很
+Note ：如果软件有快速跳过 timeout 需求可在 link 前将 timer 时间减小到 0 。或 link 时 timeout 大，软件可以通过写 timeout 的 clear 寄存器快速退出 timer 计时。
+Version 3.21
+28 January 2026
+Page 40 of 42
+
+===== PAGE 41 =====
+Sub Block
+第十七步： PCIe Controller 在完成 Flush 以后，会 assert core_rst_n 并将 pcie_ss_ctl_reg.sii_core_ctrl.app_ltssm_enable 写' 0 ' . 第十八步： CPU 收到 core_rst_int 触发 SoC 的 watchdog 计时，计时完成以后对 SoC 进行 Reset ； 第十九步：重新 boot SoC(PCIe 不需要重新 boot ，具体参考 SoC MAS). 第二十步：可选配置 PCIe ( 控制器和 PCIe 子系统的配置寄存器 ). 第二十一步：配置 pcie_ss_ctl_reg.sii_core_ctrl.app_ltssm_enable 为 1 ； 第二十二步：读等 pcie_ss_ctl_reg.rdlh_link_up.rdlh_link_up 为' 1 '标志 PCIe 的 Link Training 完成； 第二十三步： RC 对 EP 进行枚举； 第二十四步：开始传递数据；
+4.21 Register description
+PCIe 子系统的寄存器分多个部分。
+第一部分：子系统的控制和状态寄存器。包括 PCIe 控制器接口适配寄存器， PHY 的适配寄存器， CRG 的控制 寄存器以及顶层逻辑控制寄存器。
+第二部分： PHY 内部控制寄存器，通过 APB slave 转 CR 以后映射到 4 个 PHY 的 CR 接口。具体参考 PHY 的 寄存器文档 dwc_pcie5phy_ss8lpp_x2ns_databook.pdf.
+第三部分： PCIe 控制器的标准配置寄存器， iATU ， DMA ， MSI-X table 以及 MSI-X PBA 寄存器。具体参考 PCIe 控制的寄存器文档 DWC_pcie_ctl_ep_registers.pdf 。
+Version 3.21
+28 January 2026
+Page 41 of 42
+
+===== PAGE 42 =====
+Sub Block
+5 Reference
+[TABLE] headers: Ref | Document Title | Author | Description
+  [1] | PCIe Controller Spec | Synopsys | DWC_pcie_ctl_ep_databook.pdf- 飞书文档
+  [2] | PCIe PHY Spec | Synopsys | dwc_pcie5phy_ss8lpp_x4ns_databook.pdf- 飞书文档
+  [3] | PCIe PCS Spec | Synopsys | dwc_32g_phy_pcs_wrapper_databook.pdf- 飞书文档
+  [4] | TC550x SoC MAS | ShenYu.Li | Tc550x_ccd_soc_mas_r3p5.pdf- 飞书文档
+Version 3.21
+28 January 2026
+Page 42 of 42

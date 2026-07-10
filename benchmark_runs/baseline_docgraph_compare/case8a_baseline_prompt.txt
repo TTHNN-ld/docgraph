@@ -1,0 +1,13 @@
+你是验证工程师。请基于 spec/PCIE Subsystem Spec_v3.21.pdf 为 irq_src 中断源信号表生成一份结构化的中断源信号清单。
+
+要求：
+1. 先查找 PDF，定位 irq_src 表所在的页码
+2. 列出表中的信号名、位宽、功能描述
+3. 按功能分类：hot reset / PLL/PHY / LTSSM / refclk / completion timeout / 其他
+4. 说明此表的结构特点——是否包含 offset/access/reset 字段？是否是真正的 register 表？
+5. 输出要带页码证据
+
+约束：
+- 只能读取 PDF 文件，不允许使用 DocGraph、预生成索引
+- 最多读取 15 页 PDF
+- 答案必须带证据页号

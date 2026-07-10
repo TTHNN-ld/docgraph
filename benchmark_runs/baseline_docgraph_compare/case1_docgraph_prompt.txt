@@ -1,0 +1,13 @@
+你是 PCIe 子系统 RTL owner，准备实现地址转换逻辑。请基于两个文档输出 RTL 设计输入包。
+
+你可以使用 docgraph MCP 工具。推荐路径：
+1. docgraph_search_chunks 搜索 "System Address Map" "BAR" "Inbound" "Outbound" "iATU" "eATU" "ATS" "IOMMU" 等关键词
+2. docgraph_fetch 读取找到的 chunks（完整 L0 blocks + entities）
+3. docgraph_search 搜索 memory_map、register 等 L2 实体加速定位
+4. 用 docgraph_section 导航文档结构
+
+要求：
+1. System Address Map、BAR、Inbound、Outbound、iATU/eATU、ATS/IOMMU 分组
+2. 跨两个文档合并信息
+3. 输出相关章节、页码、设计含义、RTL 接口/配置、待确认问题
+4. 证据带文档名+页码+block/chunk ID
