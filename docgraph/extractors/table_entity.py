@@ -168,8 +168,6 @@ class TableEntityExtractor:
             if llm_calls >= self.MAX_LLM_TOTAL:
                 break
             for sn, schema in schemas:
-                if schema_calls_by_sn[sn] >= self.MAX_LLM_PER_SCHEMA:
-                    continue
                 if not self._table_matches(candidate.table, schema):
                     continue
                 if not self._table_has_cells(candidate.table):
@@ -181,6 +179,7 @@ class TableEntityExtractor:
                     context_name = self._next_register_context(candidate.table, register_context)
                     if context_name:
                         table_for_extract = candidate.table.model_copy(update={"caption": context_name})
+                # ---- deterministic extraction (always attempted, no LLM cost) ----
                 if sn == "register":
                     result = self._extract_registers_from_table(table_for_extract)
                 elif sn == "pin":
@@ -199,9 +198,11 @@ class TableEntityExtractor:
                     result = self._extract_constraints_from_table(candidate.table)
                 elif sn == "physical_constraint":
                     result = self._extract_physical_constraints_from_table(candidate.table)
+                # ---- LLM fallback (budget-gated) ----
                 if result is None and ctx.has_llm:
-                    result = self._llm_extract(candidate.table, schema, sn, ctx)
-                    llm_calls += 1
+                    if llm_calls < self.MAX_LLM_TOTAL and schema_calls_by_sn[sn] < self.MAX_LLM_PER_SCHEMA:
+                        result = self._llm_extract(candidate.table, schema, sn, ctx)
+                        llm_calls += 1
                 schema_calls_by_sn[sn] += 1
                 if result is None:
                     continue
