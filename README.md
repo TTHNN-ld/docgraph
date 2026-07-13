@@ -8,42 +8,68 @@ DocGraph 把 PDF/Word/Excel/Markdown 形态的芯片 spec 文档解析为 L0 无
 
 ---
 
-## 5 分钟上手
+## 安装
 
 ```bash
-pip install 'docgraph[web]'              # 装核心 + Web UI
-
-cd my-chip-spec/                         # 项目目录，下面有 docs/*.pdf
-docgraph init                            # 初始化 .docgraph/；普通项目不需要配置文件
-docgraph build                           # 全量构建图谱
-docgraph status                          # 看看建了什么
-docgraph doctor --strict                 # 检查 L0/L1/L2 provenance
-docgraph l2 audit                        # 检查 L2 候选覆盖与 schema 命中
-docgraph l2 eval --golden examples/golden # 对人工标注集算 precision/recall
-
-docgraph inspect register PWM_CTRL       # 直接查寄存器
-docgraph search "PLL 复位流程"           # 自然语言
-
-docgraph serve --web                     # 启动 Web UI（http://127.0.0.1:8000）
-docgraph serve --mcp                     # 启动 MCP server，对接 Claude Code
+git clone <repo-url> && cd parse_doc
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[docling,llm,mcp]"       # 核心 + Docling parser + LLM/VLM + MCP server
 ```
 
-默认会扫描 `docs/**/*.pdf` 和 `spec/**/*.pdf`，PDF 默认走自动路由：PyMuPDF 做轻量预检和兜底，Docling 处理可复制文本质量好的 Word/tagged PDF，MinerU 处理扫描、OCR 和图片密集文档。用户级模型、embedding、VLM 和密钥配置放在 `~/.docgraph/`，项目内 `.docgraph/` 只保存生成的数据库、缓存和日志。
+可选 extras：`mineru`（扫描版 PDF OCR）、`marker`（备选 parser）。
 
 ---
 
-## 它能做什么
+## 5 分钟跑通
 
-- 将文档解析为 **L0 blocks**：标题、段落、表格 cells、图、坐标和页码都可回溯
-- 构建 **L1 chunks**：章节、表格、图独立成可检索单元，支持 FTS + 语义索引
-- 按需把寄存器、管脚、时序参数、信号、接口、章节、图表抽成 **L2 结构化节点**
-- 覆盖芯片前端与后端 spec：RTL/验证接口文档、SDC/STA 约束、floorplan/placement/routing/power-grid 约束都走同一套 L0/L1 底座
-- 建立**跨章节、跨文档的引用边**（"see Section 5.3"、"PLL_CFG controls SYSCLK"）
-- 支持 **datasheet + reference manual + errata 联邦**（errata 自动覆盖原条目）
-- 支持 **页级质量评估 + VLM 兜底**：扫描页 / 表格密集页 / 图重页自动渲染为 PNG，供 VLM 抽取
-- 把时序图/框图喂给 VLM 输出 **Mermaid / WaveJSON / PlantUML**
-- 通过 **MCP 协议** 让 Agent 拿到精确而非模糊的上下文
-- **本地优先**：所有数据在 `.docgraph/`，离线可用
+```bash
+docgraph init                             # 在当前目录创建 .docgraph/
+docgraph build                            # 解析 spec/**/*.pdf，构建 L0/L1/L2
+docgraph status                           # 节点/边/文档统计
+docgraph doctor --strict                  # L0/L1/L2 完整性检查
+
+docgraph search "per_vector_misc"         # 按名称查寄存器
+docgraph search --kind clock "core"       # 按类型查 clock 实体
+docgraph inspect register freeze_reg      # 查看寄存器详情 + bitfields
+
+docgraph serve --mcp                      # 启动 MCP server，供 Claude Code 等 agent 调用
+```
+
+---
+
+## 三层数据架构
+
+```
+L0  Block — 原文无损镜像
+     每页的段落、表格(cells)、图、公式、阅读顺序、坐标和页码完整保留。
+     表格不允许丢成纯文本，图/公式保留渲染产物和原始证据。
+
+L1  Chunk — 可寻址检索单元
+     章节、表格、图各自成 chunk，带稳定 ID 和 block_ids 回溯链。
+     支持 FTS5 全文检索 + 语义向量检索，按章节路径和页范围过滤。
+
+L2  Node/Edge — 实体知识图谱（可选增强）
+     寄存器、bitfield、管脚、信号、接口、中断、memory_map、时钟、复位、
+     需求、时序参数等实体。每条标注抽取来源和可信度——
+     deterministic = 表格确定性抽取，可信；
+     vlm/llm = 模型抽取，需回到 L0 原文验证。
+     L2 缺失不影响信息获取，L1/L0 永远可直达。
+```
+
+## 芯片工程场景
+
+| 阶段 | 典型任务 | 用到什么 |
+|---|---|---|
+| RTL 设计 | 模块边界、接口清单、寄存器 map、地址空间 | L2 register/memory_map/interface + L0 原表兜底 |
+| DV 验证 | test plan、UVM RAL 建模、coverage item | L2 register/bitfield 精确字段 + L0 寄存器表 |
+| 中后端 | STA/SDC 约束、CDC/RDC 检查、floorplan 集成 | L1 时钟/复位章节定位 + L0 结构图原文 |
+| Bring-up | LTSSM debug、JTAG 可测性、中断状态观测 | L2 register + L1 figure/section 联合检索 |
+
+**当前强项**：寄存器/bitfield 确定性抽取。从表格中提取的字段（bit range、access、reset value）agent 可直接使用，无需人肉对齐原表。
+
+**当前短板**：时钟/复位实体覆盖率偏低（~15%），主要来自框图 VLM 抽取。相关场景 agent 需更多回退到 L1/L0 读原文。
+
+详见 [评测报告](./benchmark_runs/baseline_docgraph_compare/FULL_REPORT.md)。
 
 ---
 
