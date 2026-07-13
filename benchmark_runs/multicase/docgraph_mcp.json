@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "docgraph": {
-      "type": "stdio",
-      "command": ".venv/bin/docgraph",
-      "args": ["serve", "--mcp"]
-    }
-  }
-}
