@@ -1,0 +1,1150 @@
+{
+  "case2_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 121821,
+    "duration_api_ms": 121482,
+    "num_turns": 13,
+    "result": "Now I have all the spec content. Let me generate the structured RTL module boundary/interface checklist.\n\n---\n\n# PCIe 子系统 RTL Module Boundary / Interface Checklist\n\n> 来源: `pcie_spec_text.txt`，PCIe Subsystem Spec V3.21 (2026.01.28)，共 42 页。\n\n---\n\n## 1. Top-Level Module Boundary\n\n| # | Module | Type | 页码 |\n|---|--------|------|------|\n| 1.1 | **PCIe Subsystem Top** (pcie_ss) | Integration wrapper | p15-17 (§3) |\n| 1.2 | **PCIe Controller** (DWC_pcie_ctl_ep) | Synopsys IP | p15-16 (§3.1) |\n| 1.3 | **PHY ×4** (dwc_pcie5phy_ss8lpp_x4ns) | Synopsys IP | p8 (§1.12), p15-16 (§3.1) |\n| 1.4 | **UPCS** (PIPE wrapper) | Synopsys IP | p16 (§3.1), p37 (§4.15) |\n| 1.5 | **PCIE_CRG** (Clock/Reset Generator, built-in PLL) | Custom | p9-10 (§1.15), p16 (§3.1) |\n| 1.6 | **CFG_NOC** (AXI-lite → 9 downstream config ports) | Custom | p15 (§3.1), p20 (§4.2) |\n| 1.7 | **MSIX2DBI** | Custom | p26-28 (§4.6.2.2) |\n| 1.8 | **irq_aggregator** | Custom | p16 (§3.1), p26 |\n| 1.9 | **RASDP_GLUE** (Parity generation/check) | Custom | p16 (§3.1), p31 (§4.11) |\n| 1.10 | **HotResetBlock** (Bypass/Firewall/HotReset) | Custom | p17 (§3.1), p24 (§4.5.3) |\n| 1.11 | **ReMap** (256-window address remap) | Custom | p17 (§3.1), p28 (§4.7) |\n| 1.12 | **TBU** (DTI→TCU, SMMU) | Custom | p17 (§3.1), p29 (§4.8) |\n| 1.13 | **JTAG MUX** (5→1 JTAG/TSV) | Custom | p9 (§1.13), p38 (§4.16) |\n| 1.14 | **Top CFG** (子系统和 PHY 外围控制寄存器) | Custom | p16-17 (§3.1), p20 (§4.2) |\n\n**证据**: p15–17 列出\"子模块简介\"包括 Controller、PHY、UPCS、PCIE_CRG、中断处理、RASDP_GLUE、RAMs、CFG、TBU、HotResetBlock、Remap。p11 §1.20 提及 irq_aggregator。p26–28 §4.6.2.2 详述 MSIX2DBI。\n\n---\n\n## 2. External Interfaces Summary\n\n| 接口组 | 信号 | 方向 | 位宽 | 描述 | 页码 |\n|--------|------|------|------|------|------|\n| **AXI Master (IB)** | mstr_aclk | O | 1 | NoC 接口时钟 | p13 (§2) |\n|  | mstr_rst_n | O | 1 | NoC 接口复位 | p13 (§2) |\n|  | AXI4 Master | I/O | 512b data, 48b addr | IB 方向：远端→本地 内存访问 | p13 (§2), p6-7 (§1.5) |\n| **AXI Slave (OB)** | slv_aclk | O | 1 | NoC 接口时钟 | p13 (§2) |\n|  | slv_rst_n | O | 1 | NoC 接口复位 | p13 (§2) |\n|  | AXI4 Slave | I/O | 512b data, 48b addr | OB 方向：本地→远端 PCIe 设备 | p13 (§2), p6 (§1.5) |\n| **AXI-Lite (Config)** | cfg_clk | I | 1 | DBI 配置接口时钟 (250MHz) | p13 (§2), p22 (§4.4) |\n|  | cfg_rst_n | I | 1 | DBI 配置接口复位 | p13 (§2) |\n|  | AXI-Lite | I/O | 32b | 子系统唯一配置接口，进 CFG_NOC | p15 (§3.1), p20 (§4.2) |\n| **DTI** | DTI | I/O | — | TBU ↔ TCU (SMMU) | p13 (§2), p17 (§3.1) |\n| **Interrupts** | irq_func | O | 1 | 功能类型中断汇总 | p26 (Table 4-6) |\n|  | irq_err | O | 1 | 错误类型中断汇总 | p26 (Table 4-6) |\n|  | edma_int | O | 32 | DMA 各通道独立中断 | p26 (Table 4-6) |\n|  | tbu_ras | O | 1 | TBU RAS 中断 | p26 (Table 4-6) |\n|  | tbu_pmu | O | 1 | TBU PMU 中断 | p26 (Table 4-6) |\n| **PHY Serial IO** | TXx_P/N (x16) | O | 16 lane | 差分串行输出 | p13 (§2), p15 (§3.1) |\n|  | RXx_P/N (x16) | I | 16 lane | 差分串行输入 | p13 (§2), p15 (§3.1) |\n| **PHY Reference** | PHYx_PAD_REF_CLK_N/P | I | 4 pairs | 各 PHY 100MHz 差分参考时钟 | p13 (§2), p9 (§1.12) |\n|  | PHYx_RESREF | I/O | 4 | 各 PHY 适配电阻 | p13 (§2) |\n| **Sideband** | PERST# | I | 1 | 暖复位 (→ power_on_rst_n) | p13-14 (§2), p23 (§4.5.2) |\n|  | CLKREQ# | I/O | 1 | L1 SubState 参考时钟控制 | p14 (§2), p38 (§4.17) |\n|  | WAKE# | O | 1 | L2/L3 唤醒 | p14 (§2), p38 (§4.17) |\n| **Misc Clk/Rst** | clk_ref_clk | I | 1 | CRG 20MHz 参考时钟 | p13 (§2), p22 (§4.4) |\n|  | aux_clk | I | 1 | L2 低功耗逻辑时钟 (20MHz) | p13 (§2), p22 (§4.4) |\n|  | pll_rst_n | I | 1 | CRG PLL 外部 reset | p13 (§2) |\n| **JTAG** | TSV JTAG (MUX) | I/O | — | 5 选 1 MUX → TSV PAD | p9 (§1.13), p38 (§4.16) |\n| **IJTAG** | IJTAG | I | — | DFT 控制器 → PHY | p9 (§1.14) |\n| **Debug IO** | debug IO | O | 8 | 软件可选 debug 信号到 PAD | p11 (§1.23), p34 (§4.13.1) |\n| **TSV** | TSV 直穿信号 | I/O | — | PCIe → BD, 带 isolation + level shifter | p11 (§1.20), p39 (§4.18) |\n\n**证据**: p13–14 §2 \"Table 2-1 PCIe 外围接口\" 汇总所有接口；p15 §3.1 补充架构级接口说明；p26 Table 4-6 列中断输出。\n\n---\n\n## 3. Clock Domain Map\n\n| 时钟名 | 频率 | 来源 | 用途 | 页码 |\n|--------|------|------|------|------|\n| **axi_clk** | 1 GHz (功能)、2 GHz (测试) | CRG PLL → local_ref_clk (100MHz ref) | AXI master/slave, TBU, ReMap, HotResetBlock | p9 (§1.15 CRG_1504), p22 (§4.4) |\n| **pcie_cfg_clk** | 250 MHz | SoC PLL 输入 | CFG_NOC + 系统寄存器逻辑 | p22 (§4.4) |\n| **core_clk** | Gen1:125M, Gen2:250M, Gen3:250M, Gen4:500M, Gen5:1G | PCIe 控制器 lane0 max_pclk 分频 | 控制器逻辑时钟 | p10 (§1.15 CRG_1506), p18 (§4.1.1) |\n| **pipe_rx_clk** | 随 lane rate 变化 | PHY RX CDR 恢复时钟 | PIPE RX 接口时钟 | p29 (Table), p37 (§4.15.4) |\n| **max_pclk** | 1 GHz (固定) | UPCS 每个 lane 输出 | 生成 core_clk + pipe_pclk (PIPE TX) | p37 (§4.15.4), p18 (§4.1.1) |\n| **cr_clk** | 125 MHz | CRG | PHY CR bus 配置接口 | p9 (§1.15 CRG_1504), p22 (§4.4) |\n| **local_phy_ref_clk** | 100 MHz | CRG | PHY 备用参考时钟 | p9 (§1.15 CRG_1504), p22 (§4.4) |\n| **aux_clk** | 20 MHz | clk_ref_clk 接入 | L2 低功耗逻辑时钟 (与 core_clk 动态 GFM 切换) | p13 (§2), p22 (§4.4) |\n| **clk_ref_clk** | 20 MHz | 外部输入 | CRG PLL 参考时钟 (测试/Debug) | p9 (§1.15 CRG_1502), p13 (§2) |\n| **PHY ref_clk** (mplla/mpllb ref) | 100 MHz | PAD 差分输入 / local PLL / 前级 PHY | PHY 内置 PLL 参考 | p9 (§1.12 PHY_1203-5), p22 (§4.4) |\n\n**关键时钟关系** (p22 §4.4):\n- `core_clk` ↔ `pipe_rx_clk` **异步**\n- `core_clk` ↔ `aux_clk` **异步** (GFM 动态切换，无 CDC)\n- `AMBA 时钟` (axi_clk) ↔ `core 时钟` (core_clk) **异步**\n- `pcie_cfg_clk` = 250MHz，独立于以上\n\n**证据**: p22 §4.4 完整描述 3 类时钟源和 5 组时钟异步关系。p9 §1.15 详列 CRG 时钟输出。p18 §4.1.1 列各 Gen 频率。\n\n---\n\n## 4. Reset Structure\n\n| Reset 名 | 类型 | 触发 | 域 | 描述 | 页码 |\n|----------|------|------|------|------|------|\n| **power_on_rst_n** | Cold | 外部 PAD | 全芯片 | 芯片硬件冷复位，PCIe 重新初始化 | p23 (§4.5.2) |\n| **PERST#** | Warm | Host 边带 | 全芯片 (→ power_on_rst_n) | Host 拉低 PERST# → 直接接冷复位 → 全芯片重启建连 | p13 (§2), p23 (§4.5.2) |\n| **pll_rst_n** | Cold | 外部输入 | CRG PLL | PLL 外部复位 | p13 (§2) |\n| **slv_rst_n** | — | CRG | AXI Slave | AXI slave NoC 接口复位 | p13 (§2) |\n| **mstr_rst_n** | — | CRG | AXI Master | AXI master NoC 接口复位 | p13 (§2) |\n| **cfg_rst_n** | — | SoC | AXI-Lite | DBI 配置接口复位 | p13 (§2) |\n| **Hot Reset** | In-band | RC TS1 Order Set | SoC (含 HotResetBlock, TBU); PCIe 子系统其他部分不复位 | p10 (§1.16), p23-24 (§4.5.3) |\n| **pipe_msgbus_rst_n** | — | Controller | PIPE msg bus clock 域 | p29 (Table) |\n| **pipe_rx_rst_n** | — | Controller | pipe_rx_clk 域 | p29 (Table) |\n| **phy_laneX_reset_n** | — | OR → & (V3.02 fix) | 各 PHY lane | 各 lane 独立 PHY 复位，V3.02 修改 OR→& | p3 (V3.02 changelog) |\n| **core_rst_int** | — | Controller | 控制器 logic | flush 完成后 assert | p25 (Table §4.6.1), p41 (§4.20.3) |\n\n**Hot Reset 流程** (p23-24 §4.5.3, p40-41 §4.20.3):\n1. RC 发连续 2 个 Hot Reset=1 的 TS1 Order Set\n2. PCIe 控制器产生 hot_reset_int 中断 → SoC CPU\n3. HotResetBlock 截获新 AXI Slave 访问，保证 pending 完成\n4. Flush Timer (0~134ms 可配) 拉低 app_ltssm_enable\n5. PCIe 控制器 flush 完成后 assert core_rst_n，写 app_ltssm_enable=0\n6. CPU 收到 core_rst_int → 触发 SoC watchdog → SoC Reset (含 HotResetBlock, TBU)\n7. SoC re-boot (PCIe 不重新 boot) → 配置 app_ltssm_enable=1 → 重新 link training\n\n**证据**: p23 §4.5.2-3 硬复位和 Hot Reset；p40-41 §4.20.3 Hot Reset sequence 18 步详解。\n\n---\n\n## 5. PHY Lane Map (X16)\n\n| 编号 | PHY | Lane Index | TX 差分对 | RX 差分对 | RESREF | 参考时钟 | 页码 |\n|------|-----|-----------|-----------|-----------|--------|---------|------|\n| Lane 0–3 | PHY0 (x4) | 0-3 | TX0_P/N – TX3_P/N | RX0_P/N – RX3_P/N | PHY0_RESREF | PHY0_PAD_REF_CLK_N/P | p8 (§1.12 PHY_1201), p13 (§2) |\n| Lane 4–7 | PHY1 (x4) | 4-7 | TX4_P/N – TX7_P/N | RX4_P/N – RX7_P/N | PHY1_RESREF | PHY1_PAD_REF_CLK_N/P | p8, p13 |\n| Lane 8–11 | PHY2 (x4) | 8-11 | TX8_P/N – TX11_P/N | RX8_P/N – RX11_P/N | PHY2_RESREF | PHY2_PAD_REF_CLK_N/P | p8, p13 |\n| Lane 12–15 | PHY3 (x4) | 12-15 | TX12_P/N – TX15_P/N | RX12_P/N – RX15_P/N | PHY3_RESREF | PHY3_PAD_REF_CLK_N/P | p8, p13 |\n\n**PHY 规格**:\n- 4 个 x4 PHY 组成 x16 (p8 PHY_1201)\n- 支持 lane 配置 x1/x2/x4/x8/x16 (p8 PHY_1202)\n- Lane reversal + flip 支持 (auto + full/partial) (p8 §1.11)\n- SerDes PIPE 5.1.1, lane 位宽 40bit (p6 PHY_103)\n- 支持 L0s/L1/L1 SubState (p8 §1.9)\n- PHY power states: P0/P0s/P1 (p8 PHY_905)\n- BERT test + Error inject (p9 PHY_1215)\n- SRAM ECC (single/double bit error 上报) (p9 PHY_1213)\n\n**参考时钟 3 种模式** (p8-9 §1.12 PHY_1203-5):\n1. Mode 1: PHY0 从 PAD 取 100MHz 差分 → PHY1/2/3 依次从前级取\n2. Mode 2: 4 个 PHY 均从各自 PAD 取同一时钟源\n3. Mode 3: PHY0 从 local PLL → PHY1/2/3 依次从前级取\n\n**证据**: p8-9 §1.12 完整 PHY 需求 list；p13 §2 列每个 lane IO；p37 §4.15 详述 UPCS + 4×x4 PHY 结构。\n\n---\n\n## 6. Internal PIPE 5.1.1 Interface (Controller ↔ UPCS/PHY)\n\n| Signal Group | Key Signals | 方向 | 描述 | 页码 |\n|-------------|-------------|------|------|------|\n| **Clock/Reset** | `pipe_rx_clk` | I | RX CDR 恢复时钟 | p29 (§4.9) |\n|  | `pipe_msgbus_rst_n` | I | msg bus domain reset | p29 |\n|  | `pipe_rx_rst_n` | I | RX domain reset | p29 |\n|  | `mac_phy_pclk_rate` | O | PCLK rate 控制 | p29 |\n|  | `mac_phy_maxpclkreq_n` | O | 请求 PHY 移除/使能 MAXPCLK | p29 |\n|  | `phy_mac_maxpclkack_n` | I | PHY 确认 MAXPCLK 状态 | p29 |\n| **Data** | `phy_mac_rxdata` (40b/lane) | I | 并行接收数据 | p29 |\n|  | `mac_phy_txdata` (40b/lane) | O | 并行发送数据 | p29 |\n|  | `mac_phy_txdatavalid` | O | TX data valid | p29 |\n|  | `mac_phy_rxwidth` | O | RX 数据路径位宽控制 | p29 |\n|  | `mac_phy_width` | O | TX 数据路径位宽控制 | p29 |\n| **Message Bus** | `mac_phy_messagebus` | O | MAC→PHY command | p29 |\n|  | `phy_mac_messagebus` | I | PHY→MAC command | p29 |\n| **Status** | `phy_mac_rxvalid` | I | pipe_rx_clk stable | p29 |\n|  | `phy_mac_rxelecidle` | I | RX Electrical Idle detect | p29 |\n|  | `mac_phy_txelecidle` | O | TX forced Electrical Idle | p29 |\n|  | `phy_mac_rxstatus` | I | RX status + error codes | p29 |\n|  | `phy_mac_phystatus` | I | PHY function completion | p29 |\n|  | `mac_phy_pclkchangeack` | O | PCLK rate change done | p29 |\n|  | `phy_mac_pclkchangeok` | I | PHY ready for PCLK change | p29 |\n| **Power** | `mac_phy_powerdown` | O | PHY power state 驱动 | p30 (§4.9) |\n|  | `mac_phy_rxstandby` | O | PHY RX active (P0/P0s) | p30 |\n|  | `phy_mac_rxstandbystatus` | I | RxStandby state | p30 |\n| **Config** | `serdes_pipe_rxready` | O | Symbol lock/block alignment per lane | p30 |\n|  | `serdes_pipe_turnoff_lanes` | O | Lane turnoff per lane bit | p30 |\n|  | `pm_current_data_rate` | O | Current link operating rate | p30 |\n| **Gen2/3** | `mac_phy_rate` | O | Link signaling rate control | p30 |\n\n**证据**: p29-30 §4.9 \"PIPE 5.1.1\" 完整 PIPE 信号表。\n\n---\n\n## 7. Internal Config Bus Map (CFG_NOC Downstream)\n\nAXI-lite 基地址: `0x2C00_0000` (p20 Table 4-1)\n\n| NoC Slave | Offset | Size | 描述 | 页码 |\n|-----------|--------|------|------|------|\n| Top CFG | 0x0000_0000 | 1 MB | 子系统顶层 CSR (含控制器适配、PHY 适配、CRG 控制) | p20 (§4.2), p41 (§4.21) |\n| CRG CFG | 0x0010_0000 | 1 MB | PLL 配置 | p20 |\n| PHY0 CFG | 0x0020_0000 | 1 MB | PHY0 寄存器空间 (CR bus) | p20 |\n| PHY1 CFG | 0x0030_0000 | 1 MB | PHY1 寄存器空间 | p20 |\n| PHY2 CFG | 0x0040_0000 | 1 MB | PHY2 寄存器空间 | p20 |\n| PHY3 CFG | 0x0050_0000 | 1 MB | PHY3 寄存器空间 | p20 |\n| MSIX2DBI CFG | 0x0060_0000 | 1 MB | MSI-X→DBI 寄存器 | p20 |\n| ReMap CFG | 0x0070_0000 | 1 MB | 地址重映射寄存器 | p20 |\n| DBI CFG | 0x0100_0000 | 16 MB | PCIe 控制器 DBI 空间 (CDM/iATU/DMA/MSI-X Table/MSI-X PBA) | p20 |\n\n**证据**: p20 §4.2 Table 4-2, Table 4-3 完整地址映射。\n\n---\n\n## 8. Integration Checklist Summary\n\n### 8.1 物理集成 (Physical Integration)\n\n- [ ] 16 对 TX/RX 差分串行 lane → 封装 / PCB (p13, p15)\n- [ ] 4 组 PHY 100MHz 差分参考时钟 PAD 输入 (p13, p9)\n- [ ] 4 组 RESREF 适配电阻接对 (p13)\n- [ ] PERST# / CLKREQ# / WAKE# 边带 PAD (p14, p38-39)\n- [ ] TSV JTAG PAD → JTAG MUX → PHY/BD (p9, p38)\n- [ ] IJTAG 接 DFT 控制器 (p9)\n- [ ] Debug IO (8bit) → PAD (p34)\n\n### 8.2 Clock & Reset (时钟与复位)\n\n- [ ] `clk_ref_clk` 20MHz 外部供给 CRG (p13)\n- [ ] `aux_clk` 20MHz (从 clk_ref_clk 接) for L2 (p13, p22)\n- [ ] `pcie_cfg_clk` 250MHz 从 SoC PLL (p22)\n- [ ] CRG PLL 输出 axi_clk/cr_clk/local_ref_clk 验证 (p9-10, p22)\n- [ ] 各 Gen rate 下 core_clk/pclk 分频正确 (p18)\n- [ ] power_on_rst_n ↔ PERST# 连接 (p23)\n- [ ] Cold/Warm/Hot 三级 reset 各域正确隔离 (p23-24)\n- [ ] PHY lane reset OR→& 逻辑 (V3.02 fix, p3)\n- [ ] 5 组异步时钟域 CDC 处理确认 (p22)\n\n### 8.3 Data Path (数据通道)\n\n- [ ] AXI4 Slave 512b/48b → Main NoC (OB direction) (p6, p13)\n- [ ] AXI4 Master 512b/48b → Main NoC (IB direction) (p6, p13)\n- [ ] AXI-Lite 32b → Local NoC → 9 downstream config ports (p15, p20)\n- [ ] DTI → TCU (TBU/SMMU) (p13, p17)\n- [ ] PIPE 5.1.1 ↔ UPCS ↔ 4×PHY (p29-30, p37)\n- [ ] HotResetBlock 插入 AXI Slave 路径 (p17, p24)\n- [ ] ReMap 插入 Inbound 地址路径 (p17, p28)\n\n### 8.4 Interrupt (中断)\n\n- [ ] 5 组 summary 中断输出到 SoC 确认 (p26 Table 4-6)\n- [ ] 所有 level 中断（pulse 内部转 level）(p10, p26)\n- [ ] 32 个 edma_int 独立输出 (p26)\n- [ ] 14 硬件中断 → MSI/MSI-X 确认 (p8, p26-28)\n- [ ] 关键中断覆盖 (link down, hot reset, flush done, PLL lock/unlock, PHY ref clock, SRAM ECC 等) (p10, p25)\n\n### 8.5 Low Power (低功耗)\n\n- [ ] D-states: D0/D1/D2/D3hot 支持 (p8, p31-33)\n- [ ] Link states: L0/L0s/L1/L1 SubState (default L1 SubState off) (p31-33)\n- [ ] PHY states: P0/P0s/P1/P1.CPM/P1.1/P1.2 (p8, p38)\n- [ ] CLKREQ# 控制 L1 SubState 参考时钟 (p14, p38)\n- [ ] GFM core_clk↔aux_clk 动态切换 (p22)\n\n### 8.6 RAS / Safety (可靠性)\n\n- [ ] Parity: AXI 地址+数据, SRAM ECC, 数据通路 8b (p31 §4.11)\n- [ ] PHY SRAM ECC single/double bit error (p9, p26)\n- [ ] ctl_rasdp_irq 汇总 parity error → irq_err (p31)\n- [ ] Isolation: partial good domain, AXI 不 hang, TSV isolation + level shifter (p11 §1.20, p39 §4.19)\n- [ ] AER (Advanced Error Reporting) 支持 (p12 RAS_2403)\n\n---\n\n## 9. Key Parameter Summary (RTL Generics)\n\n| Parameter | Value | 页码 |\n|-----------|-------|------|\n| Device Type | EP | p18 (§4.1.1) |\n| Max PCIe Speed | Gen5 (32 GT/s) | p18 |\n| Max Link Width | x16 | p18 |\n| PIPE Version | 5.1.1, SerDes | p18 |\n| PCLK Mode | MAXPCLK fixed (1 GHz) | p18 |\n| AXI Master Data Width | 512b | p18 |\n| AXI Master Address Width | 48b | p18 |\n| AXI Slave Data Width | 512b | p18 |\n| AXI Slave Address Width | 48b | p18 |\n| AXI MTU | 256B | p18 |\n| AXI Max Burst Length | 4 | p18 |\n| AXI Tags (Slave) | 256 | p18 |\n| AXI IDs (Master) | 256 | p18 |\n| iATU OB Regions | 64 | p18 |\n| iATU IB Regions | 16 | p18 |\n| iATU Region Size Range | 4KB – 128TB | p7 (§1.7) |\n| DMA Write Channels | 16 | p18 |\n| DMA Read Channels | 16 | p18 |\n| DMA Tags | 256 | p18 |\n| MSI Count | 32 (max) | p8 (§1.10) |\n| MSI-X Table Size | 1024 (0x7FF) | p8, p19 (§4.1.1) |\n| BAR Count | 4 (BAR0 32b + BAR1 32b + BAR2 64b + BAR4 64b) | p7 (§1.6), p19 |\n| BAR Type | All Resizable BAR (default 1MB) | p7, p19 |\n| VC Count | 2 | p6, p30 |\n| Max TLP Payload | 256B | p6, p19 |\n\n**证据**: p18-19 §4.1.1 参数配置表；p6-8 §1.2-1.12 需求列表。\n\n---\n\n共覆盖 **14 个模块**、**20+ 接口组**、**10 个时钟域**、**11 种复位**、**16 条 PHY lane**，均有页码证据。",
+    "stop_reason": "end_turn",
+    "session_id": "c2607fed-9273-43cb-a602-da0850566d4f",
+    "total_cost_usd": 0.760586,
+    "usage": {
+      "input_tokens": 68957,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 381952,
+      "output_tokens": 8993,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 68957,
+        "outputTokens": 8993,
+        "cacheReadInputTokens": 381952,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.760586,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "32199271-5a16-47f1-87d0-8da374385fbb",
+    "_wall_time_s": 122.9
+  },
+  "case2_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 168043,
+    "duration_api_ms": 162311,
+    "num_turns": 31,
+    "result": "The checklist is complete. All ~65 items are traced to specific docgraph chunk IDs and block IDs from `PCIE Subsystem Spec_v3.21` and `PCIe Subsystem TRS_r2p0`. The evidence chain follows: `search_chunks` → `fetch` → blocks/chunks as the authoritative L0/L1 sources.",
+    "stop_reason": "end_turn",
+    "session_id": "f664c163-14ca-4c2e-92d3-a3626bf96007",
+    "total_cost_usd": 1.239424,
+    "usage": {
+      "input_tokens": 116509,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 705408,
+      "output_tokens": 12167,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 116509,
+        "outputTokens": 12167,
+        "cacheReadInputTokens": 705408,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 1.239424,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "31bc4730-3dfc-4fb5-8db1-d8bc43e74c30",
+    "_wall_time_s": 169.2
+  },
+  "case3_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 116979,
+    "duration_api_ms": 116193,
+    "num_turns": 13,
+    "result": "Now I have all the information needed. Here is the PCIe 子系统顶层端口表，整理自 Spec §2 Interfaces（Table 2-1）、§3 架构、§4.4.1 时钟结构、§4.5 复位、§4.6 中断、§4.9 PIPE 5.1.1、§4.16 JTAG、§4.17 PAD。\n\n---\n\n## PCIe 子系统顶层端口表 (v3.21, x16 EP, SerDes PIPE 5.1.1)\n\n### 1. 时钟输入 (Clock Inputs)\n\n| Signal | Dir | Width | Clock Domain | Reset Domain | Description |\n|--------|-----|-------|--------------|--------------|-------------|\n| `pcie_cfg_clk` | I | 1 | — | `cfg_rst_n` | SoC PLL 输入的配置总线时钟，250MHz，驱动 NoC 及系统寄存器逻辑 |\n| `clk_ref_clk` | I | 1 | — | `pll_rst_n` | CRG 外部 20MHz 参考时钟，测试/debug 模式 PLL 参考源 |\n| `aux_clk` | I | 1 | — | `cfg_rst_n` | L2 低功耗模式逻辑时钟，从 `clk_ref_clk` 接入；与 `core_clk` 通过 GFM 动态切换 |\n| `PHY0_PAD_REF_CLK_P` | I | 1 | — | PHY reset | PHY0 100MHz 差分参考时钟 P 端 |\n| `PHY0_PAD_REF_CLK_N` | I | 1 | — | PHY reset | PHY0 100MHz 差分参考时钟 N 端 |\n| `PHY1_PAD_REF_CLK_P` | I | 1 | — | PHY reset | PHY1 100MHz 差分参考时钟 P 端（模式2独输入；模式1/3 由 PHY0 级联时可 tie off） |\n| `PHY1_PAD_REF_CLK_N` | I | 1 | — | PHY reset | PHY1 100MHz 差分参考时钟 N 端 |\n| `PHY2_PAD_REF_CLK_P` | I | 1 | — | PHY reset | PHY2 100MHz 差分参考时钟 P 端 |\n| `PHY2_PAD_REF_CLK_N` | I | 1 | — | PHY reset | PHY2 100MHz 差分参考时钟 N 端 |\n| `PHY3_PAD_REF_CLK_P` | I | 1 | — | PHY reset | PHY3 100MHz 差分参考时钟 P 端 |\n| `PHY3_PAD_REF_CLK_N` | I | 1 | — | PHY reset | PHY3 100MHz 差分参考时钟 N 端 |\n\n### 2. 时钟输出 (Clock Outputs)\n\n| Signal | Dir | Width | Clock Domain | Reset Domain | Description |\n|--------|-----|-------|--------------|--------------|-------------|\n| `mstr_aclk` | O | 1 | 1GHz | `mstr_rst_n` | AXI4 Master NoC 接口时钟，1GHz（CRG PLL 生成 `axi_clk`） |\n| `slv_aclk` | O | 1 | 1GHz | `slv_rst_n` | AXI4 Slave NoC 接口时钟，1GHz（CRG PLL 生成 `axi_clk`） |\n\n> **内部生成时钟**（不出顶层的内部时钟域，供参考）：\n> - `core_clk`：PCIe 控制器逻辑主时钟，由 lane0 的 `max_pclk`(1GHz) 按实际 lane rate 分频\n> - `pipe_pclk`：PIPE TX 接口时钟\n> - `pipe_rx_clk`：PIPE RX 接口时钟（RX 数据流恢复时钟），与 `core_clk` 异步\n> - `cr_clk`：PHY CR 配置接口时钟，125MHz\n> - `local_phy_ref_clk`：PHY 备用参考时钟，100MHz（调试手段）\n\n### 3. 复位输入 (Reset Inputs)\n\n| Signal | Dir | Width | Clock Domain | Description |\n|--------|-----|-------|--------------|-------------|\n| `power_on_rst_n` | I | 1 | async | 硬件冷复位，从外部 PAD 控制。整个芯片复位，PCIe 重新初始化到初始状态 |\n| `PERST#` | I | 1 | async | PCIe 暖复位（边带信号，接 PAD）。Host 拉低对 EP 复位；芯片内部接到 `power_on_rst_n` 做全芯片复位 |\n| `pll_rst_n` | I | 1 | async | CRG PLL 外部复位输入 |\n| `cfg_rst_n` | I | 1 | `pcie_cfg_clk` | AXI DBI / 配置接口复位 |\n\n### 4. 复位输出 (Reset Outputs)\n\n| Signal | Dir | Width | Clock Domain | Description |\n|--------|-----|-------|--------------|-------------|\n| `mstr_rst_n` | O | 1 | `mstr_aclk` | AXI4 Master NoC 接口复位 |\n| `slv_rst_n` | O | 1 | `slv_aclk` | AXI4 Slave NoC 接口复位 |\n\n### 5. AXI4 Master 接口 (IB 方向)\n\n> 对端 RC/EP 通过此接口访问本地 SoC 空间。数据位宽 512bit，地址位宽 48bit。仅支持 INCR 类型，最长 burst=4，最大 Size=64B（MTU=256B）。最多 256 IDs。带 QoS/User 静态配置。支持 MWr/MRd 1,2 DWORD NCBE。\n\n| Signal | Dir | Width | Clock Domain | Reset Domain | Description |\n|--------|-----|-------|--------------|--------------|-------------|\n| `mstr_awid` | O | 8 | `mstr_aclk` | `mstr_rst_n` | Write address ID |\n| `mstr_awaddr` | O | 48 | `mstr_aclk` | `mstr_rst_n` | Write address |\n| `mstr_awlen` | O | 8 | `mstr_aclk` | `mstr_rst_n` | Write burst length (max 4) |\n| `mstr_awsize` | O | 3 | `mstr_aclk` | `mstr_rst_n` | Write burst size (max 6 = 64B) |\n| `mstr_awburst` | O | 2 | `mstr_aclk` | `mstr_rst_n` | Write burst type (INCR only) |\n| `mstr_awvalid` | O | 1 | `mstr_aclk` | `mstr_rst_n` | Write address valid |\n| `mstr_awready` | I | 1 | `mstr_aclk` | `mstr_rst_n` | Write address ready |\n| `mstr_wdata` | O | 512 | `mstr_aclk` | `mstr_rst_n` | Write data |\n| `mstr_wstrb` | O | 64 | `mstr_aclk` | `mstr_rst_n` | Write strobe (byte enable) |\n| `mstr_wlast` | O | 1 | `mstr_aclk` | `mstr_rst_n` | Write last beat |\n| `mstr_wvalid` | O | 1 | `mstr_aclk` | `mstr_rst_n` | Write data valid |\n| `mstr_wready` | I | 1 | `mstr_aclk` | `mstr_rst_n` | Write data ready |\n| `mstr_bid` | I | 8 | `mstr_aclk` | `mstr_rst_n` | Write response ID |\n| `mstr_bresp` | I | 2 | `mstr_aclk` | `mstr_rst_n` | Write response |\n| `mstr_bvalid` | I | 1 | `mstr_aclk` | `mstr_rst_n` | Write response valid |\n| `mstr_bready` | O | 1 | `mstr_aclk` | `mstr_rst_n` | Write response ready |\n| `mstr_arid` | O | 8 | `mstr_aclk` | `mstr_rst_n` | Read address ID |\n| `mstr_araddr` | O | 48 | `mstr_aclk` | `mstr_rst_n` | Read address |\n| `mstr_arlen` | O | 8 | `mstr_aclk` | `mstr_rst_n` | Read burst length (max 4) |\n| `mstr_arsize` | O | 3 | `mstr_aclk` | `mstr_rst_n` | Read burst size (max 6 = 64B) |\n| `mstr_arburst` | O | 2 | `mstr_aclk` | `mstr_rst_n` | Read burst type (INCR only) |\n| `mstr_arvalid` | O | 1 | `mstr_aclk` | `mstr_rst_n` | Read address valid |\n| `mstr_arready` | I | 1 | `mstr_aclk` | `mstr_rst_n` | Read address ready |\n| `mstr_rdata` | I | 512 | `mstr_aclk` | `mstr_rst_n` | Read data |\n| `mstr_rresp` | I | 2 | `mstr_aclk` | `mstr_rst_n` | Read response |\n| `mstr_rlast` | I | 1 | `mstr_aclk` | `mstr_rst_n` | Read last beat |\n| `mstr_rvalid` | I | 1 | `mstr_aclk` | `mstr_rst_n` | Read data valid |\n| `mstr_rready` | O | 1 | `mstr_aclk` | `mstr_rst_n` | Read data ready |\n\n> 注：ID 位宽 = 8bit（对应 256 IDs）；支持 W channel 早于 AW channel。\n\n### 6. AXI4 Slave 接口 (OB 方向)\n\n> 本地设备通过此接口访问远端 PCIe 空间。数据位宽 512bit，地址位宽 48bit。支持 INCR 和 WRAP 类型。最长 burst=4，最大 Size=64B（MTU=256B）。256 Tags。支持 NCBE（MWr 类型）、Zero-byte write、W channel 早于 AW channel。\n\n| Signal | Dir | Width | Clock Domain | Reset Domain | Description |\n|--------|-----|-------|--------------|--------------|-------------|\n| `slv_awid` | I | 8 | `slv_aclk` | `slv_rst_n` | Write address ID |\n| `slv_awaddr` | I | 48 | `slv_aclk` | `slv_rst_n` | Write address |\n| `slv_awlen` | I | 8 | `slv_aclk` | `slv_rst_n` | Write burst length (max 4) |\n| `slv_awsize` | I | 3 | `slv_aclk` | `slv_rst_n` | Write burst size (max 6 = 64B) |\n| `slv_awburst` | I | 2 | `slv_aclk` | `slv_rst_n` | Write burst type (INCR / WRAP) |\n| `slv_awvalid` | I | 1 | `slv_aclk` | `slv_rst_n` | Write address valid |\n| `slv_awready` | O | 1 | `slv_aclk` | `slv_rst_n` | Write address ready |\n| `slv_wdata` | I | 512 | `slv_aclk` | `slv_rst_n` | Write data |\n| `slv_wstrb` | I | 64 | `slv_aclk` | `slv_rst_n` | Write strobe (byte enable) |\n| `slv_wlast` | I | 1 | `slv_aclk` | `slv_rst_n` | Write last beat |\n| `slv_wvalid` | I | 1 | `slv_aclk` | `slv_rst_n` | Write data valid |\n| `slv_wready` | O | 1 | `slv_aclk` | `slv_rst_n` | Write data ready |\n| `slv_bid` | O | 8 | `slv_aclk` | `slv_rst_n` | Write response ID |\n| `slv_bresp` | O | 2 | `slv_aclk` | `slv_rst_n` | Write response |\n| `slv_bvalid` | O | 1 | `slv_aclk` | `slv_rst_n` | Write response valid |\n| `slv_bready` | I | 1 | `slv_aclk` | `slv_rst_n` | Write response ready |\n| `slv_arid` | I | 8 | `slv_aclk` | `slv_rst_n` | Read address ID |\n| `slv_araddr` | I | 48 | `slv_aclk` | `slv_rst_n` | Read address |\n| `slv_arlen` | I | 8 | `slv_aclk` | `slv_rst_n` | Read burst length (max 4) |\n| `slv_arsize` | I | 3 | `slv_aclk` | `slv_rst_n` | Read burst size (max 6 = 64B) |\n| `slv_arburst` | I | 2 | `slv_aclk` | `slv_rst_n` | Read burst type (INCR / WRAP) |\n| `slv_arvalid` | I | 1 | `slv_aclk` | `slv_rst_n` | Read address valid |\n| `slv_arready` | O | 1 | `slv_aclk` | `slv_rst_n` | Read address ready |\n| `slv_rdata` | O | 512 | `slv_aclk` | `slv_rst_n` | Read data |\n| `slv_rresp` | O | 2 | `slv_aclk` | `slv_rst_n` | Read response |\n| `slv_rlast` | O | 1 | `slv_aclk` | `slv_rst_n` | Read last beat |\n| `slv_rvalid` | O | 1 | `slv_aclk` | `slv_rst_n` | Read data valid |\n| `slv_rready` | I | 1 | `slv_aclk` | `slv_rst_n` | Read data ready |\n\n> 注：ID 位宽 = 8bit（对应 256 Tags）；Hot Reset 期间由 HotResetBlock 截获新 AXI Slave 访问保证 flush 完成。\n\n### 7. AXI-Lite 配置接口\n\n> 唯一配置入口，32bit 数据/地址。内部经 CFG NoC 转换为 9 路子模块配置接口（Top CFG、CRG CFG、PHY0~3 CFG、MSIX2DBI CFG、ReMap CFG、DBI CFG）。基地址 `0x2C000000`。\n\n| Signal | Dir | Width | Clock Domain | Reset Domain | Description |\n|--------|-----|-------|--------------|--------------|-------------|\n| `cfg_awaddr` | I | 32 | `pcie_cfg_clk` | `cfg_rst_n` | Write address |\n| `cfg_awvalid` | I | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Write address valid |\n| `cfg_awready` | O | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Write address ready |\n| `cfg_wdata` | I | 32 | `pcie_cfg_clk` | `cfg_rst_n` | Write data |\n| `cfg_wstrb` | I | 4 | `pcie_cfg_clk` | `cfg_rst_n` | Write strobe |\n| `cfg_wvalid` | I | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Write valid |\n| `cfg_wready` | O | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Write ready |\n| `cfg_bresp` | O | 2 | `pcie_cfg_clk` | `cfg_rst_n` | Write response |\n| `cfg_bvalid` | O | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Write response valid |\n| `cfg_bready` | I | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Write response ready |\n| `cfg_araddr` | I | 32 | `pcie_cfg_clk` | `cfg_rst_n` | Read address |\n| `cfg_arvalid` | I | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Read address valid |\n| `cfg_arready` | O | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Read address ready |\n| `cfg_rdata` | O | 32 | `pcie_cfg_clk` | `cfg_rst_n` | Read data |\n| `cfg_rresp` | O | 2 | `pcie_cfg_clk` | `cfg_rst_n` | Read response |\n| `cfg_rvalid` | O | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Read data valid |\n| `cfg_rready` | I | 1 | `pcie_cfg_clk` | `cfg_rst_n` | Read data ready |\n\n### 8. 串行数据通道 (TX/RX Lane, IO Pad)\n\n> x16 SerDes 通道，由 4 个 x4 PHY 组成。每 lane 含 TX/RX 各一对差分信号。\n\n| Signal | Dir | Width | Description |\n|--------|-----|-------|-------------|\n| `TX[0:15]_P` | O | 16 | 16 lane 差分串行发送 P 端 |\n| `TX[0:15]_N` | O | 16 | 16 lane 差分串行发送 N 端 |\n| `RX[0:15]_P` | I | 16 | 16 lane 差分串行接收 P 端 |\n| `RX[0:15]_N` | I | 16 | 16 lane 差分串行接收 N 端 |\n\n> Lane 分配：PHY0 = lane[3:0], PHY1 = lane[7:4], PHY2 = lane[11:8], PHY3 = lane[15:12]。\n> 支持 lane 配置 x1/x2/x4/x8/x16；支持 Auto Lane Reversal / Flip / Partial Reversal & Flip。\n\n### 9. PHY 参考电阻接口 (IO)\n\n| Signal | Dir | Width | Description |\n|--------|-----|-------|-------------|\n| `PHY0_RESREF` | IO | 1 | PHY0 外部精密参考电阻（校准用） |\n| `PHY1_RESREF` | IO | 1 | PHY1 外部精密参考电阻 |\n| `PHY2_RESREF` | IO | 1 | PHY2 外部精密参考电阻 |\n| `PHY3_RESREF` | IO | 1 | PHY3 外部精密参考电阻 |\n\n### 10. PCIe 边带信号 (Sideband)\n\n| Signal | Dir | Width | Clock Domain | Description |\n|--------|-----|-------|--------------|-------------|\n| `PERST#` | I | 1 | async | PCIe 暖复位。Host 拉低对 EP 复位，接到 `power_on_rst_n` 做全芯片复位。接 PAD。 |\n| `CLKREQ#` | IO | 1 | async | 双向时钟请求信号。PCIe 控制器检测此信号决定进入/退出 L1 子状态。接 PAD。 |\n| `WAKE#` | IO | 1 | async | 唤醒信号，低有效。PCIe 控制器输出到电源管理模块。接 PAD。用在 L2/L3 唤醒控制。 |\n\n### 11. 中断输出 (Interrupt Outputs) — 全部电平中断\n\n| Signal | Dir | Width | Clock Domain | Reset Domain | Description |\n|--------|-----|-------|--------------|--------------|-------------|\n| `irq_func` | O | 1 | `pcie_cfg_clk` | `cfg_rst_n` | 功能类型中断汇聚输出（Link up/down、DMA completion timeout、EQ request、Hot Reset 等） |\n| `irq_err` | O | 1 | `pcie_cfg_clk` | `cfg_rst_n` | 错误类型中断汇聚输出（AER 各项、Parity error、Malformed TLP 等，含 `ctl_rasdp_irq`） |\n| `edma_int[31:0]` | O | 32 | `pcie_cfg_clk` | `cfg_rst_n` | DMA 16 读 channel + 16 写 channel 独立中断，每通道 1bit |\n| `tbu_ras` | O | 1 | `pcie_cfg_clk` | `cfg_rst_n` | TBU RAS 中断 |\n| `tbu_pmu` | O | 1 | `pcie_cfg_clk` | `cfg_rst_n` | TBU 性能监测中断 |\n\n> **内部中断源汇总**（供参考）：14 根硬件中断输入经边沿检测 → pending → 仲裁 → MSI/MSI-X doorbell 写。MSI 最多 32 个 vector，MSI-X 最多 1024 个 vector。PHY SRAM ECC single/double bit error 通过 `phy_sram_sec_irq` / `phy_sram_ded_irq` 上报。\n\n### 12. DTI 接口 (TBU ↔ TCU)\n\n> 内置 TBU 通过 DTI 接口外接 TCU，实现 SMMU 地址转换。\n\n| Signal | Dir | Width | Clock Domain | Reset Domain | Description |\n|--------|-----|-------|--------------|--------------|-------------|\n| `dti_*` | — | — | `mstr_aclk` | `mstr_rst_n` | DTI 标准接口（详细 pinout 见 TCU/SoC MAS 文档 [4]） |\n\n> 注：Spec 未展开 DTI 具体信号，仅注明\"内置 TBU，DTI 接口连接 TCU\"。\n\n### 13. Debug 输出\n\n| Signal | Dir | Width | Clock Domain | Reset Domain | Description |\n|--------|-----|-------|--------------|--------------|-------------|\n| `debug_io[7:0]` | O | 8 | `pcie_cfg_clk` | `cfg_rst_n` | 可配置 debug 输出到 PAD。通过 APB 选择 4 组 ×256bit `diag_state_bus` 中 8 个 bit 输出 |\n\n### 14. JTAG/IJTAG 接口 (TSV 复用)\n\n> PHY0/1/2/3 + BD 共 5 组 JTAG 经 MUX 共用 TSV JTAG PAD。DFT 通过 TDR 寄存器 `cr_para_sel[1:0]` 选择。\n\n| Signal | Dir | Width | Description |\n|--------|-----|-------|-------------|\n| `jtag_tck` | I | 1 | JTAG 测试时钟（TSV PAD 输入） |\n| `jtag_tms` | I | 1 | JTAG 模式选择（TSV PAD 输入） |\n| `jtag_tdi` | I | 1 | JTAG 数据输入（TSV PAD 输入） |\n| `jtag_tdo` | O | 1 | JTAG 数据输出（TSV PAD 输出） |\n| `jtag_trst_n` | I | 1 | JTAG 测试复位（TSV PAD 输入） |\n| `cr_para_sel[1:0]` | I | 2 | 静态配置（TDR 寄存器），选 CR BUS(2'b01) / JTAG / IJTAG(2'b10) |\n\n### 15. 关键说明\n\n| 项目 | 值 |\n|------|-----|\n| **PIPE 版本** | PIPE 5.1.1, SerDes 架构 |\n| **PCLK 模式** | PCLK as PHY input, MAC 选择 PHY 输出的固定 MAXPCLK |\n| **PIPE 数据位宽** | 40bit/lane（SerDes PIPE 单 40bit 结构） |\n| **Lane 数** | x16（1 × UPCS x16 + 4 × PHY x4） |\n| **MAX PCLK** | 1GHz（lane0 固定，控制器据此分频生成 `core_clk`） |\n| **Gen5 速率** | 32 GT/s |\n| **控制器参数** | EP 模式, 2 VC, 1 PF, TLP Max Payload 256B |\n| **iATU** | 16 IB regions + 64 OB regions, min 4KB / max 128TB |\n| **DMA** | 16 读 channel + 16 写 channel, 256 Tags, LL/Signal Descriptor |\n| **BAR** | 4 个 Resizable BAR: BAR0/1=32bit non-prefetchable, BAR2/4=64bit prefetchable, 默认 1MB |\n| **MSI-X Table** | BAR0 offset 0x10000, 1024 entries (Table Size=0x7FF) |\n| **MSI-X PBA** | BAR0 offset 0x88000 |\n| **低功耗** | L0s, ASPM L1, PM L1, L1 Substates (L1.1/L1.2); D0/D1/D2/D3hot; PHY P0/P0s/P1 |\n| **RAS** | AXI Legacy Mode Parity, SRAM ECC, 数据通路 8bit Parity; AER; Error Injection |\n| **Hot Reset 控制** | HotResetBlock 管理 OB AXI 访问阻断 + Flush Timer (0~134ms) + LTSSM 使能 |\n| **Isolation** | Partial Good 域 (pcie_core 功能单元)，CFG NoC/HotReset/CRG 不在隔离域内 |\n\n---\n\n> **PIPE 5.1.1 内部接口**（Controller ↔ UPCS/PHY 之间，非顶层端口，关键信号供参考）：\n\n| Group | Key Signals | Dir (MAC view) | Width |\n|-------|-------------|-----------------|-------|\n| Clock/Reset | `pipe_rx_clk`, `pipe_rx_rst_n`, `pipe_msgbus_rst_n`, `mac_phy_pclk_rate`, `mac_phy_maxpclkreq_n`, `phy_mac_maxpclkack_n` | mixed | 1 |\n| Data | `phy_mac_rxdata`, `mac_phy_txdata`, `mac_phy_txdatavalid`, `mac_phy_rxwidth`, `mac_phy_width` | I/O | 40b ×16 |\n| Message Bus | `mac_phy_messagebus`, `phy_mac_messagebus` | O/I | — |\n| Status | `phy_mac_rxvalid`, `phy_mac_rxelecidle`, `mac_phy_txelecidle`, `phy_mac_rxstatus[3:0]`, `phy_mac_phystatus` | I/O | 16 |\n| PHY Config | `mac_phy_powerdown[2:0]`, `mac_phy_serdes_arch`, `mac_phy_txdetectrx_loopback`, `phy_cfg_status` | O/I | — |\n| Rate | `mac_phy_rate[2:0]`, `pm_current_data_rate[2:0]`, `cfg_hw_auto_sp_dis` | O | 3/3/1 |",
+    "stop_reason": "end_turn",
+    "session_id": "007d2915-bbba-4a99-8b81-46b2fa995c98",
+    "total_cost_usd": 0.710572,
+    "usage": {
+      "input_tokens": 72869,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 210304,
+      "output_tokens": 9643,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 72869,
+        "outputTokens": 9643,
+        "cacheReadInputTokens": 210304,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.710572,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "6ef01675-d8cf-4dd0-947a-9f145c62e728",
+    "_wall_time_s": 118.1
+  },
+  "case3_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 141576,
+    "duration_api_ms": 135374,
+    "num_turns": 20,
+    "result": "数据收集完毕。现在基于所有 L0/L1 证据，输出 PCIe 子系统顶层端口表。\n\n---\n\n## PCIe 子系统 (`pcie_ss`) 顶层端口表\n\n基于三份文档的 L0 block 级证据汇总：Spec v3.21 (主)、TRS r2p0、DDI0275。\n\n---\n\n### 1. Clock & Reset\n\n| Port Name | Dir | Width | Clock Domain | Description | Evidence |\n|-----------|-----|-------|-------------|-------------|----------|\n| `mstr_aclk` | **O** | 1 | (int. gen.) | AXI Master NoC 接口时钟 | `[p13#b3]` §2 Interface Group table |\n| `mstr_rst_n` | **O** | 1 | `mstr_aclk` | AXI Master NoC 接口复位 (低有效) | `[p13#b3]` §2 |\n| `slv_aclk` | **O** | 1 | (int. gen.) | AXI Slave NoC 接口时钟 | `[p13#b3]` §2 |\n| `slv_rst_n` | **O** | 1 | `slv_aclk` | AXI Slave NoC 接口复位 (低有效) | `[p13#b3]` §2 |\n| `cfg_clk` | **I** | 1 | external | AXI DBI / 配置接口时钟 | `[p13#b3]` §2 |\n| `cfg_rst_n` | **I** | 1 | `cfg_clk` | AXI DBI / 配置接口复位 (低有效) | `[p13#b3]` §2 |\n| `pll_rst_n` | **I** | 1 | async | CRG PLL 外部复位输入 | `[p13#b3]` §2; `[p9#b19]` §1.15 CRG |\n| `clk_ref_clk` | **I** | 1 | external 20MHz | CRG 外部参考时钟 (测试/debug 用) | `[p13#b3]` §2; `[p9#b21]` §1.15 |\n| `aux_clk` | **I** | 1 | `clk_ref_clk` (直通) | L2 低功耗模式逻辑时钟 | `[p13#b3]` §2 |\n| `PERST#` | **I** | 1 | async | PCIe 控制器暖复位 (低有效) | `[p13#b3]` §2; `[p14#b1]` §2 PAD 表; `[p38#b22]` §4.17 |\n\n> **注意** `mstr_aclk`/`slv_aclk` 方向为 **O**——由子系统内部 CRG/PLL 产生后输出到 NoC，非外部输入。`cfg_clk` 是外部输入，接 AXI-lite 配置总线时钟。\n\n---\n\n### 2. AXI Master Interface (Inbound)\n\n| Port Group | Dir | Data Width | Addr Width | ID Width | Description | Evidence |\n|-----------|-----|-----------|------------|---------|-------------|----------|\n| `AXI_Master` | **O** | **512 bit** | **48 bit** | ≤256 IDs | 标准 AXI4 Master。IB + DMA 数据通路，经过 TBU/SMMUv3 后接入 Main NoC | `[p13#b3]` §2; `[p6#b25]` §1.5 REQ_AXI_MASTER_508; `[p30#b20]` TRS §6.3 |\n\n标准 AXI4 5-channel: AW, W, B, AR, R。AW/AR 协议: INCR only (§1.5)。Max burst = 256B, max length = 4, max size = 64B。\n\n---\n\n### 3. AXI Slave Interface (Outbound)\n\n| Port Group | Dir | Data Width | Addr Width | ID Width | Description | Evidence |\n|-----------|-----|-----------|------------|---------|-------------|----------|\n| `AXI_Slave` | **I** | **512 bit** | **48 bit** | ≤256 tags | 标准 AXI4 Slave。OB 方向，外接 Main NoC，GPU/CPU 通过此接口发起 Outbound 访问 | `[p13#b3]` §2; `[p6#b17]` §1.5 REQ_AXI_SLAVE_501; `[p20#b1]` TRS §5.3 |\n\n标准 AXI4 5-channel: AW, W, B, AR, R。支持 INCR + WRAP, NCBE, Zero-byte write。\n\n---\n\n### 4. AXI-Lite Configuration Interface\n\n| Port Group | Dir | Data Width | Addr Width | Description | Evidence |\n|-----------|-----|-----------|------------|-------------|----------|\n| `AXI_Lite` | **I** | 32/64 bit | (system) | 单一 AXI-Lite slave 配置接口。内部经 CFG_NOC 转换到本地多个配置空间 (Top CFG, CRG CFG, PHY CR, Controller DBI 等) | `[p13#b3]` §2; `[p7#b8]` §1.5 REQ_CFG_516; `[p41#b2]` §4.21 |\n\n---\n\n### 5. APB Slave Interface\n\n| Port Group | Dir | Width | Description | Evidence |\n|-----------|-----|-------|-------------|----------|\n| `APB_Slave` | **I** | (standard APB) | APB slave 接口，用于 MSI-X 中断控制器配置 | `[p27#b3]` §4.6.2.2 signal table |\n\n---\n\n### 6. DTI Interface (SMMU/TBU)\n\n| Port Group | Dir | Width | Description | Evidence |\n|-----------|-----|-------|-------------|----------|\n| `DTI` | **O** | (DTI protocol) | 内置 TBU，DTI 接口连接外部 TCU，共同完成 SMMUv3 地址翻译 | `[p13#b3]` §2; `[p16#b37]` §3.1 TBU 模块; `[p30#b20]` TRS §6.3 |\n\n> DTI 是 ARM 定义的分布式翻译接口协议，连接 TBU (Translation Buffer Unit) 和 TCU (Translation Control Unit)。\n\n---\n\n### 7. Interrupts (输出)\n\n| Port Name | Dir | Width | Clock Domain | Description | Evidence |\n|-----------|-----|-------|-------------|-------------|----------|\n| `irq_func` | **O** | 1 | `core_clk` | 功能类中断汇总 (link up/down, EQ, FLR 等) | `[p26#b3]` §4.6.1 summary_irq 表 |\n| `irq_err` | **O** | 1 | `core_clk` | 错误类中断汇总 (correctable/non-correctable AER 等) | `[p26#b3]` §4.6.1 |\n| `edma_int` | **O** | 32 | `core_clk` | eDMA 各通道中断独立输出 | `[p26#b3]` §4.6.1 |\n| `tbu_ras` | **O** | 1 | `core_clk` | TBU RAS 中断输出 | `[p26#b3]` §4.6.1 |\n| `tbu_pmu` | **O** | 1 | `core_clk` | TBU PMU 中断输出 | `[p26#b3]` §4.6.1 |\n\n---\n\n### 8. PHY Interface (PIPE / SerDes)\n\n| Port Name | Dir | Width | Description | Evidence |\n|-----------|-----|-------|-------------|----------|\n| `TXx_P/N` | **IO** | 16 lane diff. pair | PCIe Gen5 x16 差分串行发送 | `[p13#b3]` §2 PHY 接口表 |\n| `RXx_P/N` | **IO** | 16 lane diff. pair | PCIe Gen5 x16 差分串行接收 | `[p13#b3]` §2 PHY 接口表 |\n| `PHY[0:3]_RESREF` | **IO** | 1 each (×4 PHY) | PHY 阻抗校准电阻接口 (200Ω reference) | `[p13#b3]` §2 PHY 接口表 |\n| `PHY[0:3]_PAD_REF_CLK_N/P` | **IO** | 1 diff. pair each (×4 PHY) | PHY PAD 参考时钟 (100MHz HCSL) | `[p13#b3]` §2; `[p9#b22]` §1.15 CRG_1503 |\n\n> 每个 PHY 驱动 4 lane (x4 × 4 PHY = x16)。PIPE 16-bit, 1.0GHz @ Gen5 32GT/s。正常功能模式下 PLL ref clock = 100MHz 同源于 PHY。\n\n---\n\n### 9. Sideband PAD\n\n| Port Name | Dir | Width | Clock Domain | Description | Evidence |\n|-----------|-----|-------|-------------|-------------|----------|\n| `WAKE#` | **IO** | 1 | `aux_clk` | Wake up 信号 (低有效), 连接电源管理模块, 用于 L2/L3 唤醒 | `[p14#b1]` §2; `[p38#b20]` §4.17 |\n| `CLKREQ#` | **IO** | 1 | `aux_clk` | 双向 Clock Request (低有效), 控制 L1 SubState 参考时钟开关 | `[p14#b1]` §2; `[p38#b21]` §4.17 |\n| `PERST#` | **I** | 1 | async | Warm Reset (低有效, 已在 Clock/Reset 组也列出) | `[p14#b1]` §2; `[p38#b22]` §4.17 |\n\n---\n\n### 10. Debug\n\n| Port Group | Dir | Width | Description | Evidence |\n|-----------|-----|-------|-------------|----------|\n| `debug_signals` | **O** | (configurable) | LTSSM debug shifter (128-entry), PLL/PHY 状态拉到 debug IO | `[p11#b18]` §1.23 REQ_DEBUG_2301 |\n\n---\n\n### 汇总统计\n\n| 组 | 信号数 | 方向 |\n|----|--------|------|\n| Clock/Reset | 10 | 6×I + 4×O |\n| AXI Master (IB) | 5 ch | Master (O) |\n| AXI Slave (OB) | 5 ch | Slave (I) |\n| AXI-Lite (CFG) | 5 ch | Slave (I) |\n| APB Slave | 1 bus | Slave (I) |\n| DTI | 1 bus | O |\n| Interrupts | 5 port (36 bit total) | O |\n| PHY SerDes | 16× TX + 16× RX + 4× RESREF + 4× REFCLK | IO |\n| PAD Sideband | 3 | 1×I + 2×IO |\n\n**关键设计决策**:\n- `mstr_aclk` / `slv_aclk` 方向为 **O**（子系统的 CRG 产生时钟送给 NoC），不是传统 SoC 的时钟输入模式\n- AXI 时钟发自子系统 CRG → 意味着 NoC 侧需要在这些时钟域下对接\n- 全芯片只有一个 Die 使能 PCIe（TRS REQ_004），NoC 只在 DIE0 分配 PCIe Target 地址",
+    "stop_reason": "end_turn",
+    "session_id": "028ca87c-4c1d-416c-8ed2-770d385bb69f",
+    "total_cost_usd": 1.255646,
+    "usage": {
+      "input_tokens": 99343,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 349056,
+      "output_tokens": 7171,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 99343,
+        "outputTokens": 7171,
+        "cacheReadInputTokens": 349056,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.850518,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      },
+      "Deepseek-v4-flash": {
+        "inputTokens": 45428,
+        "outputTokens": 3940,
+        "cacheReadInputTokens": 158976,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.40512800000000004,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "e71a5cac-d948-4f5b-acff-4c45eb04a717",
+    "_wall_time_s": 142.7
+  },
+  "case4_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 144222,
+    "duration_api_ms": 142601,
+    "num_turns": 6,
+    "result": "Test plan 已输出至 `benchmark_runs/baseline_docgraph_compare/pcie_address_space_bar_register_dv_testplan.md`。\n\n**覆盖概要：**\n\n| 测试域 | 测试项数 | P0/P1/P2 |\n|--------|---------|----------|\n| 系统地址空间 (Outbound/Local/NoC) | 15 | 8/7/0 |\n| BAR 配置属性 & Resizable BAR | 12 | 5/6/1 |\n| BAR0 内部寄存器映射 & 译码 | 6 | 4/2/0 |\n| BAR1/2/4 SoC 内存映射 | 8 | 4/4/0 |\n| BAR Match / Address Match Mode | 4 | 2/2/0 |\n| 顶层寄存器 & DBI 译码 | 18 | 10/8/0 |\n| 多路径一致性 & 安全隔离 | 12 | 7/5/0 |\n| **合计** | **75** | **40/34/1** |\n\n**两份文档的关键差异与补充关系：**\n- TRS 定义 \"要什么\"（3 BAR 角色、128T Outbound 窗口、Inbound/Outbound 死锁防护），Spec 定义 \"怎么实现的\"（4 BAR 电气配置、NoC 基地址偏移表、DBI bit 级译码）。\n- 5 个待确认问题已列入 §5，其中最关键的差异是 BAR 数量（TRS 说 3 个，Spec 说 4 个）和 Outbound iATU window 数（TRS 说 256, Spec 说 64），建议在评审时对齐。",
+    "stop_reason": "end_turn",
+    "session_id": "22abde08-7cf5-4b94-81ef-45b2e94d4f7e",
+    "total_cost_usd": 0.7245659999999999,
+    "usage": {
+      "input_tokens": 79096,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 150272,
+      "output_tokens": 10158,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 79096,
+        "outputTokens": 10158,
+        "cacheReadInputTokens": 150272,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.7245659999999999,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "9f7b8e39-b1b6-4ad5-8d4a-41901f57021d",
+    "_wall_time_s": 145.3
+  },
+  "case4_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 103742,
+    "duration_api_ms": 97015,
+    "num_turns": 26,
+    "result": "I've now completed a thorough docgraph-based cross-reference of the existing test plan against the actual document sources. Here is the **DV Owner's cross-reference audit report**:\n\n---\n\n## Cross-Reference Audit: PCIe Address Space / BAR / Register DV Test Plan\n\n**Documents cross-referenced (via docgraph fetch):**\n- `arm::protocol::PCIE Subsystem Spec_v3.21` (Spec) — §§1.5-1.21, 4.1.1, 4.2, 4.3, 4.6.2.2, 4.7, 4.14.1-4.14.2, 4.21\n- `arm::doc::PCIe Subsystem TRS_r2p0` (TRS) — §§5.1, 5.2.1, 5.3, 6.1, 6.3, 6.9\n\n### Verified (matches docs)\n\n| Claim in test plan | Document evidence | Status |\n|---|---|---|\n| 9 NoC slave spaces, base=0x2C000000 | Spec Table 4-2 (p20,b5) | Match |\n| BAR0=32b/non-prefetch/Resizable, BAR2=64b/prefetch/Resizable | Spec §4.1.1 config table (p19,b1) | Match |\n| MSI-X Table Size=0x7FF (2048 entries) | Spec §4.1.1 config table row \"MSI - X Table Size: 0x7ff\" | Match |\n| MSI-X Table BIR=BAR0 | Spec §4.1.1 config table | Match |\n| BAR0 register offsets: DMA/0x8000(iATU)/0x80000(Table)/0x88000(PBA) | Spec Table 4-4 (p21,b1) | Match |\n| TRS REQ_PCIE_TRS_020-022 (unified addr, Local 512G, OB 128T~256T) | TRS §5.1 (pp16-17) | Match |\n| TRS REQ_PCIE_TRS_043 (3 BARs) vs Spec PCIE_MAS_REQ_BAR_601 (4 BARs) | TRS §5.2.1 + Spec §1.6 | Discrepancy confirmed |\n| TRS REQ_PCIE_TRS_044 (Inbound→2 Die) / 045 (no OB access) | TRS §5.2.1 (p19) | Match |\n| iATU: 16 IB + 64 OB regions (Spec) vs 256 OB regions (TRS) | Spec §1.7 + TRS §6.1 | Discrepancy confirmed |\n| ReSize BAR: TRS=2 (REQ_TRS_241) vs Spec=4 (REQ_BAR_602) | TRS §6.3 + Spec §1.6 | Discrepancy confirmed |\n| Isolation: default=1, AXI Slave no hang, AXI Master no active, config accessible | Spec §1.20 (p11,b5-b7) | Match |\n| MSI-X 2048 vectors, Table/PBA in SRAM (~32KB), REG BAR access | TRS §6.9 (pp34-35) | Match |\n| FLR not supported, ATS not supported | TRS §6.8 + Spec §1.16 | Match |\n| Spec PCIE_MAS_REQ_CFG_517 (reserved access no hang) | Referenced in test plan | Match |\n\n### Gaps identified (docs say → test plan doesn't cover)\n\n| # | Missing coverage | Document source | Severity |\n|---|---|---|---|\n| **G1** | MSI-X hardware interrupt source count is 14 (Spec §4.6.2.2, p26,b13). The plan doesn't verify that only 14 hardware sources route to MSI-X (vs. full 2048 table entries for software trigger). | Spec §4.6.2.2: \"MSI-X 的中断数量是 14 个\" | Low — table capacity 2048 ≠ active sources |\n| **G2** | PHY/Controller disable capability (PCIE_MAS_REQ_DISABLE_2005): PHY power-down + controller isolation. Not covered in SEC-001~005. | Spec §1.20 (p11,b10) | Medium |\n| **G3** | TSV Isolation + level shifter at BD port (PCIE_MAS_REQ_ISO_2004): default isolation enabled, software-configurable register. | Spec §1.20 (p11,b9) | Low |\n| **G4** | MSI hardware trigger (4 GPU interrupt lines from 2 dies → TRS §6.9, p34,b25). The plan covers MSI/MSI-X register paths but not the hardware trigger wire count. | TRS §6.9 (p34,b25) | Low |\n| **G5** | INT-X legacy interrupt support (PCIE_MAS_REQ_INTX_1005): software assert/deassert only, no hardware trigger. Not covered. | Spec §1.10 (p8,b15) | Low — register-level only |\n| **G6** | Outbound iATU AXI Slave width/parameters: 512b data, 48b address, max length=4, max size=64B, burst=256B (PCIE_MAS_REQ_AXI_SlAVE_501~503). ADDR-001 tests address translation but not the AXI protocol parameter constraints. | Spec §1.5 (pp6-7) | Low — more of an AXI VIP check than a BAR check |\n\n### Discrepancy in MSI-X offset values\n\nThe Spec §4.1.1 config table lists `MSI-X Table Offset = 0x10000` and `MSI-X PBA Offset = 0x20000` (DBI space). But Spec Table 4-4 lists BAR0 access addresses as `BAR0+0x80000` (Table) and `BAR0+0x88000` (PBA). The test plan correctly notes this difference in §5 issue #4 and uses the Table 4-4 values for BAR0 tests (BAR0-003/004). SPREG-003 uses the config table values (0x10000/0x20000), which is correct for that check context. **No action needed.**\n\n### Verdict\n\nThe existing test plan is **comprehensive and well cross-referenced** against both documents. The 7 cross-document discrepancies in §5 are all correctly identified. The 56 test items cover the critical paths.\n\n**Recommended additions** (if you want to close gaps):\n\n1. **PHY-001** (P1): PHY/Controller disable — Set isolation + PHY power-down, verify controller can be disabled (G2)\n2. **SEC-006** (P2): INT-X legacy interrupt software assert/deassert — write assert, verify INT-X TLP generated; write deassert, verify deassert TLP (G5)\n\nThese are minor gaps. The test plan is already DV-review ready.",
+    "stop_reason": "end_turn",
+    "session_id": "9d67399d-7a89-43a6-aaa1-e0f805b92a29",
+    "total_cost_usd": 1.005699,
+    "usage": {
+      "input_tokens": 130840,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 357248,
+      "output_tokens": 6915,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 130840,
+        "outputTokens": 6915,
+        "cacheReadInputTokens": 357248,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 1.005699,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "4dffc971-0093-4ce0-bdd4-ead8c242815d",
+    "_wall_time_s": 104.9
+  },
+  "case5_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 74839,
+    "duration_api_ms": 74747,
+    "num_turns": 11,
+    "result": "以下是从两份文档中整理出的 **Inbound / Outbound / DMA** 三条数据路径的横向比较：\n\n---\n\n## 数据路径联合评审：Inbound vs Outbound vs DMA\n\n### 一、摘要对比表\n\n| 维度 | **Inbound** | **Outbound** | **DMA (HDMA)** |\n|---|---|---|---|\n| **数据方向** | Host/RC → EP → SoC 内部 | SoC 内部 → EP → Host/RC | SoC Local Mem ↔ Remote Mem（仅跨卡搬移） |\n| **发起者** | 外部 Host/RC | GPU / CPU | PCIe Controller 内部 DMA 引擎 |\n| **AXI 角色** | AXI Master（IB 方向，512b/48b） | AXI Slave（OB 方向，512b/48b） | AXI Master（与 IB 共用） |\n| **地址转换点** | Inbound iATU → ReMap → (TBU) | ( MMU ) → Outbound iATU → (eATU) | DMA Src/Dst 直配 IOVA 或 PA，不经过 iATU |\n| **ATS 支持** | 否 | 否（v2p0 禁用） | 不支持（数据通路在 Controller 内部，ATS/ATC 在外部） |\n| **PASID** | 不支持 | 不支持 | 不支持 |\n| **SMMU/TBU** | 强制经 SMMUv3，StreamID 按 TLP 类型区分 | 无 | 无（TBU 在 IB 侧） |\n\n---\n\n### 二、各路径详细分析\n\n#### 1. Inbound Data Path\n\n| 项目 | 内容 |\n|---|---|\n| **参与模块** | PCIe Controller (DL/TL) → Inbound iATU (16 regions) → AXI Master → SMMUv3 → (TBU optional bypass) → ReMap (256 windows) → Main NoC → SoC Memory / Register Space |\n| **地址转换链** | PCIe Domain Address → **Inbound iATU**（BAR Match 或 Address Match）→ 中间地址 → **ReMap**（离散→连续，最多 256 window）→ SoC 物理地址 |\n| **关键约束** | 禁止访问 C2C 地址空间（防 Deadlock）、禁止访问 Outbound 地址空间；BAR0 为 32b REG BAR（不可 prefetch），BAR1/2/4 为 64b MEM BAR（可 prefetch）；2 个 ReSize BAR（1MB~512GB） |\n| **关键图号** | EP Controller Databook **Figure 3-49**（BAR Match Mode, 64-bit BAR）；**Figure 3-46**（Address Match Mode） |\n| **关键页码** | TRS §5.2（p18–19）、§6.3（p30）；Spec §4.7 ReMap（p28）、§4.8 TBU（p29）、§4.14.2 Inbound iATU（p36） |\n| **性能要求** | RT Latency 1μs 下 IB 读/写达 80%（Spec §1.4, p6） |\n\n#### 2. Outbound Data Path\n\n| 项目 | 内容 |\n|---|---|\n| **参与模块** | GPU/CPU → MMU(VA→PA) → Main NoC → **HotResetBlock** → AXI Slave → Outbound iATU (256 regions) → (eATU, 禁用) → PCIe Controller (DL/TL) → PHY/SerDes → Host |\n| **地址转换链（三种模式）** | (a) **IOMMU disable**: SoC PA → Outbound iATU → PCIe PA；(b) **IOMMU enable, 无 ATS**: SoC PA → Outbound iATU → IOVA → Host IOMMU → Host PA；(c) **IOMMU enable + ATS**（未实现）: SoC PA → eATU → IOVA → ATC → Host PA |\n| **关键约束** | 128TB Outbound 地址空间（128T~256T）；支持 P2P 到 CHIP 2 MEM BAR；HotResetBlock 在 Hot Reset 时阻塞 AXI Slave 新请求；不支持 PASID、不同 QoS VC |\n| **关键图号** | TRS **Figure 5-4**（LD/ST Outbound without IOMMU）；EP Controller Databook **Figure 3-46**（Address Match Mode） |\n| **关键页码** | TRS §5.3（p20–28）、§6.2（p30）；Spec §4.5.3.1（p24, Hot Reset OB blocking）、§4.14.1（p35–36, Outbound iATU） |\n| **性能要求** | GPU 通过 AXI Slave 单向 54GB/s（TRS §6.4, p31）；OB 读/写 RT 1μs 达 80%（Spec §1.4, p6） |\n\n#### 3. DMA (HDMA) Data Path\n\n| 项目 | 内容 |\n|---|---|\n| **参与模块** | SoC Local Memory → Main NoC → **PCIe Controller 内部 DMA/HDMA 引擎**（16R+16W channel）→ Controller TL/DL → PHY → Remote Memory |\n| **地址配置方式** | DMA 任务描述符直接配置 Src/Dst：(a) **IOVA**（AT=0b00）→ Host IOMMU 翻译；(b) **PA 直传**（AT=0b10）→ IOMMU Bypass |\n| **关键约束** | **仅 HDMA**（不支持 Legacy DMA）；16R+16W Channel（复用 Legacy DMA 通道）；256 Tags；Link-list 粒度 1B~4GB；**不支持 2D/3D Copy**；**不支持 SoC internal-to-internal**（仅跨卡）；DMA Completion 中断使用 **Strict Ordering (SO)** |\n| **关键图号** | TRS **Figure 6-1**（HDMA Link-list Element） |\n| **关键页码** | TRS §5.3.2（p23–24）、§6.5（p31–32）、§6.11.3（p38）；Spec §1.8 HDMA（p7–8） |\n| **性能要求** | 单向 54GB/s (x16 mode)，利用率 ~85%（TRS §6.4, p31） |\n\n---\n\n### 三、架构关键差异点\n\n| 关注点 | Inbound | Outbound | DMA |\n|---|---|---|---|\n| **地址翻译层级** | 2 级（iATU + ReMap）+ 可选 TBU | 1 级（iATU）+ 可选 eATU + Host IOMMU | 0 级（直配 IOVA/PA） |\n| **SMMU 遍历** | 必须经 SMMUv3 | 不经 SMMU | 不经 SMMU |\n| **Hot Reset 处理** | 无特殊阻塞逻辑 | HotResetBlock 主动截获 AXI 新请求 | Flush timer 延长 flush 时间 |\n| **死锁防护** | 禁止访问 C2C + Outbound 空间 | （无特殊限制） | 仅 SoC→Remote，无环路风险 |\n| **地址空间** | 受 BAR 大小限制（单 BAR 最大 512GB） | 128TB 固定 outbound 窗口 | 取决于 Src/Dst 配置 |\n\n---\n\n### 四、建议进一步确认\n\n1. **DMA 共用 AXI Master 时的带宽仲裁**：DMA 和 Inbound 共享同一 AXI Master 接口，当双向 54+54GB/s 时，ARB 策略是静态优先级还是轮询？TRS 仅提了 IB/OB 并发要求，未量化 DMA+IB 并发。\n2. **ReMap 与 iATU 的协作关系**：Spec §4.7 说 \"ReMap 工作时 iATU 工作在 BAR Match Mode 且 output address offset=0\"，这意味着 iATU 不做地址偏移——该约束在 TRS 中未体现。\n3. **Outbound eATU 已禁用对 IOMMU enable 场景的影响**：TRS §6.7 标记 \"TC550 暂不支持\"，但 §5.3.3 IOMMU enable 场景依赖 Outbound iATU 的 SoC PA→IOVA 映射——窗口够不够用需确认。",
+    "stop_reason": "end_turn",
+    "session_id": "addda291-b885-4a43-a1af-4dafb91efdd9",
+    "total_cost_usd": 0.622378,
+    "usage": {
+      "input_tokens": 76985,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 230656,
+      "output_tokens": 4885,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 76985,
+        "outputTokens": 4885,
+        "cacheReadInputTokens": 230656,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.622378,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "e8c41012-0fab-46fd-b240-2bbe68a0f461",
+    "_wall_time_s": 75.9
+  },
+  "case5_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 100433,
+    "duration_api_ms": 95962,
+    "num_turns": 30,
+    "result": "现在我有足够的证据来进行全面比较。\n\n---\n\n## Inbound vs Outbound vs DMA 数据路径 — 联合设计验证报告\n\n基于 docgraph 索引中的两份设计文件（TRS r2p0 和 Spec v3.21）提取的证据。\n\n---\n\n### 1. 方向和数据流\n\n| | 入站 | 出站 | DMA |\n|---|---|---|---|\n| **方向** | 远程 → 本地 SoC | 本地 GPU/CPU → 远程 | 本地内存 → 远程内存 |\n| **发起者** | 远程 PCIe 主机 | 本地 GPU/CPU | 本地 DMA 引擎 |\n| **目标对端** | PCIe 子系统内部的 SoC 总线 | | |\n| **AXI 角色** | AXI Master（512b/48b）| AXI Slave（512b/48b）| 通过入站 AXI Master 共享 |\n| **最大突发** | 256B（长度 4 × 64B） | 256B（长度 4 × 64B） | 与入站相同 |\n| **访问类型** | 仅 INCR | INCR + WRAP | 继承入站（仅 INCR）|\n\n**证据：** Spec §1.5 规定：*\"IB 方向 AXI4 Master 数据位宽 512Bit, 地址位宽 48Bit, 负责将 IB 和 DMA 数据访问传递给 Main NoC\"* [block: arm::protocol::PCIE Subsystem Spec_v3.21#p6#b25] 和 *\"OB 方向 AXI4 Slave 数据位宽 512Bit, 地址位宽 48Bit. 外接 Main NoC 完成 OB 方向的数据传递\"* [block: arm::protocol::PCIE Subsystem Spec_v3.21#p6#b18]。入站和 DMA **共享** 同一个 AXI Master 到 Main NoC。\n\n---\n\n### 2. 地址转换\n\n| | 入站 | 出站 | DMA |\n|---|---|---|---|\n| **iATU 区域** | 16 个入站区域 | 64 个出站区域 | — |\n| **iATU 模式** | BAR 匹配模式（+ 地址匹配） | 仅地址匹配模式 | 继承入站 |\n| **区域大小** | 最小 4KB，最大 128TB | 最小 4KB，最大 128TB | — |\n| **额外重新映射** | ReMap（256 个窗口） | 无 | ReMap（共享入站） |\n\n**证据：** Spec §1.6 规定 *\"iATU: 16 IB regions, 64 OB regions\"* [block: arm::protocol::PCIE Subsystem Spec_v3.21#p7#b18]。Spec §4.7 规定 *\"PCIE Inbound 方向提供地址 remap 功能...最多支持 256 个 window\"* [block: arm::protocol::PCIE Subsystem Spec_v3.21#p28#b13] 以及 *\"在 ReMap 工作时 iATU 工作在 Bar Match Mode ，且输出地址 offset 为 0\"* [block: arm::protocol::PCIE Subsystem Spec_v3.21#p28#b14]。Spec §4.14.1 规定 *\"Outbound...address translate operation 仅支持 Address Match mode\"* [block: arm::protocol::PCIE Subsystem Spec_v3.21#p35#b18]。\n\n**验证说明：** 入站有 **两层** 地址转换（iATU + ReMap），窗口数为 16+256；出站只有 64 个 iATU 区域的 **单层**。入站侧的 ReMap 将离散地址转换为连续地址，且仅供本地 AON 配置（安全属性）。出站则简单得多。\n\n---\n\n### 3. SMMU / 地址翻译路径\n\n| | 入站 | 出站 | DMA |\n|---|---|---|---|\n| **SMMUv3** | 必须（AXI Master → SMMUv3 → 总线） | 无（前 AXI Slave） | 通过入站路径 |\n| **TBU** | 可选（内存地址重新映射） | — | — |\n| **ATS（地址翻译服务）** | 无 | 是（仅 GPU/CPU 出站 AXI Slave） | 明确 **排除** |\n| **PASID** | — | 无（AXI Slave 上不需要） | 明确 **排除** |\n| **流 ID** | 是 — 区分 DMA 与主机读/写 | — | 自己的 SID |\n\n**证据：** TRS §6.3 规定 *\"Inbound 上的 AXI Master 需要通过 SMMUv3 后再接入到系统总线上\"* [block: arm::doc::PCIe Subsystem TRS_r2p0#p30#b21] 和 *\"需要根据 Transaction 类型，来控制 SMMUv3 的 StreamID 。至少区分： DMA 任务以及 host 的 read/write\"* [block: arm::doc::PCIe Subsystem TRS_r2p0#p30#b22]。TRS §6.8 规定 *\"仅支持 GPU/CPU 通过 Outbound AXI Slave 方向上的 ATS 地址翻译。 DMA 传输不支持 ATS\"* [block: arm::doc::PCIe Subsystem TRS_r2p0#p33#b19]。TRS §6.2 确认 *\"DMA 也不支持 PASID\"* [block: arm::doc::PCIe Subsystem TRS_r2p0#p30#b16]。\n\n---\n\n### 4. BAR 访问（来自远程视角）\n\n| | 入站（通过 BAR） | 出站 | DMA |\n|---|---|---|---|\n| **BAR 数量** | 4 个 BAR（BAR0/1/2/4） | — | — |\n| **BAR0** | 覆盖 DMA/iATU/MSI-X 表/PBA | — | 通过 BAR0 可配置 |\n| **BAR1/2/4** | 远端访问本地内存 | — | 搬移目标 |\n| **去往出站空间的入站访问** | **明确禁止**（死锁） | — | — |\n\n**证据：** Spec §4.3 规定 *\"BAR0 映射...覆盖 DMA ， iATU ， MSI-X table 和 MSI-X PBA\"* [block: arm::protocol::PCIE Subsystem Spec_v3.21#p20#b11] 以及 *\"BAR1/BAR2/BAR4 映射...用于远端访问本地的 memory 地址空间\"* [blocks: p20#b12-b14]。TRS §5.2.1 规定 *\"Inbound Access 无法访问 PCIE Outbound 地址空间 — 避免出现 Deadlock\"* [block: arm::doc::PCIe Subsystem TRS_r2p0#p19#b20-b21]。\n\n**验证说明：** 入站不能路由回出站 — 这是为了防止 NoC 死锁的硬约束。DMA 也只能做 SoC 本地内存 → 远程内存，不能做内部到内部的搬移（TRS_285），通过 SoC 内部 DMA 处理。\n\n---\n\n### 5. 排序 / 属性 / TLP 控制\n\n| | 入站 | 出站 | DMA |\n|---|---|---|---|\n| **排序保证** | 是（顺序远程写入被排序） | — | — |\n| **RO 属性 TLP** | 支持（NP 可通过之前发出的 P） | — | — |\n| **TLP ATTR 控制** | — | 按地址可配置（RO/IDO） | — |\n| **QoS/VC** | — | 无 | — |\n| **NCBE 支持** | 是（1-2 DWORD） | 是（MWr NCBE） | — |\n| **零字节写** | 可配置（丢弃/传递至 AXI） | 是（WSTRB=0） | — |\n\n**证据：** TRS §6.11.1 规定 *\"需保证 Remote 对 Memory 相同地址的连续的读写访问可以保序\"* [block: arm::doc::PCIe Subsystem TRS_r2p0#p35#b24]。TRS §6.11.2 规定 *\"TLP 的 ATTR(RO/IDO) 在 outbound 方向需要根据地址可配置\"* [block: arm::doc::PCIe Subsystem TRS_r2p0#p37#b20]。Spec §1.5 详细说明了入站和出站的 NCBE/零字节能力 [blocks: p6#b20-b21, p7#b4-b7]。\n\n---\n\n### 6. DMA 专属特性（区别于 Inbound/Outbound）\n\n| 特性 | 详情 |\n|---|---|\n| **引擎类型** | HDMA（Hyper-DMA），不复用传统 DMA（传统 DMA 不被支持） |\n| **通道** | 16 个读通道 + 16 个写通道 |\n| **标签** | 256 个标签 |\n| **传输模式** | 链表模式（1B~4GB 粒度）+ 信号描述符 |\n| **预取** | 每个通道的 LL 预取 1~64 个元素（32 个通道共享 1024 个） |\n| **中断** | 每个通道独立的本地和远程中断触发 |\n| **传输范围** | 仅 SoC 本地内存 ↔ 远程内存（无内部到内部，无 2D/3D） |\n| **目标速率** | 最大有效载荷大小 ≥54GB/s 单向（x16 模式） |\n| **ATS** | 不支持 |\n| **PASID** | 不支持 |\n\n**证据：** TRS §6.5 建立了 DMA 需求基线 [blocks: arm::doc::PCIe Subsystem TRS_r2p0#p31#b17-b24, p32#b2-b5]。Spec §1.8 详细说明了 HDMA 能力 [blocks: arm::protocol::PCIE Subsystem Spec_v3.21#p7#b22-b23, p8#b1-b3]。Spec §4.8 确认 *\"为了区分 PCIe 的 DMA 和系统 DMA 的访问，添加了 SID 寄存器\"* [block: arm::protocol::PCIE Subsystem Spec_v3.21#p29#b2]。\n\n---\n\n### 7. 设计验证总结\n\n| 维度 | 发现 |\n|---|---|\n| **收敛** | 入站和 DMA 共享 AXI Master → SMMUv3 → Main NoC 路径 — 架构上正确但必须通过 StreamID 区分以维持隔离。 |\n| **分歧** | 出站有 64 个 iATU 区域且有 ATS；入站只有 16 个区域但有 ReMap（256 个窗口）— **不对称设计**，原因是有意为之（入站需要更灵活的重新映射以处理碎片化的远程地址）。 |\n| **差距** | 出站侧的 AXI Bridge 排序细节标记为 TBD — *\"需要补充更多 outbound 方向 AXI Bridge ordering 的细节。是否可以从 AXCACHE 信号来生成？\"* [block: arm::doc::PCIe Subsystem TRS_r2p0#p37#b21]。 |\n| **死锁防护** | 入站→出站路由被禁止。DMA 不能做内部到内部。两者都是死锁防护约束。 |\n| **DMA 隔离** | DMA 明确被排除在 ATS 和 PASID 之外。它不是一个\"平等的对等体\" — 它是入站路径上的一个专用数据搬移器，拥有自己的 SID。 |",
+    "stop_reason": "end_turn",
+    "session_id": "94edc543-1b6f-4558-928f-7798823d9e80",
+    "total_cost_usd": 0.9278179999999999,
+    "usage": {
+      "input_tokens": 117867,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 335616,
+      "output_tokens": 6827,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 117867,
+        "outputTokens": 6827,
+        "cacheReadInputTokens": 335616,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.9278179999999999,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "f8300589-4377-467c-a066-9e52d541eaf3",
+    "_wall_time_s": 101.6
+  },
+  "case6_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 74332,
+    "duration_api_ms": 74225,
+    "num_turns": 9,
+    "result": "现在我已有完整的上下文，开始推导测试矩阵。\n\n---\n\n## IOMMU / ATS DV Test Matrix（基于 TRS r2p0）\n\n### 1. 架构背景（从 TRS 提取的关键约束）\n\n| 路径 | IOMMU 角色 | ATS 支持 | 关键 REQ |\n|------|-----------|---------|---------|\n| **Outbound LD/ST**（GPU/CPU → Host） | Host IOMMU 负责 IOVA→PA | 支持 ATS（ATC 在 Controller 外部自研） | TRS_070, TRS_090, TRS_100-102 |\n| **DMA**（控制器内部搬移） | Host IOMMU 负责 IOVA→PA | **不支持 ATS** | TRS_081, TRS_082, TRS_083 |\n| **Inbound**（Host → SoC） | SoC 侧 SMMUv3 (TBU) | N/A（Inbound 不走 PCIe ATS） | TRS_050, TRS_051, TRS_901 |\n\n关键数据流差异：\n- **IOMMU off + ATS off**：Outbound 发 PA，iATU 做 SoC PA → PCIe Domain PA，TLP AT=0b10 (Translated)\n- **IOMMU on + ATS off**：Outbound 发 IOVA，iATU 做 SoC PA → IOVA，TLP AT=00 (Untranslated)，Host IOMMU 翻译\n- **IOMMU on + ATS on**：Outbound 走 eATU (SoC PA→IOVA) → ATC 查 TLB → hit 则直接翻译发 PA，miss 则发 ATS Request 给 Host IOMMU\n\n---\n\n### 2. Test Matrix\n\n#### 2.1 Outbound LD/ST 路径（GPU/CPU → Host）\n\n| Case ID | IOMMU | ATS | ATC | 场景描述 | TLP AT Field | 地址映射链 | 预期行为 | 检查点 |\n|---------|-------|-----|-----|---------|-------------|-----------|---------|--------|\n| **OB-01** | Off | Off | Bypass | GPU LD/ST 发 SoC PA，直接出 PCIe | AT=10 (Translated) | SoC PA → oATU → PCIe PA | TLP 带 PA 发出，IOMMU bypass | oATU window hit；TLP Address = PCIe PA；No ATS request |\n| **OB-02** | On | Off | Bypass | GPU/CPU MMU 将 VA→SoC PA，oATU 映射 SoC PA→IOVA | AT=00 (Untranslated) | SoC VA → SoC PA → oATU → IOVA → (Host IOMMU) → Host PA | TLP 带 IOVA 发出；Host IOMMU 完成翻译 | oATU 映射正确；TLP AT=00；Host 侧 IOMMU 完成地址翻译 |\n| **OB-03** | On | On | **Hit** | eATU SoC PA→IOVA，ATC TLB 命中 | AT=10 (Translated) | SoC PA → eATU → IOVA → [ATC hit] → PCIe PA | TLP 带 PA 直发，ATC 命中无 ATS Request | eATU 窗口命中；ATC TLB entry 有效；TLP AT=10；0 笔 ATS Request；延迟最小 |\n| **OB-04** | On | On | **Miss → Success** | eATU SoC PA→IOVA，ATC TLB miss，发 ATS Request，IOMMU 返回 Translation Complete | AT=10 (Translated) | SoC PA → eATU → IOVA → [ATC miss] → ATS Req → IOMMU → Translation Complete → [ATC fill] → PCIe PA | AXI Slave stall 等待翻译；ATS Request/Completion 协议正确；TLP 最终发 PA | AXI AR/AW stall；ATS Request 格式 (TCtl, IOVA, STU)；Translation Complete TLP；ATC entry 正确填充；最终 TLP AT=10 |\n| **OB-05** | On | On | **Miss → Failure** | ATC miss，ATS Request 超时或 IOMMU 返回 Page Fault | N/A（Transaction Terminated） | SoC PA → eATU → IOVA → [ATC miss] → ATS Req → ❌ Fail | ATC **terminate** AXI Transaction，上报中断给 MCPU；**不**上报 HOST | AXI RRESP/BRESP = DECERR/SLVERR；MCPU 中断置位（tbu_ras）；ATS Request Timeout 计数器；Host 侧无额外中断（IOMMU 自有）；ATC entry 不产生错误映射 |\n| **OB-06** | On | On | **Miss → Timeout** | ATC miss，ATS Request 在可配置 timeout 内无响应 | N/A（Transaction Terminated） | 同 OB-05，但根因是 timeout 非 Page Fault | ATC timeout 触发 terminate；中断上报 MCPU | ATS Request timeout 寄存器可配；timeout 后 transaction 终止；错误状态寄存器记录 |\n| **OB-07** | On | On | **Invalidation** | Host IOMMU 发 ATS Invalidation，ATC 需清对应 VA entry | N/A | Invalidation Req → ATC 等待发送队列排空 → 清 entry → Invalidation Complete TLP | ATC entry 正确清除；发送队列中的 TLP 不受影响；Global & per-IOVA invalidate 均支持 | TLP 排空后 entry 清除；Invalidation Complete TLP 格式；Global Invalidation vs per-IOVA；inflight TLP 不使用过期 entry |\n| **OB-08** | On | On | **Write ATC miss + Data Buffer** | AXI Write ATC miss，Data buffer 暂存 W data；overflow 时 stall AW | AT=10 (最终) | Awvalid 接收→Data buffer→ATS 翻译完成→发 TLP | W data 暂存正确；buffer overflow 时 stall Awvalid；翻译完成后数据不丢 | Data buffer 深度 N byte；overflow 时 Awvalid 反压；W data 与 AW 对应正确 |\n\n#### 2.2 DMA 路径\n\n| Case ID | IOMMU | 场景描述 | TLP AT Field | 地址 | 预期行为 | 检查点 |\n|---------|-------|---------|-------------|------|---------|--------|\n| **DMA-01** | Off | DMA 直接配 PA | AT=10 (Translated) | SRC/DST = PA | DMA 搬移直接使用 PA，IOMMU bypass | AT=10；地址字段 = PA；IOMMU 不做翻译 |\n| **DMA-02** | On | DMA 配 IOVA，Host IOMMU 翻译 | AT=00 (Untranslated) | SRC/DST = IOVA | Host IOMMU 完成 IOVA→PA 翻译 | AT=00；地址 = IOVA；Host IOMMU 完成翻译；DMA 正确读写 |\n| **DMA-03** | On | SW 获取 IOVA 对应 PA 后直接配 DMA | AT=10 (Translated) | SRC/DST = PA | IOMMU bypass 该 TLP（识别 AT=10） | AT=10；地址 = PA；IOMMU 不做二次翻译 |\n| **DMA-04** | On | DMA **不支持 ATS** | N/A | N/A | 确认 DMA 路径不经过 ATC，即使 ATS enable 也不触发 ATS Request | DMA TLP 不经过 eATU/ATC；TRS_081 约束满足 |\n\n#### 2.3 Inbound 路径（Host → SoC，SMMU/TBU）\n\n| Case ID | TBU | 场景描述 | 预期行为 | 检查点 |\n|---------|-----|---------|---------|--------|\n| **IB-01** | Enable | Host read/write 通过 Inbound iATU → SMMUv3 → NoC | SMMUv3 根据 StreamID 做地址翻译/访问控制 | iATU BAR Match / Address Match；SID 区分 DMA vs Host R/W (TRS_051) |\n| **IB-02** | Bypass | TBU hardware bypass mode (TRS_901) | Inbound 直接出 PA，不经过 SMMU 翻译 | TBU bypass 寄存器配置；地址直通 |\n| **IB-03** | Enable | Inbound DMA TLP 对 TBU 产生不同 SID | DMA SID ≠ Host LD/ST SID，SMMU 按不同页表翻译 | TRS_051 StreamID 区分正确；两路地址空间隔离 |\n\n#### 2.4 跨场景组合\n\n| Case ID | 组合 | 描述 | 检查点 |\n|---------|------|------|--------|\n| **X-01** | IOMMU On + ATS On + Inbound TBU Enable | 全功能使能：Outbound 走 eATU→ATC，Inbound 走 SMMU | 两条路径不互相干扰；ATC miss 期间 Inbound 正常 |\n| **X-02** | IOMMU On/Off 动态切换 | 运行时通过 Host 配置切换 IOMMU enable/disable | ATC entry 是否需要 flush；outstanding transaction 处理 |\n| **X-03** | ATS On/Off 动态切换 | 运行时切换 ATS enable | eATU bypass 正确 (TRS_331)；ATC entry flush；in-flight ATS request 处理 |\n| **X-04** | IOMMU Off + DMA 并发 Outbound LD/ST | 两路 traffic 并发，DMA 用 PA，LD/ST 用 PA | 无 ATS/IOMMU 开销；带宽达标 (54GB/s) |\n\n---\n\n### 3. 检查项总结\n\n| 类别 | 检查项 | 来源 REQ |\n|------|--------|---------|\n| **TLP 格式** | AT field：00=Untranslated, 10=Translated | TRS_082, TRS_083, TRS_090, TRS_101 |\n| **ATC 行为** | Miss → ATS Request 格式 (TCtl, IOVA, STU, R/W) | TRS_364 |\n| **ATC 行为** | Hit → 直接翻译，无 ATS Request | TRS_363 |\n| **ATC 行为** | Read miss stall Arvalid→暂缓 Rvalid | TRS_365 |\n| **ATC 行为** | Write miss 接收 Awvalid + Data buffer | TRS_366 |\n| **ATC 行为** | 4-way set associative | TRS_400 |\n| **ATS Request** | Timeout 可配置；失败后 terminate + 中断 MCPU | TRS_370, TRS_371, TRS_102 |\n| **ATS Inval** | Global + per-IOVA；TLP 排空后清 entry | TRS_367, TRS_368, TRS_369 |\n| **错误处理** | ATS fail 不上报 Host（Host IOMMU 自有中断） | TRS_102 |\n| **错误处理** | Page Fault 后可通过 PRS 恢复 | TRS_102 |\n| **DMA 约束** | DMA 不支持 ATS | TRS_081 |\n| **eATU** | 47-bit SoC PA → 64-bit IOVA；最多 64 window | TRS_332, TRS_333 |\n| **TBU/SMMU** | Inbound 走 SMMUv3；TBU 硬件 bypass 可选 | TRS_050, TRS_901 |\n| **性能** | ATS 翻译延迟 <1us；ATC miss rate 需应用仿真确定 | TRS_402, TRS_403 |\n\n---\n\n### 4. 矩阵覆盖缺口 / 待确认项\n\n| 缺口 | 说明 |\n|------|------|\n| **PRS 尚未实现** | TRS_306 标记 TC550 暂不支持 PRS；OB-05 中 Page Fault 后无法自动恢复，需确认软件 workaround |\n| **ATC miss rate 指标未定** | TRS_403 待应用仿真确定，目前暂无可量化 pass/fail 标准 |\n| **ATC cache size / STU** | TRS_400 待仿真确定，影响 miss/hit 测试的参数化 |\n| **eATU window 不足的 corner case** | 64 window 全部占用时新映射行为未定义 |\n| **Host IOMMU 侧测试** | Host IOMMU 是系统级组件，不在 PCIe SS 的 DV scope，仅需验证协议交互正确 |",
+    "stop_reason": "end_turn",
+    "session_id": "d82e6725-a155-4dda-9932-d86c49ee77eb",
+    "total_cost_usd": 0.508868,
+    "usage": {
+      "input_tokens": 61381,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 155776,
+      "output_tokens": 4963,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 61381,
+        "outputTokens": 4963,
+        "cacheReadInputTokens": 155776,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.508868,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "523845b9-a9f1-485c-ac6d-c8eb27cc6b6d",
+    "_wall_time_s": 75.4
+  },
+  "case6_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 98357,
+    "duration_api_ms": 93413,
+    "num_turns": 27,
+    "result": "Now I have all the evidence needed. Let me compile the complete IOMMU/ATS DV test matrix.\n\n---\n\n## IOMMU/ATS DV Test Matrix — 基于 TRS r1p0 + Spec v3.21\n\n**文档基线**: PCIe Subsystem TRS r1p0 (01 Aug 2025) + PCIE Subsystem Spec v3.21 (28 Jan 2026)\n**覆盖范围**: SMMUv3/TBU (IOMMU) + ATS + ATC + eATU + PRS\n**标注**: TC550 当前暂不支持的功能以 ~~删除线~~ 标记，仅保留需求追溯供后续芯片使用\n\n---\n\n### 1. 系统级 IOMMU/ATS 配置模式 (TRS §5.3)\n\n| # | 测试项 | 需求追溯 | IOMMU | ATS | 流量类型 | 预期行为 | 证据 |\n|---|--------|---------|-------|-----|---------|---------|------|\n| SYS-01 | disable IOMMU, CPU/GPU LD/ST | TRS §5.3.1 | OFF | N/A | CPU/GPU Load/Store | Inbound AXI master 不经 SMMUv3，直连系统总线 | TRS p21 b1 |\n| SYS-02 | enable IOMMU, disable ATS | TRS §5.3.3 | ON | OFF | CPU/GPU LD/ST | Inbound 经 SMMUv3 地址翻译；Outbound bypass eATU | TRS p25 b1, §6.7 REQ_331 |\n| SYS-03 | enable IOMMU, enable ATS | TRS §5.3.4 | ON | ON | CPU/GPU LD/ST (Outbound AXI Slave) | Inbound 经 SMMUv3 翻译；Outbound 经 eATU + ATC → ATS Request | TRS p27 b1, §6.7 REQ_330 |\n\n---\n\n### 2. Inbound SMMUv3/TBU 路径 (TRS §6.3, Spec §4.8)\n\n| # | 测试项 | 需求追溯 | 验证点 | 预期行为 | 证据 |\n|---|--------|---------|--------|---------|------|\n| INB-01 | Inbound AXI Master 经 SMMUv3 接入系统总线 | REQ_PCIE_TRS_050 | Inbound 所有 AXI transaction 路径 | Inbound AXI Master 必须通过 SMMUv3 后才能接入系统总线 | TRS p30 b21 |\n| INB-02 | StreamID 按 Transaction 类型区分 | REQ_PCIE_TRS_051 | DMA 任务 vs Host read/write 的 SID | 至少区分 DMA 任务和 Host read/write 两类 StreamID | TRS p30 b22 |\n| INB-03 | TBU 硬件 bypass mode | REQ_PCIE_TRS_901 | Bypass 使能时 SMMU 不翻译 | TBU 支持硬件 bypass，bypass 时地址直通 | TRS p31 b1 |\n| INB-04 | TBU + TCU 通过 DTI 接口协作完成 SMMU 功能 | Spec §3.1 | DTI 接口协议正确性 | TBU 通过 DTI 外接 TCU，共同完成 SMMU 地址翻译和保护 | Spec p17 b4-b6 |\n| INB-05 | TBU SID 寄存器软件配置 | Spec §4.8 | SID 配置区分 PCIe DMA vs 系统 DMA | 软件可自由配置 SID 寄存器区分不同 DMA 来源 | Spec p29 b2 |\n\n---\n\n### 3. ATS 功能需求 (TRS §6.8)\n\n| # | 测试项 | 需求追溯 | 验证点 | 预期行为 | 证据 |\n|---|--------|---------|--------|---------|------|\n| ATS-01 | PCIe Gen5 ATS 协议兼容 | REQ_PCIE_TRS_360 | ATS Request/Completion TLP 格式 | 兼容 PCIe Gen5 协议规范的 ATS 功能 | TRS p33 b17 |\n| ATS-02 | ATS Capability 结构 | REQ_PCIE_TRS_361 | PCIe 配置空间 Extended Capability | 配置空间中正确实现 ATS Capability 结构 | TRS p33 b18 |\n| ATS-03 | ATS 仅限 GPU/CPU Outbound AXI Slave 方向 | REQ_PCIE_TRS_362 | DMA 方向不应发起 ATS | GPU/CPU 通过 Outbound AXI Slave 做 ATS 翻译；DMA 不支持 ATS | TRS p33 b19 |\n| ATS-04 | ATC (Address Translation Cache) 实现 | REQ_PCIE_TRS_363 | Cache hit/miss 行为 | 实现 ATC，hit 时直接使用缓存翻译结果 | TRS p33 b20 |\n| ATS-05 | ATC miss → ATS Request 生成 | REQ_PCIE_TRS_364 | ATC miss 时 TLP 生成 | ATC miss 时生成符合 PCIe 规范的 ATS Request TLP | TRS p33 b21 |\n| ATS-06 | AXI Read ATC miss 流控 | REQ_PCIE_TRS_365 | Arvalid 接收但 Rvalid 暂缓 | 接收 Arvalid，暂缓 Rvalid 直到 ATS 翻译完成 | TRS p33 b22 |\n| ATS-07 | AXI Write ATC miss 流控 + Data Buffer | REQ_PCIE_TRS_366 | Awvalid、Wdata 暂存 | 接收 Awvalid/Wdata 到 Data buffer；buffer overflow 时反压 awvalid | TRS p34 b1 |\n| ATS-08 | ATS Invalidation 接收 + Complete 返回 | REQ_PCIE_TRS_367 | Invalidation Request → Complete TLP | 接收并处理 ATS Invalidation，返回正确的 Complete TLP | TRS p34 b2 |\n| ATS-09 | Invalidation 后清空 ATC Entry | REQ_PCIE_TRS_368 | 发送队列排空后才清除 | 确保发送队列中所有 TLP 传输完毕后，清除对应 VA 的 ATC Entry | TRS p34 b3 |\n| ATS-10 | Global + IOVA Invalidation | REQ_PCIE_TRS_369 | Global invalidation / per-IOVA invalidation | 支持 Global Invalidation 和对应 IOVA 的 Invalidation | TRS p34 b4 |\n| ATS-11 | ATS Request Timeout 可配置 | REQ_PCIE_TRS_370 | Timeout 寄存器配置 + 超时触发 | 支持可配置的 ATS Request timeout 值 | TRS p34 b5 |\n| ATS-12 | Timeout/失败 错误上报 | REQ_PCIE_TRS_371 | 错误状态寄存器 + 中断上报 | ATS Request Timeout 或失败时，上报处理机制 + 记录错误状态 | TRS p34 b6 |\n\n---\n\n### 4. ATS 性能需求 (TRS §6.8.1)\n\n| # | 测试项 | 需求追溯 | 验证点 | 目标值 | 证据 |\n|---|--------|---------|--------|--------|------|\n| PERF-01 | ATC 4-Way Set Associative 结构 | REQ_PCIE_TRS_400 | Cache 组织方式 | 4-Way Set Associative；Cache 大小和 STU 需仿真确定 | TRS p34 b8-b10 |\n| PERF-02 | 并发 ATS Request 队列 | REQ_PCIE_TRS_401 | N 并发请求管理 | 独立队列管理机制；并发数 N 需仿真确定 | TRS p34 b11 |\n| PERF-03 | 单次 ATS 翻译延迟 | REQ_PCIE_TRS_402 | Latency 测量 | < 1μs | TRS p34 b12 |\n| PERF-04 | ATC Miss Rate 统计 | REQ_PCIE_TRS_403 | Miss rate 监控 | 待仿真确定目标值 (% 待定) | TRS p34 b13 |\n| PERF-05 | 性能统计信息 (Debug) | REQ_PCIE_TRS_404 | miss rate, translate/sec 等 | 提供类似 MMU-600 的统计信息供软件 debug | TRS p34 b15-b16 |\n\n---\n\n### 5. eATU 地址翻译路径 (TRS §6.7) — ~~TC550 暂不支持 (REQ_PCIE_TRS_336)~~\n\n| # | 测试项 | 需求追溯 | 验证点 | 预期行为 | 证据 |\n|---|--------|---------|--------|---------|------|\n| EAT-01 | ATS 使能时 eATU 在 Outbound 路径上 | REQ_PCIE_TRS_330 | Outbound AXI Slave → eATU | 使能 ATS 时，Outbound AXI Slave 访问必须先经 eATU 翻译 | TRS p33 b7 |\n| EAT-02 | ATS 禁用时 bypass eATU | REQ_PCIE_TRS_331 | Outbound AXI Slave 直通 | Disable ATS 时 Outbound AXI Slave 访问 bypass eATU | TRS p33 b8 |\n| EAT-03 | 47bit SoC → 64bit IOVA 映射 | REQ_PCIE_TRS_332 | 地址位宽转换正确性 | 47bit SoC Address → 64bit IOVA，实现方式与 iATU 类似 | TRS p33 b9 |\n| EAT-04 | 64 个可配置 Window | REQ_PCIE_TRS_333 | Window 数量/配置 | 最多 64 个可配置 Window | TRS p33 b10 |\n| EAT-05 | TLP 属性 (TC, ATTR) 赋值 | REQ_PCIE_TRS_334 | axmisc sideband 信号 | 根据 Window 通过 axmisc 对 TC/ATTR 等 TLP Field 赋值 | TRS p33 b11-b13 |\n| EAT-06 | eATU 不 override AXI 属性 | REQ_PCIE_TRS_335 | AXI ID/Size/Len 等透传 | 除 sideband 外，eATU 不 override AXI 其他属性 | TRS p33 b14 |\n\n---\n\n### 6. PRS (Page Request Service) (TRS §6.6) — ~~TC550 暂不支持 (REQ_PCIE_TRS_306)~~\n\n| # | 测试项 | 需求追溯 | 验证点 | 预期行为 | 证据 |\n|---|--------|---------|--------|---------|------|\n| PRS-01 | Page Request Message 生成 | REQ_PCIE_TRS_300 | awmisc 信号组包 | 通过 awmisc 信号对 Header 信息组包生成 PRI | TRS p32 b8-b9 |\n| PRS-02 | TLP Field 软件可配置 | REQ_PCIE_TRS_301 | R/W/Group Index 等 | Page Request 的 R/W/Group Index 等 TLP Field 软件可配 | TRS p32 b10-b11 |\n| PRS-03 | Page Request Group + 保序 | REQ_PCIE_TRS_302 | 最后一笔 PRI 保序 | Page Request Group 保证最后一笔 PRS Message 保序 | TRS p32 b12 |\n| PRS-04 | Capacity 控制 PRI 数量 | REQ_PCIE_TRS_303 | Capability Header Capacity | 通过 PRS Extended Capability Header 的 Capacity 控制发送量 | TRS p33 b2 |\n| PRS-05 | Status 实时更新 | REQ_PCIE_TRS_304 | Capability Header Status | 实时更新 Page Request Extended Capability Header 中的 Status | TRS p33 b3 |\n| PRS-06 | Page Group Response 解析 + 中断上报 | REQ_PCIE_TRS_305 | Response Message → SoC CPU 中断 | 解析 Page Request Group Response Message，中断通知 SoC CPU | TRS p33 b4 |\n\n---\n\n### 7. ATS RTL 微架构验证项 (TRS §7.3.6)\n\n| # | 微架构模块 | 验证重点 | 证据 |\n|---|-----------|---------|------|\n| UARCH-01 | ATC Cache 结构 | 4-Way Set Associative lookup/hit/miss/fill/evict | TRS p41 b9 |\n| UARCH-02 | Request/Completion 组包解包 | ATS Request TLP 组包、ATS Completion TLP 解包正确性 | TRS p41 b10 |\n| UARCH-03 | Invalidation 组包/解包/Ordering | Invalidation Request 组包、Completion 解包、ordering tracking | TRS p41 b11 |\n| UARCH-04 | Data Buffer | Write ATC miss 时 buffer 读写、overflow 反压 | TRS p41 b12 |\n| UARCH-05 | 异常上报逻辑 | Timeout、协议错误检测和上报路径 | TRS p41 b13 |\n\n---\n\n### 8. 交叉场景组合矩阵\n\n| 场景 | SMMU | ATS | eATU | Inbound 路径 | Outbound CPU/GPU 路径 | DMA 路径 |\n|------|------|-----|------|-------------|---------------------|---------|\n| C1 | OFF | N/A | N/A | Bypass SMMU | 直连 NoC | DMA (无需 SMMU) |\n| C2 | ON | OFF | Bypass | SMMUv3 翻译 | 直连 NoC (无地址翻译) | DMA → SMMUv3 翻译 |\n| C3 | ON | ON | 使能 | SMMUv3 翻译 | eATU → ATC → ATS Request | DMA → SMMUv3 (DMA 不走 ATS, 见 REQ_362) |\n\n---\n\n### 9. 边界条件和异常测试\n\n| # | 测试项 | 条件 | 预期 |\n|---|--------|------|------|\n| ERR-01 | ATS Request Timeout | 配置 timeout 值，注入无响应 | 超时上报 + 错误状态记录 (REQ_370/371) |\n| ERR-02 | ATC Data Buffer Overflow | 连续 Write ATC miss + 不返回翻译 | 反压 awvalid (REQ_366) |\n| ERR-03 | Invalidation 期间有新 TLP | Invalidation 处理中，发送队列仍有 pending TLP | 等待发送队列排空后才清除 ATC Entry (REQ_368) |\n| ERR-04 | Global Invalidation 后 ATC 全清 | Global Invalidation → 后续访问 | 所有 VA entry 被清除，后续访问全部 ATC miss |\n| ERR-05 | TBU Bypass 切换 | 运行时 bypass ↔ SMMU 切换 | 切换过程中 in-flight transaction 正确处理 |\n\n---\n\n**来源文档与证据索引**:\n- `arm::doc::PCIe Subsystem TRS_r2p0` — TRS r1p0, 42 pages\n- `arm::protocol::PCIE Subsystem Spec_v3.21` — Subsystem Spec v3.21, 42 pages\n- 所有需求实体均标记 `source_quality.source: deterministic` (text_entity:requirement)，无需二次验证\n- 具体 block_id 和 page 参考上文每个条目的 \"证据\" 列",
+    "stop_reason": "end_turn",
+    "session_id": "a3040224-02d2-4016-863f-ad64625ade4e",
+    "total_cost_usd": 0.88492,
+    "usage": {
+      "input_tokens": 102971,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 410880,
+      "output_tokens": 6585,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 102971,
+        "outputTokens": 6585,
+        "cacheReadInputTokens": 410880,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.88492,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "47cabc90-5f0d-48b1-b64a-bd710fa69ad0",
+    "_wall_time_s": 99.5
+  },
+  "case7_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 179275,
+    "duration_api_ms": 179114,
+    "num_turns": 13,
+    "result": "Test plan 已生成: `benchmark_runs/baseline_docgraph_compare/msi_msix_legacy_interrupt_testplan.md`\n\n**覆盖概要:**\n\n| 维度 | 数量 |\n|---|---|\n| Spec 需求 (PCIE_MAS_REQ) | 8 条: 1001–1005, 1701, 1704–1706 |\n| TRS 需求 (REQ_PCIE_TRS) | 14 条: 450–453, 460–467 |\n| Test Scenarios | 23 个 |\n| 寄存器覆盖 | MSI Capability / MSI-X Capability / MSI-X Table & PBA / MSIX2DBI / Doorbell / INTx / 中断输出状态寄存器 |\n| 覆盖率矩阵 | 18 需求 × 23 场景全映射 |\n\n**Test Scenario 分布:**\n\n- **MSI** (6 个): Capability 结构、32 vectors 软件触发、Per-Vector Mask、硬件 14 路触发、Priority 仲裁、单 PF 场景\n- **MSI-X** (13 个): Capability 结构、2048 vectors 全触发、Table REG BAR 读写、PBA 验证、Doorbell 触发、MSIX2DBI 路径、硬件仲裁、Function Mask、SRAM 完整性、BIR/Offset 一致性、TC 配置、Host 隔离、Per-Vector Mask\n- **Legacy INTx** (3 个): Capability 验证、Assert/Deassert、Disable 功能\n- **互操作** (6 个): MSI/MSI-X 互斥、INTx 切换、Level 输出、快速连续中断、合并输出、Reset 行为\n\n**执行分 4 个 Phase:** Infrastructure → INTx 基线 → MSI 32 vectors → MSI-X 2048 vectors → 互操作/边界。",
+    "stop_reason": "end_turn",
+    "session_id": "6daa71be-a367-4ccf-9e98-7aaabe8946bd",
+    "total_cost_usd": 0.8674639999999999,
+    "usage": {
+      "input_tokens": 76135,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 345728,
+      "output_tokens": 12557,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 76135,
+        "outputTokens": 12557,
+        "cacheReadInputTokens": 345728,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.8674639999999999,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "014cae6b-84b7-4352-b899-7d689bac2e0b",
+    "_wall_time_s": 180.4
+  },
+  "case7_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 368212,
+    "duration_api_ms": 363783,
+    "num_turns": 31,
+    "result": "Test plan generated. 文件路径:\n\n```\nbenchmark_runs/baseline_docgraph_compare/msi_msix_legacy_interrupt_testplan.md\n```\n\n## 取证摘要\n\n通过 DocGraph MCP 工具链，从两份文档中共提取了 **12 个 chunks** (Doc A: 10, Doc B: 2)，覆盖 **30+ 个 L2 实体** (all deterministic):\n\n### 证据链\n\n| 工具调用 | 结果 |\n|---|---|\n| `docgraph_files` | 确认 3 份索引文档，定位 2 份相关文档 |\n| `docgraph_search_chunks` x3 | MSI/interrupt/INTx 语义搜索，返回 20+ hits/次 |\n| `docgraph_fetch` x12 | 获取 12 个关键 chunks + 完整 blocks |\n| `docgraph_search` x2 | L2 实体提取: 30+ requirement/register/bitfield/signal/interrupt (全部 deterministic) |\n\n### 关键发现：跨文档不一致\n\n**CC_02** — MSI-X 最大 vectors: MAS Spec (Doc A §1.10, `p8#b13`) 要求 **1024**，TRS (Doc B §6.9, `p35#b1`) 要求 **2048**。已在 test plan §1.3 中标记，DV 以 TRS=2048 为准。\n\n### Test Plan 结构\n\n- **§0** — DocGraph 证据索引 (12 条 chunk/block 证据 + L2 实体清单)\n- **§1** — 需求矩阵 (21 条需求，每条附 DocGraph 证据)\n- **§2** — 寄存器 & 地址空间 (per_vector_misc 6 字段附 chunk `c_table_s4.6.2.2_106` + block `p27#b4` 证据)\n- **§3** — 28 个 Test Scenarios (MSI ×6, MSI-X ×13, INTx ×3, Interop ×6)，每场景附证据引用\n- **§4** — 覆盖率矩阵\n- **§5** — 执行顺序\n- **§6** — 附录 + 完整证据索引表",
+    "stop_reason": "end_turn",
+    "session_id": "6a4332d2-ee01-43eb-832c-3a7c89b73f7a",
+    "total_cost_usd": 1.678883,
+    "usage": {
+      "input_tokens": 114453,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 900736,
+      "output_tokens": 26250,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 114453,
+        "outputTokens": 26250,
+        "cacheReadInputTokens": 900736,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 1.678883,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "7753d1a6-099a-45fd-aeb2-32c4d0617d29",
+    "_wall_time_s": 369.4
+  },
+  "case10_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 162705,
+    "duration_api_ms": 161821,
+    "num_turns": 12,
+    "result": "文档已生成: `benchmark_runs/baseline_docgraph_compare/ltssm_state_debug_verification_plan.md`\n\n**文档内容摘要：**\n\n### 寄存器/字段 (§2)\n- `freeze_reg` — 1-bit RW, SW 写 1 触发快照, HW 完成后回写 0\n- `ltssm_state_reg[127:0]` — 128-entry x 7-bit (5-bit state + 1-bit vld), RO\n- 附完整的 22 个 LTSSM 状态编码表 (Detect → L0/L0s/L1/Recovery/HotReset/...)\n\n### Freeze/Capture/Read 流程 (§3)\n1. SW 写 `freeze_reg = 1` → HW 检测上升沿\n2. DMUX 写使能 1 拍 → shift_reg 全部内容锁存到 DMUX\n3. shift_reg clear 1 拍 → 清空\n4. DMUX → state_reg, HW 回写 `freeze_reg = 0`\n5. SW 轮询 `freeze_reg` 变为 0 后, 通过 APB 读 128 个 entry\n6. 含时序图\n\n### Assertions (§5)\n- 8 条 SVA: shift_reg 深度上限、vld 一致性、freeze 握手延迟、shift_reg 清空验证、DMUX 单拍写、数据匹配、复位后 vld 清零\n\n### Coverage (§6)\n- 8 个 coverpoint: fill level、freeze-at-fill、连续 freeze、状态遍历、握手延迟、eviction 计数、数据一致性、跳变速率\n- 2 个 cross: fill×match、state×fill\n\n### 测试场景 (§7)\n- 15 个测试用例: 基本功能 (debug_01~06)、场景注入 (debug_07~12)、CDC/时序 (debug_13~15)\n- Bring-up 挂死诊断 checklist (§8)\n- 常见异常模式速查表 (§8.2)",
+    "stop_reason": "end_turn",
+    "session_id": "9ee1320f-8def-4f89-836e-1c339dbcab1f",
+    "total_cost_usd": 0.6882289999999999,
+    "usage": {
+      "input_tokens": 58534,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 365568,
+      "output_tokens": 8511,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 58534,
+        "outputTokens": 8511,
+        "cacheReadInputTokens": 365568,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.6882289999999999,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "6a53afa4-8bf1-4d8c-9d22-cba27547e915",
+    "_wall_time_s": 163.8
+  },
+  "case10_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 135016,
+    "duration_api_ms": 129521,
+    "num_turns": 27,
+    "result": "完成。以上流程覆盖了从寄存器定义 → 硬件采样机制 → freeze/snapshot/readback 序列 → Debug IO 应急通道 → Hot Reset 场景 → 状态机卡死分析的全路径，每条结论都带 docgraph 的 chunk/block 证据锚点。",
+    "stop_reason": "end_turn",
+    "session_id": "4a100952-6f64-4364-90fd-2442eb9a4421",
+    "total_cost_usd": 0.9119109999999999,
+    "usage": {
+      "input_tokens": 90546,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 547712,
+      "output_tokens": 7413,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 90546,
+        "outputTokens": 7413,
+        "cacheReadInputTokens": 547712,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.9119109999999999,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "d3b2cd62-7aa1-4e39-b597-76dcf2bc58cb",
+    "_wall_time_s": 136.2
+  },
+  "case12_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 205572,
+    "duration_api_ms": 204703,
+    "num_turns": 19,
+    "result": "Now I have comprehensive coverage of both documents. Let me synthesize the cross-document analysis into the 10 sign-off questions.\n\n---\n\n# PCIe 子系统 Tape-In 前设计验证联合评审：10 个 Sign-Off 前必须确认的问题\n\n> 基于两份文档的交叉比对，按磁带签核(frozen RTL)标准列出。每问标注两份文档中的冲突/空白/边界条件，以及应覆盖的验证场景。\n\n---\n\n## Q1. BAR 数量与类型不一致 —— 哪个是 tape-in 基线？\n\n| | TRS r2p0 | Spec v3.21 |\n|---|---|---|\n| BAR 数量 | **3** (1×64b MEM + 1×32b REG + 1×32b internal) | **4** (BAR0/1 32b + BAR2/4 64b) |\n| 内部寄存器暴露 | REG BAR | BAR0 |\n| MSI-X Table 暴露 | REG BAR (§5.2.1) | BAR0 (Table 4-3) |\n| 依据 | REQ_PCIE_TRS_043 | REQ_BAR_601, §4.3, Table 4-4 |\n\n**验证风险**: BAR 数量/类型决定 iATU BAR Match Mode 的匹配逻辑、MSI-X table/PBA 的 Host 可见地址、以及 ReMap 的 inbound 窗口配置。BAR 模型不一致意味着其中一份文档的验证环境必然无法覆盖真实硅片行为。\n\n**需确认**: Tape-in 的 BAR 配置究竟是 3 BAR 还是 4 BAR？MSI-X Table/PBA 最终映射到哪个 BAR、哪个 offset（Spec 自身在 Table 4-3 的 bit22 映射 vs Controller config 的 offset 0x10000/0x20000 之间也存在矛盾）？\n\n---\n\n## Q2. MSI-X Table/PBA 基地址在 Spec 内部自相矛盾\n\n映射到 **Spec v3.21**:\n- **Controller 参数 (p.19)**: MSI-X Table Offset = `0x10000`, MSI-X PBA Offset = `0x20000` (均为 BAR0 内)\n- **DBI 地址映射 (Table 4-3, p.20)**: MSI-X Table 由 bit22=1 选中（即 BAR0+`0x400000` 区域 32KB），MSI-X PBA 由 bit22=1 + bit15=1 选中\n- **v3.02 changelog**: \"bar0 的 MSI-X pba offset 修改: 0x10000 → 0x88000\"\n- **Table 4-4 (p.21)**: BAR0+`0x80000` = MSI-X 表格, BAR0+`0x88000` = MSI-X PBA\n\n**验证风险**: Host 枚举时读取 MSI-X Capability 结构中的 Table Offset / PBA Offset 字段，若与硬件实际 decode 地址不一致，MSI-X 中断完全不可用 — 这是 tape-in 后无法通过软件 workaround 的致命问题。\n\n**需确认**: MSI-X Table 和 PBA 的最终物理地址（在哪个 BAR + offset），并保证 DBI capability 结构中 reported offset 与实际 decode 一致。\n\n---\n\n## Q3. ATS/eATU —— TRS 说\"不实现\"但需求详细保留，RTL 中是否存在残留接口？\n\n映射到 **TRS r2p0**:\n- REQ_PCIE_TRS_103: \"该功能不实现的！\"（ATS enable + IOMMU 场景）\n- REQ_PCIE_TRS_336: \"TC550 暂不支持该功能\"（eATU）\n- 但 TRS §6.7-6.8 仍完整列出了 eATU (REQ_PCIE_TRS_330-335) 和 ATS (REQ_PCIE_TRS_360-404) 的需求规范\n\n映射到 **Spec v3.21**: 完全不提及 ATS/eATU。\n\n**验证风险**: 如果 Synopsys Controller IP 内部有 ATS/eATU 相关的接口信号但未 terminate/isolate，可能导致：\n- 悬空输入引起亚稳态或漏电\n- ATC miss 时 AXI Slave 侧未预期的 stall 行为\n- 如果未来需要使能 ATS，现有 NoC 接口是否预留了 ATS translation delay 所需的反压机制？\n\n**需确认**: ATS/eATU 相关 RTL 接口是否已在 tape-in 版本中完全移除或正确 tie-off？若为\"暂不支持\"但保留接口，是否有 isolation 保证不影响功能模式？\n\n---\n\n## Q4. PERST# 复位行为：暖复位还是冷复位？\n\n映射到 **Spec v3.21**:\n- §4.5.2: \"PERST# 直接接到硬件冷复位 power_on_rst_n 对全芯片进行复位\"\n- §4.20.2 PERST# sequence: 步骤中未包含 PHY 重新 boot，直接\"配置 app_ltssm_enable 为 1\"后重新 link training\n\n映射到 **TRS r2p0**:\n- REQ_PCIE_TRS_900: Hot Reset 不 reset PCIe Controller\n- TRS 对 PERST# 描述为\"暖复位接口\" (Table 2-1)\n\n**验证风险**: \n- 若 PERST# = cold reset (power_on_rst_n)，则 PHY 需要重新加载固件、重新校准，**100ms Configuration-Ready 要求 (REQ_PCIE_TRS_550) 极可能被违反**。\n- 若 PERST# = warm reset，则 Spec §4.5.2 的描述需要修正，且需要明确 warm reset 的复位域边界（哪些寄存器/状态机被复位，哪些保留）。\n- 两种行为对验证环境和 SI 验证的影响完全不同。\n\n**需确认**: PERST# 的复位域精确边界、PHY 是否需要重新 boot、从 PERST# de-assert 到 Configuration-Ready 的实测 latency。\n\n---\n\n## Q5. core_clk/aux_clk 动态切换无 CDC —— GFM 是否在所有 PVT 下可靠？\n\n映射到 **Spec v3.21**:\n- §4.4: \"core_clk 和 aux_clk 通过 GFM 进行动态切换... core_clk 和 aux_clk 之间无 CDC 处理\"\n- 切换发生在 L1 substate 期间：停 core_clk，切到 aux_clk\n\n**验证风险**: GFM (Glitch-Free Mux) 是 core_clk ↔ aux_clk 切换的唯一保护。GFM 输出毛刺将导致 Controller 逻辑状态机跳变或寄存器损坏。aux_clk 来自 clk_ref_clk (20MHz)，与 core_clk (~1GHz) 频率相差 50 倍。\n\n**需确认**:\n- GFM 在所有 PVT corner (SS/FF/TT, -40°C~125°C) 下是否有毛刺？\n- 时钟切换期间 PIPE 接口的 phy_mac_maxpclkack_n 握手是否正确？\n- Controller 内部状态（特别是未完成 TLP 的 sequencing state）在时钟停止-恢复后能否正确恢复？\n\n---\n\n## Q6. Inbound SMMUv3 StreamID 区分是动态还是静态？\n\n映射到 **TRS r2p0**:\n- REQ_PCIE_TRS_051: Inbound AXI Master 需\"根据 Transaction 类型，来控制 SMMUv3 的 StreamID。至少区分：DMA 任务以及 host 的 read/write\"\n- 这要求硬件**动态**区分每笔 transaction 的类型并赋不同 SID\n\n映射到 **Spec v3.21**:\n- §4.8: \"添加了 SID 寄存器软件根据需求自由配置\" — 暗示**静态**配置\n\n**验证风险**: 如果 SID 是静态配置的，DMA 完成的 inbound 写和 Host 的 inbound read 会使用同一 SID，SMMU 无法区分两者做不同地址翻译策略。这可能违反 TRS 的安全隔离需求（Host 不应能通过篡改 DMA descriptor 访问 SoC 内部保护空间）。\n\n**需确认**: SID 的实际生成机制 — 是每 transaction 动态选择还是静态寄存器？如果是静态，TRS REQ_PCIE_TRS_051 如何满足？\n\n---\n\n## Q7. Outbound iATU 窗口数 —— 64 还是 256？\n\n映射到 **TRS r2p0**:\n- REQ_PCIE_TRS_202: **256** OB windows\n- 但同页注记：\"Window 数量 >64 时，timing closure 会比较困难\"\n\n映射到 **Spec v3.21**:\n- §4.1.1 Controller Parameters: **64** OB iATU regions\n- REQ_IATU_701: **64** OB regions\n\n**验证风险**: TRS §5.3.1 指出当 Host disable IOMMU 时，\"PCIe Domain 的地址分配可能较为离散，需要尽量多的 Window\"。64 窗口在典型的服务器平台 PCIe 地址分配模式下是否足够覆盖所有离散地址段？如果不足，部分 outbound 访问将因 iATU miss 而被错误路由或丢弃。\n\n**需确认**: 最终 tape-in 的 OB iATU 窗口数，以及是否针对典型 RC 地址分配模式（如 Linux BIOS 的 _CRS 分配）做过覆盖分析。\n\n---\n\n## Q8. 中断聚合为单 bit 后的丢失风险与响应延迟\n\n映射到 **Spec v3.21**:\n- §4.6.1 / Table 4-6: function 中断聚合为 **1-bit** `irq_func`，error 中断聚合为 **1-bit** `irq_err`\n- 但 REQ_IRQ_1706 列举了 10+ 种必须保证上报的中断（link down, hot reset, PLL lock/unlock, PHY ref clock, flush done, DMA interrupts 等）\n- 所有中断为 level 类型 (REQ_IRQ_1701)\n\n映射到 **TRS r2p0**: 无对应中断聚合描述\n\n**验证风险**: \n- 当多个中断源同时触发时，聚合后的 1-bit level 只能反映\"至少有一个中断 pending\"，**无法区分具体中断源**。如果 ISR 清除了中断 A，但在清除和重新读取状态寄存器之间中断 B 也变为 inactive，中断 B 可能被完全丢失。\n- DMA 的 32 个 channel 中断虽独立输出，但 Spec §4.6.1 汇总表中 edma_int 也是 32-bit 不复用 — 需确认是否和 REQ_IRQ_1702 一致。\n\n**需确认**: 中断聚合逻辑是否有硬件 latch 机制保证每个中断源至少被 Software 观察到一次？中断响应延迟（从中断源 assert 到 `irq_func`/`irq_err` 输出变化）是否满足系统实时性要求？\n\n---\n\n## Q9. LTSSM 死锁/反复重训时的超时保护\n\n映射到 **Spec v3.21**:\n- REQ_DEBUG_2301: LTSSM debug shifter 记录最近 128 个状态\n- §4.5.3.2: Flush timer 0~134ms\n- §4.20.1 Step 11: 等 `rdlh_link_up = 1`\n\n映射到 **TRS r2p0**:\n- REQ_PCIE_TRS_550: 100ms 内到 Configuration-Ready\n- REQ_PCIE_TRS_160: link width negotiation x4/x8/x16\n\n两份文档均**未定义**:\n- LTSSM 进入 Recovery 后的最大重试次数/时间\n- Link training 反复失败时（如信号完整性不满足 Gen5 眼图），LTSSM 是否会无限重试或降速到 Gen1 后仍失败时的行为\n- 超时后是否有 watchdog 触发中断通知 SoC？\n\n**验证风险**: 若 LTSSM 陷入 Recovery → Detect → Polling → Configuration → Recovery 的无限循环（常见于 SI 问题），且无超时保护，则：\n- 100ms boot 要求必然违反\n- SoC 侧 CPU 无法获知 link training 已死锁（因为 `rdlh_link_up` 永远不为 1）\n\n**需确认**: LTSSM 是否有最大重训时间/次数限制？超时后的 error handling 路径是什么？\n\n---\n\n## Q10. PHY 固件加载期间 CR Bus / JTAG / IJTAG 并发访问的仲裁安全\n\n映射到 **Spec v3.21**:\n- §4.15.5: 3 种 PHY boot 模式（ROM 直接、ROM→SRAM、CR Bus 旁路 ROM 加载 FW 到 SRAM）\n- REQ_PHY_1210: CR bus 可访问 PHY 寄存器空间和 SRAM 空间\n- REQ_PHY_1211: cr_para_sel[1:0] 选择 CR BUS / JTAG / IJTAG\n- §4.16: 5 路 JTAG (4 PHY + BD) 经 MUX 共用 TSV JTAG PAD，TDR 寄存器静态选择\n\n**验证风险**:\n- PHY FW 加载到 SRAM 期间，如果 CR bus 或 JTAG 也访问同一 SRAM，会导致 FW 损坏或读回错误数据\n- CR bus 来自 pcie_cfg_clk (250MHz) 域，JTAG 来自 TCK 域（典型 10-50MHz），IJTAG 来自 DFT 控制器域 — 三个异步域同时访问 SRAM 的仲裁未描述\n- 如果 PHY 的 SRAM 不支持多端口或读写冲突检测，FW 加载失败将导致 PHY 完全不可用\n\n**需确认**:\n- PHY FW 加载期间是否有 lock/status 寄存器阻止 CR Bus 和 JTAG/IJTAG 访问 SRAM？\n- 多时钟域并发访问 PHY 内部 SRAM 的仲裁策略是什么？\n- 异常场景：FW 加载一半时发生 PERST# 复位，SRAM 内容如何保证一致性？\n\n---\n\n## 总结矩阵\n\n| # | 主题域 | 问题类型 | 涉及 Spec 章节 | 涉及 TRS 需求 | 不可 Workaround |\n|---|---|---|---|---|---|\n| Q1 | 地址映射 | **两份文档冲突** | §4.3, Table 4-4, REQ_BAR_601 | REQ_PCIE_TRS_043 | Yes |\n| Q2 | 中断/MSI-X | **Spec 内部矛盾** | Table 4-3, p.19 config, v3.02 changelog | REQ_PCIE_TRS_462/463 | Yes |\n| Q3 | IOMMU/ATS | **TRS 内部矛盾** | 未提及 | REQ_PCIE_TRS_103/336 vs §6.7-6.8 | Yes (接口 tie-off) |\n| Q4 | 时钟复位 | **两份文档冲突** | §4.5.2, §4.20.2 | REQ_PCIE_TRS_900, _550 | Yes |\n| Q5 | 时钟复位 | **边界条件缺失** | §4.4, §4.12 | — | Yes |\n| Q6 | IOMMU/ATS | **两份文档冲突** | §4.8 (SID 静态) | REQ_PCIE_TRS_051 (动态) | 可能 (安全) |\n| Q7 | 地址映射/DMA | **两份文档冲突** | §4.1.1 (64 OB) | REQ_PCIE_TRS_202 (256 OB) | 可能 (性能) |\n| Q8 | 中断 | **边界条件缺失** | §4.6.1, REQ_IRQ_1706, Table 4-6 | REQ_PCIE_TRS_450-467 | 可能 |\n| Q9 | LTSSM | **两份文档均缺失** | REQ_DEBUG_2301, §4.5.3.2 | REQ_PCIE_TRS_550 | 可能 |\n| Q10 | PHY/JTAG | **边界条件缺失** | §4.15.5, §4.16, REQ_PHY_1210/1211 | — | Yes |",
+    "stop_reason": "end_turn",
+    "session_id": "fe75d5b8-6944-49ca-932b-79ee70f3c36b",
+    "total_cost_usd": 0.882131,
+    "usage": {
+      "input_tokens": 84291,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 433152,
+      "output_tokens": 9764,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 84291,
+        "outputTokens": 9764,
+        "cacheReadInputTokens": 433152,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.882131,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "88f79d22-b980-43b9-a3ac-6098bc511561",
+    "_wall_time_s": 206.6
+  },
+  "case12_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 133342,
+    "duration_api_ms": 130381,
+    "num_turns": 31,
+    "result": "以上 10 个问题覆盖了地址/iATU/IOMMU/SMMU（Q1-3）、中断 MSI/MSI-X（Q4-5）、DMA（Q6-7）、时钟（Q8）、PHY（Q9）、JTAG（Q10）全部 7 个领域。每条都带有 docgraph 的 chunk ID 和 block ID 作为可追溯证据。发现的突出问题包括：\n\n- **文档间数据冲突**: Spec MSI=14 vs TRS MSI=32（Q4）；TRS Legacy DMA \"不支持\"但又有 16+16（Q6）\n- **未封闭参数**: ATC miss rate `？%` 占位符（Q3）；物理层 TRS 仅一行\"需要确认\"（Q9）；\"其他中断需要评估\"（Q5）\n- **架构决策缺口**: DMA 54GB/s 但不支持 ATS（Q7）；StreamID 最低粒度\"至少区分\"（Q2）；JTAG MUX 静态配置的仲裁安全性（Q10）",
+    "stop_reason": "end_turn",
+    "session_id": "c3f93230-ab9f-4f7d-813a-cd1e8ca1a5cc",
+    "total_cost_usd": 1.112337,
+    "usage": {
+      "input_tokens": 121988,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 617344,
+      "output_tokens": 7749,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 121988,
+        "outputTokens": 7749,
+        "cacheReadInputTokens": 617344,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 1.112337,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "2ee510f0-64b9-4957-8fab-c218d0dd3e46",
+    "_wall_time_s": 134.5
+  },
+  "case13_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 136526,
+    "duration_api_ms": 136407,
+    "num_turns": 7,
+    "result": "我已完整阅读了 42 页 PCIe 子系统 Spec。以下是基于文档提取的 SDC/STA 约束输入 checklist。\n\n---\n\n# PCIe 子系统 SDC/STA 约束输入 Checklist\n\n> 来源: PCIe Subsystem Spec v3.21 (28 Jan 2026), 42 pages\n\n---\n\n## 1. 时钟源 (Clock Sources)\n\n| # | 时钟名 | 方向 | 频率 | 来源 | 用途 |\n|---|---|---|---|---|---|\n| CS-1 | `pcie_cfg_clk` | I | 250 MHz | SoC PLL | NoC + 系统寄存器逻辑时钟 (§4.4.1) |\n| CS-2 | `clk_ref_clk` | I | 20 MHz | 芯片外部 | CRG PLL 参考时钟 (测试/debug 模式) (§4.4.1, CRG_1502) |\n| CS-3 | `aux_clk` | I | 20 MHz | 从 `clk_ref_clk` 接入 | L2 低功耗模式逻辑时钟 (§4.4.1, Interface Table) |\n| CS-4 | `PHY0_PAD_REF_CLK_N/P` | IO | 100 MHz | PAD 差分输入 | PHY0 参考时钟 (模式1/2) (§4.4.1) |\n| CS-5 | `PHY1_PAD_REF_CLK_N/P` | IO | 100 MHz | PAD 差分输入 | PHY1 参考时钟 (仅模式2) (§4.4.1) |\n| CS-6 | `PHY2_PAD_REF_CLK_N/P` | IO | 100 MHz | PAD 差分输入 | PHY2 参考时钟 (仅模式2) (§4.4.1) |\n| CS-7 | `PHY3_PAD_REF_CLK_N/P` | IO | 100 MHz | PAD 差分输入 | PHY3 参考时钟 (仅模式2) (§4.4.1) |\n\n**时钟源约束要点:**\n- `pcie_cfg_clk` 与 CRG/PLL 时钟域完全独立 (来自不同 SoC PLL)\n- PHY 参考时钟 3 种拓扑模式: 级联(模式1)、独立同源(模式2)、本地PLL(模式3) — STA 需覆盖最差模式\n- `aux_clk` 和 `clk_ref_clk` 同源，但与 `core_clk` 异步\n\n---\n\n## 2. 时钟域 (Clock Domains)\n\n| # | 时钟域名 | 频率 | 来源 | 驱动逻辑 | 备注 |\n|---|---|---|---|---|---|\n| CD-1 | `core_clk` | 125/250/500/1000 MHz | PHY lane0 `max_pclk` 分频 | PCIe Controller 逻辑 (§4.4.1) | Gen1=125M, Gen2=250M, Gen3=250M, Gen4=500M, Gen5=1000M |\n| CD-2 | `pipe_rx_clk` | 恢复时钟 | PHY RX 数据恢复 | PIPE RX 接口逻辑 (§4.9) | 频率 = 当前 lane rate |\n| CD-3 | `pipe_clk` / `max_pclk` | 1000 MHz (固定) | PHY lane0 输出 | PIPE TX 接口; `core_clk` 生成源 (§4.15.4) | Fixed MAXPCLK mode |\n| CD-4 | `axi_clk` | 1000 MHz | CRG 本地 PLL | AXI Master/Slave, TBU, ReMap, HotResetBlock (§4.4.1) | CRG_1504 |\n| CD-5 | `cr_para_clk` / `cr_clk` | 125 MHz | CRG 本地 PLL | PHY CR 配置接口 (§4.4.1) | CRG_1504 |\n| CD-6 | `local_phy_ref_clk` | 100 MHz | CRG 本地 PLL | PHY 备用参考时钟 (§4.4.1) | CRG_1504 |\n| CD-7 | `pcie_cfg_clk` | 250 MHz | SoC PLL (输入) | CFG NoC, 系统寄存器 (§4.4.1) | 来自 CS-1 |\n| CD-8 | `aux_clk` | 20 MHz | 外部输入 | 低功耗 L2 逻辑 (§4.4.1) | GFM 切换到 core_clk |\n| CD-9 | JTAG/TCK | (外部) | JTAG PAD | JTAG 调试接口 (§4.16) | 与功能时钟异步 |\n\n**时钟域数量: 9 个** (含 JTAG)\n\n---\n\n## 3. PLL 列表\n\n| # | PLL 名称 | 位置 | 参考时钟源 | 输出频率 | 关键约束 |\n|---|---|---|---|---|---|\n| PLL-1 | **CRG PLL** (本地) | PCIE_CRG | MUX: `mplla` 100M / `mpllb` 100M / `clk_ref_clk` 20M | 功能: 1GHz; 测试: 2GHz | CRG_1501/1503 |\n| PLL-2 | **PHY MPLLA** | PHY0 | PAD / 本地PLL | — | 为 CRG PLL 提供 100MHz refa_dig_fr_clk (§4.4.1) |\n| PLL-3 | **PHY MPLLB** | PHY0 | PAD / 本地PLL | — | 为 CRG PLL 提供 100MHz refb_dig_fr_clk (§4.4.1) |\n| PLL-4 | **PHY 内置 PLL** (x4) | PHY0~3 | PAD 差分 100MHz | — | 提供 PHY/PIPE/Controller 主时钟 (§4.4.1) |\n| PLL-5 | **SoC PLL** (外部) | SoC | — | 250 MHz | 提供 `pcie_cfg_clk` |\n\n---\n\n## 4. CRG (Clock & Reset Generator) 输出\n\n| # | 输出时钟 | 频率 | 用途 | 来源 |\n|---|---|---|---|---|\n| CRG-1 | `axi_clk` | 1000 MHz | AXI 接口 + TBU + ReMap + HotResetBlock | PLL-1 |\n| CRG-2 | `cr_para_clk` | 125 MHz | PHY CR 配置接口 | PLL-1 |\n| CRG-3 | `local_phy_ref_clk` | 100 MHz | PHY 备用时钟 | PLL-1 |\n| CRG-4 | `clk_test0` | 2000 MHz | 测试模式 | PLL-1 (测试) |\n| CRG-5 | `clk_test1` | 1000 MHz | 测试模式 | PLL-1 (测试) |\n| CRG-6 | `clk_test2` | 125 MHz | 测试模式 | PLL-1 (测试) |\n| CRG-7 | `clk_test3` | 100 MHz | 测试模式 | PLL-1 (测试) |\n\n---\n\n## 5. 时钟 MUX / GFM / DIV\n\n| # | 类型 | 描述 | 输入 | 输出 | 选择信号 | 约束需求 |\n|---|---|---|---|---|---|---|\n| MUX-1 | **PLL 参考时钟 MUX** | CRG PLL 参考时钟选择 (3选1) | mplla 100M / mpllb 100M / clk_ref_clk 20M | PLL 参考时钟 | 寄存器配置 (§4.4.1) | set_case_analysis 覆盖 3 种模式 |\n| MUX-2 | **JTAG MUX** | 5 路 JTAG 共用 TSV PAD | PHY0~3 JTAG + BD JTAG | TSV PAD | TDR `TM[2:0]` (§4.16) | set_case_analysis 每种 JTAG 模式 |\n| MUX-3 | **PHY 参考时钟拓扑 MUX** | 3 种 PHY 参考时钟分发模式 | PAD / 本地PLL / 级联 | PHY0~3 参考时钟 | 硬件配置 (§4.4.1, PHY_1203~1205) | set_case_analysis 覆盖 3 种拓扑 |\n| GFM-1 | **core_clk ↔ aux_clk GFM** | 动态无毛刺切换 | core_clk / aux_clk | Controller 时钟 | 低功耗状态机 (§4.4.1) | 约束两个异步时钟; 检查 GFM 输出 |\n| DIV-1 | **core_clk 分频器** | max_pclk 分频产生 core_clk | max_pclk 1GHz | 125/250/500/1000 MHz | `mac_phy_rate` (§4.1.1, §4.9) | 覆盖全部 4 个分频比 (÷1/÷2/÷4/÷8) |\n\n---\n\n## 6. 复位源 (Reset Sources)\n\n| # | 复位名 | 类型 | 复位域 | 触发条件 | 关键约束 |\n|---|---|---|---|---|---|\n| RST-1 | `power_on_rst_n` | 冷复位 (Cold) | 全芯片 | 外部 PAD | 异步置位、同步释放; 最长复位路径 |\n| RST-2 | `PERST#` | 暖复位 (Warm) | 全芯片 (直连 `power_on_rst_n`) | Host 拉低边带信号 | = 冷复位等效; 需处理 removal/recovery 时序 |\n| RST-3 | **Hot Reset** | 带内热复位 | SoC (PCIe Core 除外) | RC 发 2 个 TS1 (Hot Reset=1) | 两级复位: ①Controller flush → ②SoC watchdog → SoC reset; HotResetBlock+TBU 被复位 (§4.5.3) |\n| RST-4 | **Link Disable** | 软复位 | =HotReset 等效 | 链路禁用 | 与 Hot Reset 约束相同 (§DISABLE_1604) |\n| RST-5 | `pll_rst_n` | 外部复位 | CRG PLL | 外部输入 | PLL 锁定时间需在约束中体现 |\n| RST-6 | `cfg_rst_n` | 接口复位 | AXI DBI 接口 | 外部输入 | 与 `pcie_cfg_clk` 域同步 |\n| RST-7 | `pipe_msgbus_rst_n` | 接口复位 | `pipe_clk` 域 | — | 同步到 `pipe_clk` (§4.9) |\n| RST-8 | `pipe_rx_rst_n` | 接口复位 | `pipe_rx_clk` 域 | — | 同步到 `pipe_rx_clk` (§4.9) |\n| RST-9 | `mstr_rst_n` | 输出复位 | AXI Master NoC 接口 | — | PCIe 子系统输出，同步到 `axi_clk` |\n| RST-10 | `slv_rst_n` | 输出复位 | AXI Slave NoC 接口 | — | PCIe 子系统输出，同步到 `axi_clk` |\n| RST-11 | **SoC Hot Reset** | 软件触发 | HotResetBlock + TBU | CPU watchdog timeout | 发生在 Hot Reset sequence 第18步 (§4.20.3) |\n| RST-12 | **Isolation Reset** | Partial Good | `pcie_core` 功能域 | DFT isolation enable | ISO_2001~2004; AXI 接口在 isolation 时需不挂死 |\n\n**复位释放顺序 (Power-On Sequence):**\n1. `power_on_rst_n` 释放 → CRG PLL lock → 各时钟域稳定\n2. PHY boot (ROM→SRAM) + PHY PLL lock\n3. Controller reset 释放 → LTSSM enable → Link Training\n\n---\n\n## 7. 异步时钟域 crossing (False Path 候选)\n\n| # | 发送域 | 接收域 | 是否有 CDC | 说明 | 依据 |\n|---|---|---|---|---|---|\n| FP-1 | `core_clk` | `pipe_rx_clk` | **是** | 明确异步 | §4.4.1 \"core_clk 和 pipe_rx_clk 异步\" |\n| FP-2 | `pipe_rx_clk` | `core_clk` | **是** | 同上 | §4.4.1 |\n| FP-3 | `core_clk` | `aux_clk` | **是** | GFM 动态切换，无 CDC | §4.4.1 \"core_clk 和 aux_clk 之间无 CDC 处理\" |\n| FP-4 | `aux_clk` | `core_clk` | **是** | 同上 | §4.4.1 |\n| FP-5 | `axi_clk` | `core_clk` | **是** | AMBA 时钟 vs core 时钟异步 | §4.4.1 \"ABMA 时钟和 core 时钟异步\" |\n| FP-6 | `core_clk` | `axi_clk` | **是** | 同上 | §4.4.1 |\n| FP-7 | `pcie_cfg_clk` (250M) | `axi_clk` (1G) | **是** | 不同源 PLL | CS-1 来自 SoC PLL, CD-4 来自 CRG PLL |\n| FP-8 | `pcie_cfg_clk` (250M) | `cr_para_clk` (125M) | **是** | 不同源 | 同上 |\n| FP-9 | `pcie_cfg_clk` (250M) | `core_clk` | **是** | 不同源 | 同上 |\n| FP-10 | JTAG `TCK` | 所有功能时钟域 | **是** | 外部调试时钟 | §4.16 JTAG 独立时钟域 |\n| FP-11 | `clk_test*` | 功能时钟域 | **是** | 测试模式专用 | CRG_1505 |\n\n**注意:** 共 **11 对** 已确认的异步时钟域 crossing。每条都需要:\n- `set_clock_groups -asynchronous` 约束\n- 检查 CDC 电路 (同步器链 / 握手 / FIFO) 存在\n- UPCS 模块内部有异步处理 (§4.15 描述: \"负责接收方向的数据的异步处理\")\n\n---\n\n## 8. Multi-Cycle Path 候选\n\n| # | 路径 | 理由 | 推荐周期数 |\n|---|---|---|---|\n| MCP-1 | AXI Master 512-bit 数据路径 | 宽总线 + 长距离 NoC 互连 | 2-3 cycles |\n| MCP-2 | AXI Slave 512-bit 数据路径 | 同上 | 2-3 cycles |\n| MCP-3 | HDMA LL Prefetch 路径 (1024 elements) | 大容量描述符链预取 (§HDMA_805) | 2-4 cycles |\n| MCP-4 | MSI-X Table/PBA 访问路径 (BAR0 → Memory) | 跨时钟域 + 大地址空间 (32KB+32KB) | 2 cycles |\n| MCP-5 | iATU 地址转换路径 (64 OB + 16 IB regions) | 大范围地址匹配逻辑 (§IATU_701) | 2 cycles |\n| MCP-6 | ReMap 256-window 地址映射 | 256 窗口查表逻辑 (§4.7) | 2 cycles |\n| MCP-7 | HotResetBlock AXI 路径 (firewall/bypass) | 三种模式可配，含组合逻辑判断 (§4.5.3.1) | 2 cycles |\n| MCP-8 | PHY CR Bus 配置访问 | 异步接口 + 跨 4 个 PHY 寄存器空间 | 2-3 cycles |\n| MCP-9 | DBI → NoC → 9 子模块配置路径 | 1-to-9 fanout NoC 路由 (§3.1) | 2 cycles |\n| MCP-10 | TBU DTI 接口路径 (→ TCU → SMMU) | 跨模块长路径 (§4.8) | 2-3 cycles |\n\n---\n\n## 9. 生成时钟约束\n\n```tcl\n# === CRG PLL 输出 ===\n# 功能模式\ncreate_generated_clock -name axi_clk       -source [get_pins CRG/PLL/CLKOUT] -divide_by 1  [get_ports axi_clk]       # 1GHz\ncreate_generated_clock -name cr_para_clk   -source [get_pins CRG/PLL/CLKOUT] -divide_by 8  [get_ports cr_para_clk]   # 125MHz\ncreate_generated_clock -name local_ref_clk -source [get_pins CRG/PLL/CLKOUT] -divide_by 10 [get_ports local_ref_clk] # 100MHz\n\n# core_clk 由 PHY max_pclk 分频 (4种分频比)\ncreate_generated_clock -name core_clk_gen1 -source [get_ports max_pclk_lane0] -divide_by 8 [get_pins ...]  # 125MHz\ncreate_generated_clock -name core_clk_gen2 -source [get_ports max_pclk_lane0] -divide_by 4 [get_pins ...]  # 250MHz\ncreate_generated_clock -name core_clk_gen4 -source [get_ports max_pclk_lane0] -divide_by 2 [get_pins ...]  # 500MHz\ncreate_generated_clock -name core_clk_gen5 -source [get_ports max_pclk_lane0] -divide_by 1 [get_pins ...]  # 1GHz\n\n# pipe_rx_clk 从 PHY RX 数据恢复 (频率 = 当前 lane rate)\ncreate_generated_clock -name pipe_rx_clk -source [get_ports PHY_RX_DATA] ... # 需 PHY 提供具体生成点\n```\n\n---\n\n## 10. 异步时钟组约束\n\n```tcl\n# 基于 §4.4.1 明确声明的异步关系\nset_clock_groups -asynchronous \\\n    -group {core_clk}                         \\\n    -group {pipe_rx_clk}                      \\\n    -group {axi_clk cr_para_clk local_ref_clk} \\\n    -group {pcie_cfg_clk}                     \\\n    -group {aux_clk}                          \\\n    -group {jtag_tck}\n```\n\n**注意:** `axi_clk`/`cr_para_clk`/`local_ref_clk` 同源 (CRG PLL)，可归入同一 group。\n\n---\n\n## 11. False Path 需确认清单 (与设计团队)\n\n| # | 问题 | 优先级 |\n|---|---|---|\n| Q-1 | `core_clk` ↔ `pipe_rx_clk` 间 CDC 具体实现在哪? (FIFO / 同步器 / 握手?) | P0 |\n| Q-2 | `axi_clk` ↔ `core_clk` 间 CDC 在 Controller 内部还是外部? | P0 |\n| Q-3 | GFM `core_clk` ↔ `aux_clk` 切换是否保证无毛刺? 是否需要约束? | P0 |\n| Q-4 | `pcie_cfg_clk` ↔ `axi_clk` 之间数据路径是否同步? 经过 NoC 是否有 CDC? | P1 |\n| Q-5 | JTAG 时钟与内部功能时钟是否需要 timing 约束? (通常 false path) | P1 |\n| Q-6 | 测试时钟 (`clk_test*`) 是否需要与功能时钟一起做 STA? 还是独立 corner? | P1 |\n| Q-7 | UPCS 模块内部异步 FIFO 深度是否满足所有 Gen mode 下的吞吐? | P1 |\n| Q-8 | `phy_sram_*` 接口时钟是否与 `core_clk` 异步? | P2 |\n| Q-9 | ReMap/TBU/HotResetBlock 与 `axi_clk` 100% 同源同频? | P2 |\n| Q-10 | MCP 推荐值是否经物理实现验证? 需要 post-layout 确认 | P2 |\n\n---\n\n## 12. 低功耗场景特殊约束\n\n| 场景 | 时钟状态 | STA 需求 |\n|---|---|---|\n| L0s | REFCLK + AUXCLK ON; pipe_clk/core_clk ON | 常规约束 |\n| L1 ASPM | REFCLK + AUXCLK ON; core_clk 可能停 (GFM 切到 aux_clk) | 检查 GFM 切换时序 |\n| L1 PM (D1/D2/D3hot) | REFCLK + AUXCLK ON | 同上 |\n| L1 Substate | REFCLK 移除; PHY refclk OFF | 检查 clock gating 和恢复时序 |\n| L1 Clock PM | PLL + REFCLK 关闭 | PLL 关断/重启时序约束 |\n| Isolation | AXI 20MHz 保持; MainNoC 无时钟/Soft Reset 受限 | 检查 isolation 模式下不挂死约束 (§ISO_2003) |\n| Partial Good | `pcie_core` clock gated | 检查 isolation 使能/关闭 timing |\n\n---\n\n## 13. 约束验证矩阵 (Corner Cases)\n\n| 维度 | 取值 | 组合数 |\n|---|---|---|\n| Gen 模式 | Gen1 / Gen2 / Gen3 / Gen4 / Gen5 | 5 |\n| Link Width | x1 / x2 / x4 / x8 / x16 | 5 |\n| PLL 参考时钟源 | mplla_100M / mpllb_100M / clk_ref_20M | 3 |\n| PHY 参考时钟拓扑 | 级联 / 独立同源 / 本地PLL | 3 |\n| 低功耗模式 | L0 / L0s / L1 / L1-substate / L1-CPM | 5 |\n| CRG 模式 | 功能(1GHz) / 测试(2GHz) | 2 |\n| Isolation | EN / DIS | 2 |\n\n**理论上最大 corner 组合: 5×5×3×3×5×2×2 = 4500** — 建议与设计团队协商裁减。\n\n**建议最小覆盖集 (~12 corner):**\n1. Gen5 x16, mplla, 级联, L0, 功能 (最严频率)\n2. Gen5 x16, mplla, 独立同源, L0, 功能\n3. Gen5 x16, mplla, 本地PLL, L0, 功能\n4. Gen1 x1, mpllb, 级联, L0, 功能 (最低频)\n5. Gen5 x16, clk_ref_20M, 级联, L0, 测试 (PLL 1GHz)\n6. Gen5 x16, clk_ref_20M, 级联, L0, 测试 (PLL 2GHz)\n7. Gen5 x16, mplla, 级联, L1, 功能\n8. Gen5 x16, mplla, 级联, L1-CPM, 功能 (时钟关断)\n9. Gen5 x16, mplla, 级联, L0, 功能, Isolation=EN\n10. Gen3 x8, mpllb, 独立同源, L0, 功能 (中间频率)\n11. Gen4 x4, mplla, 级联, L0s, 功能\n12. Gen2 x2, mpllb, 本地PLL, L0, 功能\n\n---\n\n## 14. 缺失信息 (需从其他文档获取)\n\n| # | 信息项 | 参考文档 |\n|---|---|---|\n| MISS-1 | Controller 内部 CDC 实现细节 (FIFO深度/同步器级数) | [1] DWC_pcie_ctl_ep_databook.pdf |\n| MISS-2 | PHY 内部 PLL 精确输出频率和 jitter spec | [2] dwc_pcie5phy_ss8lpp_x4ns_databook.pdf |\n| MISS-3 | PCS wrapper 内部时钟树 | [3] dwc_32g_phy_pcs_wrapper_databook.pdf |\n| MISS-4 | SoC 级 NoC 接口时序约束 | [4] Tc550x_ccd_soc_mas_r3p5.pdf |\n| MISS-5 | CRG PLL 锁定时间、jitter、phase noise | CRG 设计文档 (未在 Spec 中) |\n| MISS-6 | 各模块 gate count / 物理布局信息 | 物理实现团队 |\n| MISS-7 | IO PAD 时序模型 (TX/RX delay) | .lib / 工艺库 |",
+    "stop_reason": "end_turn",
+    "session_id": "d36bfbd5-3bd0-48eb-99ba-6f5c82be2f36",
+    "total_cost_usd": 0.662123,
+    "usage": {
+      "input_tokens": 68378,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 252416,
+      "output_tokens": 7761,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 68378,
+        "outputTokens": 7761,
+        "cacheReadInputTokens": 252416,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.662123,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "3fa14d25-7bef-43bd-a69c-ab95a7b97919",
+    "_wall_time_s": 137.6
+  },
+  "case13_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 283491,
+    "duration_api_ms": 247687,
+    "num_turns": 24,
+    "result": "---\n\n以上 SDC checklist 覆盖了从 3 份规格文档中提取的所有时钟/复位/时序约束信息:\n\n- **3 个文档** indexed: PCIE Subsystem Spec v3.21, PCIE Subsystem TRS r2p0, Cortex-M4 DDI0275\n- **22 个 L1 chunk** 作为证据，覆盖全部 12 个 SDC 类别\n- **L2 实体覆盖极低** (仅 3 个 PLL lock 信号实体)，全部数据来自 L1/L0 原文，符合 layered-architecture 契约\n\n核心发现：\n- PCIe CRG 有 **1 个 PLL**，功能模式 1GHz / 测试模式 2GHz，输出 4 路派生时钟 (axi_clk 1GHz, cr_para_clk 125MHz, local_phy_ref_clk 100MHz, pclk 1GHz)\n- **4 对异步时钟域** 需要 `set_clock_groups -asynchronous`: core_clk∥pipe_rx_clk, core_clk∥aux_clk, axi_clk∥core_clk, pcie_cfg_clk∥core_clk\n- `core_clk` 频率随 PCIe Link Speed 从 125MHz→1GHz **动态变化**，需 5 个 MCMM scenario\n- Cortex-M4 提供 **精确的 IO timing 百分比** (setup 30%, output valid 40%)，可直接转换为 SDC delay 值\n- Hot Reset 不产生物理复位信号，走中断 + flush 流程；PERST# 等同于全芯片冷复位",
+    "stop_reason": "end_turn",
+    "session_id": "b7c9bda3-0048-4c11-a4ff-001cc0ad0c23",
+    "total_cost_usd": 1.298995,
+    "usage": {
+      "input_tokens": 78082,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 913920,
+      "output_tokens": 18065,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 78082,
+        "outputTokens": 18065,
+        "cacheReadInputTokens": 913920,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 1.298995,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "c1abb4cd-0190-41a9-af24-c173792b342a",
+    "_wall_time_s": 284.6
+  },
+  "case14_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 139648,
+    "duration_api_ms": 139516,
+    "num_turns": 5,
+    "result": "CDC/RDC sign-off 计划已写入 `benchmark_runs/baseline_docgraph_compare/pcie_cdc_rdc_signoff_plan.md`。\n\n核心发现摘要:\n\n**时钟/复位域**: 识别出 **8 个独立时钟域** + **12 个复位域**，最关键的是 `core_clk`、`pipe_rx_clk`、`aux_clk`、`axi_clk`、`pcie_cfg_clk`、`cr_para_clk` 之间的 6 对异步关系。\n\n**18 条 CDC 路径** 需要 sign-off，其中:\n- **CDC-08** (`core_clk` ↔ `aux_clk` GFM 切换) 最高风险 — spec 明确写\"无 CDC 处理\"\n- **CDC-03/04** (AXI ↔ core data path) 有 `_cdc_ram` 命名证据，说明存在 async FIFO，需验证 gray-code 指针\n- **CDC-18** 系列 (IB cdc_ram) 直接从 spec §4.11 parity 信号列表中暴露了真实 CDC 电路\n\n**4 类复位风险** 评级:\n- **PERST# → Critical**: 协议定义 warm reset，实际接 `power_on_rst_n` 全芯片冷复位，丢失 warm reset 语义，且可能超出 PCIe 100ms 恢复时间\n- **Hot Reset → Critical**: 仅部分逻辑复位（HotResetBlock/TBU/ReMap），控制器自身不复位，flush→block→SoC reset 链存在死锁风险\n- **Warm Reset → Medium**: 与 PERST# 的关系不清晰\n- **Cold Reset → Medium**: PHY boot mode 3 的 CR bus 依赖时序需验证\n\n文档末尾有 **sign-off checklist** 覆盖设计检查、SpyGlass CDC/RDC 静态验证、门级仿真测试项、STA 时序约束四阶段。",
+    "stop_reason": "end_turn",
+    "session_id": "e192584a-07cb-47ec-80d0-f2539b754916",
+    "total_cost_usd": 0.6194629999999999,
+    "usage": {
+      "input_tokens": 64998,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 167296,
+      "output_tokens": 8433,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 64998,
+        "outputTokens": 8433,
+        "cacheReadInputTokens": 167296,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.6194629999999999,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "3e3dd806-5747-4baa-90e9-359822e5d51a",
+    "_wall_time_s": 140.7
+  },
+  "case14_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 220402,
+    "duration_api_ms": 216243,
+    "num_turns": 22,
+    "result": "I now have all the evidence needed. Here is the complete CDC/RDC checklist.\n\n---\n\n# PCIe Subsystem — CDC/RDC Sign-Off Checklist\n\n**Document**: PCIe Subsystem Spec V3.21 (42 pages)  \n**Scope**: Clock Domain Crossing (CDC) + Reset Domain Crossing (RDC)  \n**Note**: L2 clock entity coverage is ~15% — clock signals are extracted as `signal` kind, not `clock`. Key entities (CRG, GFM, DIV, MUX) are absent from L2. All evidence below comes from L1 chunks (original spec text), verified via `docgraph_fetch`.\n\n---\n\n## 1. Clock Domain Inventory\n\n### 1.1 Domain List\n\n| # | Clock | Source | Frequency | Purpose | Evidence |\n|---|-------|--------|-----------|---------|----------|\n| CD1 | `core_clk` | UPCS lane0 max_pclk → div | Gen-dependent (div from 1GHz) | PCIe controller main logic | §4.15.4 p37: \"max_pclk 用于生成 core_clk 作为 controller 的主要逻辑时钟\" |\n| CD2 | `pipe_rx_clk` | UPCS RX CDR recovered clock | Gen-dependent | PIPE RX interface | §4.15.4 p37: \"pipe_rx_clk 时钟输出给 Controller 的 PIPE RX 方向\" |\n| CD3 | `pipe_pclk` | UPCS max_pclk | 1GHz (same as core_clk root) | PIPE TX interface | §4.15.4 p37: \"pipe_pclk 作为 PIPE TX 的接口时钟\" |\n| CD4 | `axi_clk` | PCIE_CRG PLL | 1GHz | AXI master/slave, TBU, remap, HotResetBlock | §1.15 p10: \"axi_clk 1GHz\"; §4.4.1 p22: \"axi_clk 为 AXI master, AXI slave, TBU, remap 和 HotResetBlock 提供时钟\" |\n| CD5 | `aux_clk` | From `clk_ref_clk` (20MHz input) | 20MHz | L2 low-power logic clock | §2 p13 table: \"PCIe 的低功耗模式 L2 的逻辑时钟。从 clk_ref_clk 接入\" |\n| CD6 | `cfg_clk` / `pcie_cfg_clk` | CRG | 250MHz | NoC config interface (AXI DBI) | §2 p13 table: \"AXI DBI 接口时钟\"; §4.4.1 p22: \"pcie_cfg_clk 为 NoC 和系统寄存器的逻辑时钟 250MHz\" |\n| CD7 | `cr_para_clk` | CRG PLL | 125MHz | PHY CR interface | §1.15 p10: \"cr_para_clk 125Mhz\" |\n| CD8 | `local_phy_ref_clk` | CRG PLL | 100MHz | PHY backup reference | §1.15 p10: \"local_phy_ref_clk 100MHz\" |\n| CD9 | `clk_ref_clk` | External PAD input | 20MHz | CRG reference input | §2 p13 table: \"CRG 的外部输入的 20MHz 参考时钟\" |\n| CD10 | `PHYx_PAD_REF_CLK` | External PAD 100MHz diff | 100MHz | PHY 0/1/2/3 reference clock | §2 p13 table; §3.1 p16: \"PHY 的参考时钟...外部输入的 100MHz 差分输入时钟\" |\n\n### 1.2 Async Relationship Matrix\n\n| Pair | Relationship | CDC Gate? | Risk | Evidence |\n|------|-------------|-----------|------|----------|\n| `core_clk` ↔ `pipe_rx_clk` | **Asynchronous** | Required | HIGH | §4.4.1 p22: \"core_clk 和 pipe_rx_clk 异步\" |\n| `core_clk` ↔ `aux_clk` | **GFM dynamic switch, no CDC** | Not needed (mutually exclusive) | MEDIUM | §4.4.1 p22: \"core_clk 和 aux_clk 通过 GFM 进行动态切换...core_clk 和 aux_clk 之间无 CDC 处理\" |\n| AMBA (`axi_clk`) ↔ `core_clk` | **Asynchronous** | Required | HIGH | §4.4.1 p22: \"AMBA 时钟和 core 时钟之间异步\" |\n| `pipe_rx_clk` ↔ `axi_clk` | **Asynchronous** (derived) | Required | HIGH | Inferred from CDR recovery vs PLL — no common source |\n| `cfg_clk` ↔ `core_clk` | **Asynchronous** (250MHz vs gen-dep) | Required | MEDIUM | Different frequency domains |\n\n---\n\n## 2. Reset Domain Inventory\n\n### 2.1 Domain List\n\n| # | Reset Signal | Source | Direction | Scope | Evidence |\n|---|-------------|--------|-----------|-------|----------|\n| RD1 | `power_on_rst_n` | External PAD | Input | Full chip cold reset | §4.5.2 p23: \"硬件冷复位 power_on_rst_n，整个芯片通过外部 PAD 控制复位\" |\n| RD2 | `PERST#` | Host sideband signal | Input (PAD) | PCIe warm reset → **wired to power_on_rst_n** | §2 p13 table: \"PCIe 控制器的暖复位接口\"; §4.17 p39: \"PERESET# 是输入 PAD，用于对 PCIe 的控制器进行 warm Reset\" |\n| RD3 | `mstr_rst_n` | CRG | Output | AXI master NoC interface | §2 p13 table: \"AXI master 的 NoC 接口复位\" |\n| RD4 | `slv_rst_n` | CRG | Output | AXI slave NoC interface | §2 p13 table: \"AXI slave 的 NoC 接口复位\" |\n| RD5 | `cfg_rst_n` | CRG | Input | AXI DBI config interface | §2 p13 table: \"AXI DBI 接口复位\" |\n| RD6 | `pll_rst_n` | External/CRG | Input | CRG PLL reset | §2 p13 table: \"CRG PLL 的外部 reset 输入\" |\n| RD7 | `core_rst_n` | PCIe Controller (post-flush) | Internal | Asserted after Hot Reset flush | §4.20.3 p41: \"PCIe Controller 在完成 Flush 以后，会 assert core_rst_n\" |\n| RD8 | `phy_rst_n` | CRG | Internal | PHY related logic | VLM figure extraction: \"phy_rst_n\" — derived from PERST#/power_on_rst_n |\n| RD9 | `phy_pwr_rst_n` | CRG | Internal | PHY power reset | VLM figure extraction |\n| RD10 | `sticky_rst_n` | CRG | Internal | Sticky register reset | VLM figure extraction |\n| RD11 | `non_sticky_rst_n` | CRG | Internal | Non-sticky register reset | VLM figure extraction |\n| RD12 | `sync_pend_n` | CRG | Internal | Synchronization pending | VLM figure extraction |\n\n### 2.2 Reset Type Classification\n\n#### Cold Reset (`power_on_rst_n`)\n- **Trigger**: External PAD assertion\n- **Effect**: Full chip re-initialization, PCIe device returns to initial state\n- **Evidence**: §4.5.2 p23: \"冷复位会导致 PCIe 设备重新初始化，恢复到初始状态\"\n\n#### Warm Reset (`PERST#`)\n- **Trigger**: Host pulls PERST# low (sideband signal)\n- **Effect**: **Wired directly to `power_on_rst_n`** — full chip reset, not PCIe-only warm reset\n- **PROTOCOL VIOLATION**: PCIe spec requires PERST# to reset PCIe subsystem only, not entire chip\n- **Evidence**: §4.5.2 p23: \"芯片需要将 PERST# 直接接到硬件冷复位 power_on_rst_n 对全芯片进行复位\"\n- **Risk**: **CRITICAL** — PERST# initiates full chip cold reset, violating warm reset semantics (see REQ_1605)\n\n#### Hot Reset\n- **Trigger**: 2 consecutive TS1 Ordered Sets with Hot Reset bit = 1 from upstream\n- **Effect**: SoC receives `hot_reset_int`, HotResetBlock blocks new transactions, Controller flushes outstanding, then assert `core_rst_n`, SoC watchdog resets SoC logic\n- **PCIe subsystem NOT reset** (except HotResetBlock, TBU, ReMap)\n- **Evidence**: §1.16 p10 REQ_1603: \"Hot Reset 会对 SoC 进行 Reset, PCIe 子系统不会进行 Reset(HotResetBlock, TBU 和 ReMap 除外)\"\n- **Evidence**: §4.5.3 p23: \"PCIe 子系统收到 Hot Reset 回向 SoC 发出 Hot Reset 标志开始对未完成访问进行 flush\"\n- **No physical reset signal** — purely a protocol-initiated interrupt+flush flow\n\n#### Link Disable\n- **Equivalent to Hot Reset**\n- **Evidence**: §1.16 p10 REQ_1604: \"Link Disable 等同于 HotReset 处理\"\n\n#### FLR (Function Level Reset)\n- **Not supported**\n- **Evidence**: §1.16 p10 REQ_1606: \"不支持 FLR Reset\"\n\n---\n\n## 3. Reset-to-Clock Domain Mapping\n\n| Reset Domain | Clock Domain | Relationship |\n|-------------|-------------|-------------|\n| `power_on_rst_n` | All | Async assertion, sync de-assertion per domain |\n| `PERST#` | All (wired to `power_on_rst_n`) | Same as cold reset |\n| `mstr_rst_n` | `axi_clk` | Synchronous de-assertion |\n| `slv_rst_n` | `axi_clk` | Synchronous de-assertion |\n| `cfg_rst_n` | `cfg_clk` | Synchronous de-assertion |\n| `core_rst_n` | `core_clk` | Asserted post Hot Reset flush |\n| `phy_rst_n` | `pipe_rx_clk` / ref clk | PHY domain |\n| `pll_rst_n` | `clk_ref_clk` | PLL lock domain |\n\n---\n\n## 4. CDC Path Inventory\n\n### 4.1 Critical CDC Paths Requiring Synchronizers\n\n| CDC-# | Source Clock | Dest Clock | Data Type | Width | Scheme | Risk | Rationale |\n|-------|-------------|-----------|-----------|-------|--------|------|-----------|\n| CDC-01 | `core_clk` | `axi_clk` | AXI read/write data/control | 512b | Async FIFO | **CRITICAL** | Primary data path; AMBA ↔ core async per §4.4.1 |\n| CDC-02 | `axi_clk` | `core_clk` | AXI response data | 512b | Async FIFO | **CRITICAL** | Reverse direction |\n| CDC-03 | `pipe_rx_clk` | `core_clk` | RX TLP data | 64/128b | Async FIFO | **CRITICAL** | core_clk ↔ pipe_rx_clk async per §4.4.1 |\n| CDC-04 | `core_clk` | `pipe_pclk` | TX TLP data | 64/128b | FIFO (same root) | MEDIUM | Same max_pclk source but different div ratios |\n| CDC-05 | `core_clk` | `cfg_clk` | CSR register r/w | 32b | 2-FF sync / handshake | MEDIUM | Control registers, 250MHz vs gen-dep |\n| CDC-06 | `core_clk` | `axi_clk` | Interrupt signals | multi-bit | 2-FF sync (per bit) or pulse sync | MEDIUM | Level interrupts per REQ_1701 |\n| CDC-07 | `axi_clk` | `cfg_clk` | Configuration access | 32b | 2-FF sync | LOW | Infrequent config changes |\n| CDC-08 | `clk_ref_clk` | `axi_clk` | PLL lock status | 1b | 2-FF sync | LOW | Slow (20MHz) → fast (1GHz) |\n\n### 4.2 GFM-Managed Path (No CDC Required)\n\n| Path | Source | Dest | Scheme | Evidence |\n|------|--------|------|--------|----------|\n| GFM-01 | `core_clk` / `aux_clk` | controller logic | Glitch-Free Mux | §4.4.1 p22: \"core_clk 和 aux_clk 通过 GFM 进行动态切换...之间无 CDC 处理\" |\n\n### 4.3 Clock Gating CDC Risks\n\n| CG-# | Domain | Risk | Description |\n|------|--------|------|-------------|\n| CG-01 | `aux_clk` | LOW | L2 low-power gating — isolated from active logic |\n| CG-02 | `cfg_clk` | MEDIUM | NoC config clock — must verify config register access during gating transitions |\n| CG-03 | Per-PHY `pipe_rx_clk` | MEDIUM | Per-lane clock gating during L1 substates |\n\n---\n\n## 5. Synchronizer & Reset Bridge Requirements\n\n### 5.1 2-FF Synchronizer Requirements\n\n| Req-# | Signal | From | To | Type | Notes |\n|-------|--------|------|----|------|-------|\n| SYNC-01 | All single-bit control/status crossing CDC-05/06/07 | various | various | 2-FF | Standard metastability hardening |\n| SYNC-02 | `hot_reset_int` | `core_clk` | `axi_clk` (SoC) | Pulse sync → level | Level interrupt per REQ_1701 |\n| SYNC-03 | `core_rst_int` | `core_clk` | `axi_clk` (SoC) | Pulse sync → level | Triggers SoC watchdog |\n| SYNC-04 | PLL lock/unlock | `clk_ref_clk` | `axi_clk` | 2-FF | Slow → fast domain |\n| SYNC-05 | PHY ref clock status | `clk_ref_clk` | `axi_clk` | 2-FF | 20MHz → 1GHz |\n\n### 5.2 Async FIFO Requirements\n\n| Req-# | Path | Min Depth | Notes |\n|-------|------|-----------|-------|\n| FIFO-01 | CDC-01 (core → AXI outbound data) | 8 entries | Full AXI4 512b data width |\n| FIFO-02 | CDC-02 (AXI → core inbound data) | 8 entries | Reverse direction |\n| FIFO-03 | CDC-03 (pipe_rx → core RX TLP) | 16 entries | CDR recovered clock is jittery |\n| FIFO-04 | CDC-04 (core → pipe TX TLP) | 4 entries | Same max_pclk root, possible same freq |\n\n### 5.3 Reset Bridge Requirements\n\n| Req-# | Reset | Bridge Type | Notes |\n|-------|-------|-------------|-------|\n| RB-01 | `power_on_rst_n` → `core_clk` | Async assert / sync de-assert | Cold reset entry |\n| RB-02 | `power_on_rst_n` → `axi_clk` | Async assert / sync de-assert | AMBA domain |\n| RB-03 | `power_on_rst_n` → `cfg_clk` | Async assert / sync de-assert | Config domain |\n| RB-04 | `PERST#` → all domains | **Wired to `power_on_rst_n`** | **No bridge — direct connection (see §5.1 risk)** |\n| RB-05 | `core_rst_n` → `core_clk` | Async assert / sync de-assert | Hot Reset cleanup |\n| RB-06 | `pll_rst_n` → `clk_ref_clk` | Async assert | PLL power-down |\n\n---\n\n## 6. Reset Sequence Interaction & Risk Analysis\n\n### 6.1 Reset Sequence Summary\n\n| Step | Reset Type | Key Actions | Evidence |\n|------|-----------|-------------|----------|\n| Cold Init | `power_on_rst_n` de-assert | 13-step init: PHY SRAM → CRG config → release phy reset → enable LTSSM → link training → enumeration | §4.20.1 p40 |\n| PERST# | PERST# de-assert (wired to `power_on_rst_n`) | Full chip reboot: CPU receives link_down + core_rst_int → reconfigure → LTSSM enable → link training | §4.20.2 p40 |\n| Hot Reset | 2× TS1 (HR=1) | hot_reset_int → HotResetBlock blocks new traffic → flush outstanding → core_rst_n assert → SoC watchdog → SoC reset → reboot SoC (PCIe not re-booted) → reconfigure → LTSSM → link training | §4.20.3 p40-41 |\n| Link Disable | Equivalent to Hot Reset | Same flow as Hot Reset | §1.16 REQ_1604 |\n\n### 6.2 Risk Matrix\n\n| Reset | Scope | SoC Reset? | PCIe Reset? | Risk | Issue |\n|-------|-------|-----------|-------------|------|-------|\n| Cold Reset | Full chip | Yes | Yes | NORMAL | Standard POR |\n| PERST# (Warm) | Full chip (VIOLATION) | Yes | Yes | **CRITICAL** | §4.5.2: PERST# wired to power_on_rst_n — violates PCIe warm reset semantics. Should only reset PCIe subsystem, not entire chip |\n| Hot Reset | SoC only (except HotResetBlock/TBU/ReMap) | Yes (via watchdog) | Partial | **CRITICAL** | §1.16 REQ_1603: SoC reset but PCIe not fully reset — potential inconsistent state across domains |\n| Link Disable | Same as Hot Reset | Yes | Partial | MEDIUM | Inherits Hot Reset risks |\n| FLR | N/A | N/A | N/A | N/A | Not supported (REQ_1606) |\n\n### 6.3 Key Reset Risks\n\n1. **PERST# = Full Chip Cold Reset (CRITICAL)**: §4.5.2 explicitly states \"芯片需要将 PERST# 直接接到硬件冷复位 power_on_rst_n 对全芯片进行复位\". This means any downstream PERST# assertion triggers full-chip reboot. For multi-function or SR-IOV scenarios where other functions must remain operational during a function-level PERST#, this is a functional violation.\n\n2. **Hot Reset No Physical Reset Signal (CRITICAL)**: §4.5.3 shows Hot Reset is purely an interrupt+flush+watchdog flow. There is no dedicated physical `hot_rst_n` signal. The SoC watchdog timer introduces indeterminate latency between flush completion and SoC reset. RDC verification must cover the window where `core_rst_n` is asserted but SoC is not yet reset.\n\n3. **core_clk ↔ aux_clk GFM \"No CDC\" Assumption (MEDIUM)**: §4.4.1: \"core_clk 和 aux_clk 之间无 CDC 处理\". This is valid only if GFM guarantees glitch-free switching. Must verify GFM timing closure under all PVT corners.\n\n4. **HotResetBlock & TBU & ReMap exclusion (MEDIUM)**: REQ_1603 states these blocks ARE reset during Hot Reset while the rest of PCIe is NOT. Verify no spurious transactions from partially-reset blocks reach non-reset logic.\n\n---\n\n## 7. Sign-Off Checklist\n\n### 7.1 Design Checks (Pre-Synthesis)\n\n| # | Check Item | Status | Evidence Ref |\n|---|-----------|--------|-------------|\n| DC-01 | All clock domains enumerated and named | [ ] | §4.4.1 p22 (clock intro), §2 p13 (signal table) |\n| DC-02 | All reset domains enumerated with scope | [ ] | §4.5.2 p23 (hard reset), §1.16 p10 (reset reqs) |\n| DC-03 | All async clock pairs identified | [ ] | §4.4.1 p22 (async declarations) |\n| DC-04 | CDC scheme specified for each crossing path | [ ] | §4.4.1 p22 (GFM, no-CDC declarations) |\n| DC-05 | 2-FF synchronizer inserted on every single-bit CDC | [ ] | Per CDC-05/06/07 checklist above |\n| DC-06 | Async FIFO with proper gray-coded pointers for every multi-bit data CDC | [ ] | Per FIFO-01-04 checklist above |\n| DC-07 | Reset bridge (async assert / sync de-assert) on every reset domain crossing | [ ] | Per RB-01-06 checklist above |\n| DC-08 | PERST# connection reviewed — full chip reset intentional? | [ ] | §4.5.2 p23 (\"直接接到 power_on_rst_n\") |\n| DC-09 | GFM glitch-free mux verified (core_clk ↔ aux_clk) | [ ] | §4.4.1 p22 (\"GFM 进行动态切换\") |\n| DC-10 | HotResetBlock/TBU/ReMap reset isolation verified | [ ] | §1.16 REQ_1603 |\n| DC-11 | Clock gating cells don't introduce glitches on CDC boundaries | [ ] | CG-01/02/03 |\n| DC-12 | SRIS/SRNS clocking mode CDC implications reviewed | [ ] | §4.15.5 p37 |\n\n### 7.2 Static Verification (SpyGlass / Questa CDC-RDC)\n\n| # | Check Item | Waiver? | Evidence Ref |\n|---|-----------|---------|-------------|\n| SV-01 | SpyGlass CDC run on all async pairs — 0 unreviewed violations | [ ] | CDC-01 through CDC-08 |\n| SV-02 | SpyGlass RDC run on all reset domains — 0 unreviewed violations | [ ] | RD-01 through RD-12 |\n| SV-03 | GFM macro modeled correctly in CDC tool | [ ] | GFM-01 |\n| SV-04 | `core_clk` ↔ `aux_clk` GFM path waived (no CDC per spec) | [ ] WAV | §4.4.1 p22 explicit spec statement |\n| SV-05 | PERST# → power_on_rst_n path modeled as async reset | [ ] | §4.5.2 p23 |\n| SV-06 | Hot Reset flush path — verify no CDC violation during flush window | [ ] | §4.20.3 |\n| SV-07 | Clock gating enables synchronized to target domain | [ ] | CG-01/02/03 |\n\n### 7.3 Dynamic Simulation (Gate-Level)\n\n| # | Test Item | Priority | Evidence Ref |\n|---|----------|----------|-------------|\n| DS-01 | Cold reset (power_on_rst_n) de-assertion: verify all domains exit reset cleanly | P0 | §4.20.1 p40 (13-step init) |\n| DS-02 | PERST# toggle during active traffic: verify full-chip reboot sequence | P0 | §4.20.2 p40 |\n| DS-03 | Hot Reset during active traffic: verify flush → core_rst_n → SoC reset | P0 | §4.20.3 p40-41 |\n| DS-04 | Hot Reset with flush timer expiry: verify timer override and re-arm | P1 | §1.16 REQ_1601/1602 |\n| DS-05 | Link Disable during active traffic: verify = Hot Reset | P1 | §1.16 REQ_1604 |\n| DS-06 | core_clk ↔ pipe_rx_clk async FIFO: verify no data loss/corruption with ±300ppm freq offset | P0 | §4.4.1 p22, §4.15.4 p37 |\n| DS-07 | AMBA ↔ core_clk async data path: verify with random backpressure | P0 | §4.4.1 p22 |\n| DS-08 | GFM switch (core_clk → aux_clk → core_clk): verify no glitch on output clock | P1 | §4.4.1 p22 |\n| DS-09 | PLL lock/unlock during normal operation: verify graceful degradation | P2 | §1.15 p9 (CRG PLL requirements) |\n| DS-10 | Multiple rapid PERST# assertions: verify no state machine lockup | P1 | §4.20.2 |\n| DS-11 | Hot Reset followed immediately by PERST#: verify reset sequence priority | P2 | Interaction matrix |\n| DS-12 | app_ltssm_enable glitch during Hot Reset: verify LTSSM not spuriously re-enabled | P1 | §1.16 REQ_1601 |\n\n### 7.4 STA Timing Closure\n\n| # | Check Item | Evidence Ref |\n|---|-----------|-------------|\n| STA-01 | All CDC paths have `set_clock_groups -asynchronous` between async domains | §4.4.1 async declarations |\n| STA-02 | `set_false_path` on 2-FF synchronizer first stage output | SYNC-01-05 |\n| STA-03 | `set_max_delay -datapath_only` on async FIFO gray counter paths | FIFO-01-04 |\n| STA-04 | GFM output clock modeled as generated clock | §4.4.1 |\n| STA-05 | `pipe_rx_clk` modeled with CDR jitter budget (no ideal clock) | §4.15.4 p37 |\n| STA-06 | Reset recovery/removal checked for all reset bridges | RB-01-06 |\n\n---\n\n## 8. Spec Reference Index\n\n| Spec Clause | Content | DocGraph Chunk ID |\n|-------------|---------|-------------------|\n| §2 Interface | Clock/Reset interface table | `c_table_s2_35` |\n| §1.15 PCIE CRG | PLL/clock requirements | `c_section_s1.15_22` |\n| §1.16 Reset | Reset requirements | `c_section_s1.16_23` |\n| §3.1 Overview | Clock/reset architecture overview | `c_section_s3.1_46` + `c_section_s3.1_51` |\n| §4.4.1 Clock Structure | Async clock declarations, GFM | `c_section_s4.4.1_80` |\n| §4.5.2 Hard Reset | Cold/warm reset description, PERST# wiring | `c_section_s4.5.2_85` |\n| §4.5.3 Hot Reset | Hot Reset protocol + flush flow | `c_section_s4.5.3_86` |\n| §4.6.1 Interrupt Signals | hot_reset_int, flush signals | `c_table_s4.6.1_95_part1of3` |\n| §4.15.4 Clock Output | core_clk/pipe_rx_clk generation | `c_section_s4.15.4_161` |\n| §4.17 PAD | PERST#/CLKREQ#/WAKE# | `c_section_s4.17_171` |\n| §4.20.1 Init Sequence | Cold/PERST#/Hot reset sequences | `c_section_s4.20.1_176` |\n\n---\n\n## Appendix: L2 Coverage Gap Notes\n\nThe DocGraph L2 knowledge graph has limited clock/reset entity coverage:\n\n- **Clock signals** (`mstr_aclk`, `slv_aclk`, `cfg_clk`, `clk_ref_clk`, `aux_clk`) are extracted as `signal` kind (not `clock`) — `source_quality.needs_source_check=false` (deterministic from table extraction).\n- **No dedicated `clock` / `clock_domain` / `reset_domain` entity kinds** exist in the current KG schema.\n- **Missing L2 entities**: PCIE_CRG, GFM, DIV, MUX, PLL have no KG nodes despite being referenced in L0 text.\n- **LLM-IE entities** (e.g., `AXI slave`, `HotResetBlock`, `CR接口`) have `needs_source_check=true` and low confidence scores.\n- **Recommendation**: All CDC/RDC analysis should use `search_chunks` → `fetch` path (L1→L0), not rely on L2 entities for clock/reset coverage.",
+    "stop_reason": "end_turn",
+    "session_id": "5e10c2a7-32bb-4835-b564-dc3c4327bbe7",
+    "total_cost_usd": 1.9220990000000002,
+    "usage": {
+      "input_tokens": 96932,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 401408,
+      "output_tokens": 9395,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 96932,
+        "outputTokens": 9395,
+        "cacheReadInputTokens": 401408,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.9202389999999999,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      },
+      "Deepseek-v4-flash": {
+        "inputTokens": 88200,
+        "outputTokens": 10172,
+        "cacheReadInputTokens": 613120,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 1.00186,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "8a4847e8-0605-49e0-b75d-dc0ae237c711",
+    "_wall_time_s": 221.6
+  },
+  "case15_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 93129,
+    "duration_api_ms": 93007,
+    "num_turns": 4,
+    "result": "P&R/physical integration checklist 已生成:\n\n**`benchmark_runs/baseline_docgraph_compare/pcie_pnr_integration_checklist.md`**\n\n覆盖 9 个模块区域, 130+ 条检查项:\n\n| 模块 | 关键物理关注点 |\n|------|---------------|\n| **PCIe Core** | PIPE 640bit @1GHz 并行总线; AXI 512b Master/Slave timing closure; 5 个异步时钟域 CDC |\n| **UPCS PIPE** | SerDes ↔ PIPE 位宽转换; 16 lane max_pclk 生成; RX 方向异步 CDC FIFO |\n| **PHY0-3** | 4×X4 沿 die 边排列; 参考时钟菊花链 jitter budget; 32 对差分 TX/RX SI; RESREF 精度电阻 |\n| **CRG** | PLL 物理隔离 (guard ring); 1GHz/125MHz/100MHz 三路 CTS 平衡; 常电域不受 isolation |\n| **NoC/AXI** | 512b×48b × 2 路 @1GHz; WRAP/NCBE 支持; isolation cell 插入位置; TSV level shifter |\n| **JTAG/IJTAG** | 5→1 MUX → TSV PAD; TM[2:0]/cr_para_sel TDR 控制; IJTAG ↔ DFT 控制器链 |\n| **TX/RX Lanes** | Gen5 32GT/s 阻抗控制; NEXT/FEXT < -40dB; lane reversal/flip 映射; BERT/PAD loopback |\n\n末尾有 **签核前必查 10 条** — 直接可做 design review checklist。",
+    "stop_reason": "end_turn",
+    "session_id": "8fa2f42b-7b9c-4af1-8358-297718efbfe4",
+    "total_cost_usd": 0.543447,
+    "usage": {
+      "input_tokens": 68374,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 82304,
+      "output_tokens": 6417,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 68374,
+        "outputTokens": 6417,
+        "cacheReadInputTokens": 82304,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.543447,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "94b56892-37d9-4404-a288-0531b44342cc",
+    "_wall_time_s": 94.2
+  },
+  "case15_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 126728,
+    "duration_api_ms": 121570,
+    "num_turns": 32,
+    "result": "P&R/PHY 集成 checklist 已生成，共 **10 大类、80+ 检查项**，每项均带 docgraph block/chunk 证据引用。\n\n文件路径：`benchmark_runs/baseline_docgraph_compare/pcie_pnr_phy_integration_checklist.md`\n\n### 覆盖范围\n\n| 类别 | 检查项数 | 来源文档 |\n|---|---|---|\n| **1. PHY 物理层集成** — 拓扑/lane/时钟/boot/SRAM/ECC/BERT | 22 | MAS §1.12, §3.1, §4.12, §4.15.5 |\n| **2. PIPE 接口集成** — 架构/数据宽度/时钟分配 | 14 | MAS §3.1, §4.9, §4.15.2, §4.15.4 |\n| **3. JTAG/IJTAG/DFT** — MUX 拓扑/TDR/debug IO | 15 | MAS §1.13, §1.14, §4.13.1, §4.16 |\n| **4. CRG 时钟复位** — PLL/功能时钟/Reset 管理 | 12 | MAS §1.15, §3.1, TRS §6 |\n| **5. Reset 方案** — POR/Warm/Hot/PERST#/PAD 信号 | 19 | MAS §1.16, §3.1, §4.5.3, §4.17 |\n| **6. 初始化序列** — POR boot/PERST#/Hot Reset 三步流程 | 17 | MAS §4.20.1 |\n| **7. 中断集成** | 4 | MAS §1.17 |\n| **8. 寄存器空间** — CSRs/PHY/Controller 三部分映射 | 3 | MAS §4.21 |\n| **9. TRS 待确认项** | 2 | TRS §6.14 |\n| **10. 模块总览** — Block Diagram 6 模块清单 | 6 | MAS §3.1 + §4.16 |\n\n### 证据统计\n- 所有证据均来自 docgraph L0/L1 确定性提取（`source_quality: deterministic`）\n- 覆盖两份核心文档：MAS Spec v3.21（28 Jan 2026）+ TRS r1p0（01 Aug 2025）\n- 每条 checklist 行都标注了具体的 `block_id`（如 `MAS §1.12#p8#b23`），可直接用 `docgraph_fetch` 回溯验证",
+    "stop_reason": "end_turn",
+    "session_id": "49ac1b38-c4c3-405e-a5e9-459e03b85731",
+    "total_cost_usd": 1.183186,
+    "usage": {
+      "input_tokens": 135961,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 454912,
+      "output_tokens": 11037,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 135961,
+        "outputTokens": 11037,
+        "cacheReadInputTokens": 454912,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 1.183186,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "b4537e55-1943-4ce8-b543-38bf27b4330f",
+    "_wall_time_s": 127.9
+  },
+  "case16_baseline": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 115952,
+    "duration_api_ms": 115801,
+    "num_turns": 8,
+    "result": "DFT/JTAG/Debug 可测性计划已生成: `benchmark_runs/baseline_docgraph_compare/pcie_dft_jtag_debug_testplan.md`\n\n**文档结构** (基于 Spec v3.21, 读取 42 页中的核心 10 页):\n\n| 章节 | 内容 | 测试项数 |\n|------|------|----------|\n| §1 JTAG Decoder | 5 路 MUX + IJTAG + BERT, 覆盖 `cr_para_sel[1:0]` 切换 | 11 |\n| §2 Gating/Level Shifter/Isolation | Partial good, TSV isolation+level shifter, AXI hang 防护, disable | 11 |\n| §3 PHY0-3 测试连接 | CR BUS, 3 种 Boot, 3 种 RefClk, loopback, BERT, ECC, 低功耗, lane reversal | 20 |\n| §4 LTSSM Debug | 128 深 shift_reg, freeze 机制, 建连/挂死/Hot Reset/L1/Gen 切换状态捕获 | 10 |\n| §5 Interrupt/Status 观测 | 35+ 中断源, Debug IO (4 group × 256 bit), MSI/MSI-X, 推荐新增 DFT 观测点 | 18 |\n| §6 Bring-up Flow | 5 阶段集成序列 (连通性 → PHY 初始化 → Link Training → 异常 → Isolation) | — |\n| §7 需求覆盖矩阵 | 每条 REQ 到测试项的追溯 | — |\n\n共 **70 个测试项**, 每个测试项标注了操作步骤、检查点、以及对应的 Spec 需求编号 (如 `REQ_JTAG_1301`)。",
+    "stop_reason": "end_turn",
+    "session_id": "29401fe3-603b-4946-baf4-9e2f0a87cc5e",
+    "total_cost_usd": 0.7097060000000001,
+    "usage": {
+      "input_tokens": 63828,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 322432,
+      "output_tokens": 9174,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 63828,
+        "outputTokens": 9174,
+        "cacheReadInputTokens": 322432,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.7097060000000001,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "a24e487f-eb97-44a8-8276-412944d9fc91",
+    "_wall_time_s": 117.0
+  },
+  "case16_docgraph": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 99503,
+    "duration_api_ms": 95989,
+    "num_turns": 24,
+    "result": "---\n\n以上 DFT 可测性计划覆盖了 PCIe 子系统的 8 个测试维度，所有结论均来自 `PCIE Subsystem Spec_v3.21` 的文档原文。关键发现：\n\n1. **JTAG 架构**: 5 接口 MUX 共用 TSV PAD，DFT 通过 TDR 寄存器选择\n2. **IJTAG**: 需配置 `cr_para_sel=2'b10` 使能 PHY 内部寄存器访问\n3. **Debug 可观测**: 4 group × 256bit MUX，8 PAD 输出，LTSSM 128 深度 shifter\n4. **时钟可测**: 测试模式 PLL 2GHz + 4 路独立 test clock 输出\n5. **复位可测**: Cold/Hot/PERST# 三种复位序列，flush timer 可编程\n6. **RAS DES**: Error Injection + Event Counter + ECC/Parity 保护\n7. **中断**: 多路汇聚为 level 中断，MSI/MSI-X 软件触发通路",
+    "stop_reason": "end_turn",
+    "session_id": "60420e3a-958a-4efb-8d73-b782e2ccf700",
+    "total_cost_usd": 0.9659949999999999,
+    "usage": {
+      "input_tokens": 108349,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 489600,
+      "output_tokens": 7178,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "deepseek-v4-pro": {
+        "inputTokens": 108349,
+        "outputTokens": 7178,
+        "cacheReadInputTokens": 489600,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.9659949999999999,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "uuid": "a0561844-8b5c-43eb-927b-f411a145025c",
+    "_wall_time_s": 100.7
+  }
+}
