@@ -69,8 +69,54 @@ docgraph serve --mcp                     # 启动 MCP server，对接 Claude Cod
 
 ---
 
+## Agent 使用模式
+
+```
+1. search_chunks("PCIe MSI-X doorbell")  → L1 发现：chunk ID + snippet + page + block_ids
+2. fetch(chunk_id)                       → L0 原文：完整表格/图/文本 + 嵌入的 L2 entities
+3. search("per_vector_misc")             → L2 加速：实体查（每条带 source_quality）
+```
+
+**核心原则**：L0 原文是权威，L2 实体是候选。`fetch` 返回完整原文（不截断表格），同时嵌入对应 L2 entities 及其 `source_quality.needs_source_check` 标注——agent 自己判断是否信任抽取结果，还是回到原表验证。
+
+MCP 工具共 **7 个**（按层次）：
+
+| 层次 | 工具 | 作用 |
+|---|---|---|
+| L0 原文 | `fetch` | chunk + 完整 L0 blocks + 嵌入 entities |
+| L1 发现 | `search_chunks`, `section` | 关键词/语义搜 chunks + 章节树导航 |
+| L2 提示 | `search` | 实体查，每条标注 `needs_source_check` |
+| 图谱 | `neighbors` | 邻域关系浏览 |
+| 元信息 | `status`, `files` | 图谱统计 |
+
+## 评测结果
+
+基于 2 份 PCIe spec（84 页）的 17 个芯片工程 case，Baseline（docling 全文）vs DocGraph MCP 对照：
+
+| 场景 | DocGraph 表现 | 说明 |
+|---|---|---|
+| **寄存器/RAL 抽取** | ✅ **-29% 成本** | register/bitfield 确定性抽取，agent 直接拿到 bit range/access/reset |
+| **MSI-X UVM sequence** | ≈ 持平 | L2 bitfield 实体提供精确字段值 |
+| **跨文档地址转换** | +32% | 小文档集上全文检索更经济 |
+| **Clock/Reset 验证** | ❌ **+219% 成本** | clock 实体仅 ~15% 覆盖，多来自 VLM |
+| **STA/SDC 约束** | ❌ +96% | 同上，clock 覆盖不足 |
+| **CDC/RDC sign-off** | ❌ +211% | 同上 |
+
+**关键结论**：
+- DocGraph 在**表格式信息**（register/bitfield/signal/interface）上有明确价值——确定性抽取直接提供结构化字段
+- **clock/reset** 是当前最大短板——实体覆盖率 ~15%，全来自 VLM 图抽取
+- 在**小文档集（~100KB）**上，全文塞进上下文窗口比 MCP 结构化检索更经济。DocGraph 的规模优势需要在 10+ 文档、1000+ 页时才能体现
+- 架构契约成立：L2 缺失时 L1/L0 永远可回退
+
+详见 [评测报告](./benchmark_runs/baseline_docgraph_compare/FULL_REPORT.md) 和 [case 设计评审](./benchmark_runs/case_design_review.py)。
+
 ## 项目状态
 
-**Beta 可用** — L0/L1 已由 `docgraph doctor --strict` 做质量门禁；L2 已有 provenance、强结构校验、候选覆盖审计 `docgraph l2 audit` 和 golden 评估入口 `docgraph l2 eval`。生产导入前应基于目标文档集建立 golden set，并校准 L2 schema 与模型配置。
+**Beta 可用** — L0/L1 已由 `docgraph doctor --strict` 做质量门禁；L2 已有 provenance、强结构校验、候选覆盖审计 `docgraph l2 audit` 和 golden 评估入口 `docgraph l2 eval`。
+
+**当前重点工作**（M7 分层重构）：
+- 提升 clock/reset 实体覆盖率（从接口表确定性抽取，当前 ~15%）
+- 填充 register 实体的 address/offset/access/reset 属性
+- 更大规模文档集评测验证规模优势
 
 License: Apache 2.0（计划）
