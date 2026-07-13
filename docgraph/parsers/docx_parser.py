@@ -41,7 +41,8 @@ class DocxParser:
             from docx import Document  # type: ignore  # python-docx
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
-                "python-docx not installed. Install: pip install python-docx"
+                "python-docx not installed. Install with: "
+                "pip install 'docgraph[documents]'"
             ) from e
 
         doc = Document(str(path))

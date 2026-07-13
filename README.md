@@ -4,19 +4,24 @@
 
 DocGraph 把 PDF/Word/Excel/Markdown 形态的芯片 spec 文档解析为 L0 无损版面、L1 可检索索引，并按需增强为 L2 实体图谱，通过 Web / MCP / CLI 暴露稳定、可追溯的查询接口。
 
-灵感来源：[`codegraph`](https://github.com/) —— 把代码索引为图后，agent 查询的精度和成本同时大幅改善。DocGraph 把同一套心智搬到芯片文档。
+灵感来源：`codegraph` —— 把代码索引为图后，agent 查询的精度和成本同时大幅改善。DocGraph 把同一套心智搬到芯片文档。
 
 ---
 
 ## 安装
 
 ```bash
-git clone <repo-url> && cd parse_doc
+git clone https://github.com/TTHNN-ld/docgraph.git
+cd docgraph
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[docling,llm,mcp]"       # 核心 + Docling parser + LLM/VLM + MCP server
+python -m pip install --upgrade pip
+pip install -e ".[docling,documents,llm,mcp]"  # PDF/Office/Markdown + LLM/VLM provider + MCP
 ```
 
-可选 extras：`mineru`（扫描版 PDF OCR）、`marker`（备选 parser）。
+`llm` extra 只安装模型 provider；调用 LLM/VLM 前还需要按
+[启用 LLM 抽取](./docs/cookbook/02-enable-llm.md) 配置 provider、model 和 API key。
+可选 extras：`mineru`（扫描版 PDF OCR）、`marker`（备选 parser）。未安装
+`mineru` 时，自动路由会回退到 Docling/PyMuPDF，不会获得 MinerU 的扫描件解析能力。
 
 ---
 
@@ -24,9 +29,10 @@ pip install -e ".[docling,llm,mcp]"       # 核心 + Docling parser + LLM/VLM + 
 
 ```bash
 docgraph init                             # 在当前目录创建 .docgraph/
-docgraph build                            # 解析 spec/**/*.pdf，构建 L0/L1/L2
+docgraph build                            # 解析 docs/**/*.pdf 和 spec/**/*.pdf，构建 L0/L1/L2
 docgraph status                           # 节点/边/文档统计
-docgraph doctor --strict                  # L0/L1/L2 完整性检查
+docgraph doctor --strict                  # L0/L1 完整性 + L2 provenance/强结构检查
+docgraph l2 audit --strict                # L2 候选覆盖与 schema 质量审计
 
 docgraph search "per_vector_misc"         # 按名称查寄存器
 docgraph search --kind clock "core"       # 按类型查 clock 实体
@@ -145,4 +151,4 @@ MCP 工具共 **7 个**（按层次）：
 - 填充 register 实体的 address/offset/access/reset 属性
 - 更大规模文档集评测验证规模优势
 
-License: Apache 2.0（计划）
+License: Apache 2.0

@@ -37,7 +37,8 @@ class MarkdownParser:
             from markdown_it import MarkdownIt  # type: ignore
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
-                "markdown-it-py not installed; should come with docgraph base"
+                "markdown-it-py not installed. Install with: "
+                "pip install 'docgraph[documents]'"
             ) from e
 
         text = path.read_text("utf-8")

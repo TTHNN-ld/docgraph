@@ -50,7 +50,7 @@
 | 类型 | 架构设计 |
 | 适用范围 | 芯片 Spec（datasheet、reference manual、TRM、errata、app note 等） |
 | 目标用户 | 芯片设计/验证工程师、Spec-driven Agent 开发者 |
-| License | 计划开源 Apache 2.0 |
+| License | Apache 2.0 |
 
 ---
 

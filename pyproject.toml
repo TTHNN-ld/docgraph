@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 authors = [{ name = "DocGraph Contributors" }]
 keywords = ["chip", "spec", "knowledge-graph", "pdf", "mcp", "agent"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3.11",
@@ -37,6 +37,7 @@ marker = ["marker-pdf>=1.0"]
 mineru = ["magic-pdf>=0.7"]
 docling = ["docling>=2.0"]
 mcp = ["mcp>=1.0"]
+documents = ["markdown-it-py>=3.0", "openpyxl>=3.1", "python-docx>=1.1"]
 embeddings = ["sentence-transformers>=3.0"]
 lancedb = ["lancedb>=0.16"]
 web = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "jinja2>=3.1"]
@@ -48,7 +49,7 @@ dev = [
   "mypy>=1.10",
   "httpx>=0.27",
 ]
-all = ["docgraph[llm,docling,mineru,mcp,embeddings,lancedb,web]"]
+all = ["docgraph[llm,docling,mineru,marker,mcp,documents,embeddings,lancedb,web]"]
 
 [project.scripts]
 docgraph = "docgraph.cli.main:app"

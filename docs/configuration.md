@@ -27,7 +27,12 @@ API key、base URL 和模型名建议直接写在 `~/.docgraph/config.yaml`。�
 普通项目可以不创建 `docgraph.yaml`。默认会扫描 `docs/**/*.pdf` 和
 `spec/**/*.pdf`，PDF 使用自动路由：PyMuPDF 先做轻量预检，born-digital /
 Word 导出 PDF 优先 Docling，扫描或图片密集 PDF 优先 MinerU，最后由
-PyMuPDF 兜底。其他行为使用内置 parser/extractor/storage 默认值。
+PyMuPDF 兜底。MinerU 是可选重型依赖；只有安装 `mineru` extra 后才会实际
+使用，否则自动回退到 Docling/PyMuPDF。其他行为使用内置
+parser/extractor/storage 默认值。
+
+Word、Excel 和 Markdown parser 由 `documents` extra 提供依赖，且需在
+`docs.include` 中显式加入对应扩展名；默认范围仅扫描 PDF。
 
 需要覆盖项目行为时再创建：
 

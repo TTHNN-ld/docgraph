@@ -41,7 +41,8 @@ class XlsxParser:
             from openpyxl import load_workbook  # type: ignore
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
-                "openpyxl not installed. Install: pip install openpyxl"
+                "openpyxl not installed. Install with: "
+                "pip install 'docgraph[documents]'"
             ) from e
 
         wb = load_workbook(filename=str(path), data_only=True, read_only=True)

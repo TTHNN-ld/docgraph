@@ -216,7 +216,7 @@ def doctor(
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
     strict: bool = typer.Option(False, "--strict", help="Return non-zero on warnings too"),
 ) -> None:
-    """Validate DocGraph health. Currently focused on L0/L1 production invariants."""
+    """Validate L0/L1 integrity and L2 provenance/structural invariants."""
     _run_layer_doctor(json_output=json_output, strict=strict)
 
 
