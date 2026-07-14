@@ -4,11 +4,17 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from docgraph.core.config import DocGraphConfig
+from docgraph.core.dependencies import (
+    DependencyPolicy,
+    DependencyResult,
+    ensure_parser_dependency,
+    parser_dependency,
+)
 from docgraph.core.dotenv import autoload_env
 from docgraph.core.ids import file_hash, infer_chip_model, make_doc_id
 from docgraph.core.logger import get_logger
@@ -20,11 +26,12 @@ from docgraph.extractors.base import ExtractContext
 from docgraph.extractors.base import registry as extractor_registry
 from docgraph.graph.schema import DocMetadata, DocType, ExtractResult, ParsedDoc
 from docgraph.graph.sqlite_store import SQLiteGraphStore
+from docgraph.linker.runner import run_linker
 from docgraph.llm.client import CostTracker, LLMClient, make_provider
 from docgraph.llm.vlm import VLMClient, make_vlm_provider
-from docgraph.linker.runner import run_linker
-from docgraph.parsers.base import ParseContext, registry as parser_registry
-from docgraph.parsers.pdf_router import inspect_pdf, pdf_parser_chain
+from docgraph.parsers.base import ParseContext
+from docgraph.parsers.base import registry as parser_registry
+from docgraph.parsers.pdf_router import assess_pdf_parse, inspect_pdf, pdf_parser_chain
 
 log = get_logger(__name__)
 
@@ -37,6 +44,7 @@ class BuildReport:
     parsed: int = 0
     extracted: int = 0
     errors: int = 0
+    degraded: int = 0
     nodes_total: int = 0
     edges_total: int = 0
     blocks_total: int = 0
@@ -50,8 +58,14 @@ class BuildReport:
     per_file: list[dict] = field(default_factory=list)
 
 
+class ParserExhaustedError(RuntimeError):
+    def __init__(self, message: str, attempts: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+
+
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def discover_files(root: Path, cfg: DocGraphConfig) -> list[Path]:
@@ -245,11 +259,15 @@ def build(
     force: bool = False,
     file_filter: Path | None = None,
     quality: str | None = None,
+    dependency_policy: DependencyPolicy | None = None,
+    parser_failure_policy: str | None = None,
 ) -> BuildReport:
     t0 = time.time()
     report = BuildReport()
     store.init_schema()
     report.quality = _normalize_quality(quality or cfg.parsers.pdf.quality)
+    effective_dependency_policy = dependency_policy or cfg.runtime.dependency_policy
+    effective_failure_policy = parser_failure_policy or cfg.runtime.parser_failure
 
     files = discover_files(root, cfg)
     if file_filter is not None:
@@ -272,8 +290,11 @@ def build(
     )
 
     active_doc_ids: set[str] = set()
+    active_paths: set[str] = set()
+    dependency_cache: dict[str, DependencyResult] = {}
     for path in files:
         rel = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
+        active_paths.add(rel)
         rec = manifest.files.get(rel) or FileRecord(path=rel)
         h = file_hash(path)
 
@@ -291,25 +312,46 @@ def build(
         rec.last_run = _utcnow()
 
         try:
-            parsed = _stage_parse(path, cfg, root, rec, quality=report.quality)
-            _stage_store_blocks(parsed, store, rec)  # L0 无损版面落库
-            n_chunks = _stage_store_chunks(parsed, store, rec)  # L1 切块 + FTS 落库
+            parsed = _stage_parse(
+                path,
+                cfg,
+                root,
+                rec,
+                quality=report.quality,
+                dependency_policy=effective_dependency_policy,
+                parser_failure_policy=effective_failure_policy,
+                dependency_cache=dependency_cache,
+            )
             extract_res = _stage_extract(
                 parsed, cfg, rec, llm_client, vlm_client, root, doc_id=parsed.doc_id
             )
-            _stage_store(extract_res, store, rec)
+            with store.transaction():
+                _stage_store_blocks(parsed, store, rec)  # L0 无损版面落库
+                n_chunks = _stage_store_chunks(parsed, store, rec)  # L1 切块 + FTS 落库
+                _stage_store(extract_res, store, rec)
             rec.status = "extracted"
             rec.doc_id = parsed.doc_id
             active_doc_ids.add(parsed.doc_id)
             rec.parser = parsed.parser
+            rec.error = None
             report.parsed += 1
+            if rec.quality_status == "degraded":
+                report.degraded += 1
             report.extracted += 1
             report.nodes_total += len(extract_res.nodes)
             report.edges_total += len(extract_res.edges)
             report.blocks_total += sum(len(p.blocks) for p in parsed.pages)
             report.chunks_total += n_chunks
             report.llm_calls += extract_res.stats.llm_calls
-            report.per_file.append({"path": rel, "status": "extracted", "nodes": len(extract_res.nodes), "edges": len(extract_res.edges)})
+            report.per_file.append({
+                "path": rel,
+                "status": "extracted",
+                "parser": parsed.parser,
+                "quality_status": rec.quality_status,
+                "fallback_reason": rec.fallback_reason,
+                "nodes": len(extract_res.nodes),
+                "edges": len(extract_res.edges),
+            })
             log.info(f"[green]ok[/green]      {rel}  ({len(extract_res.nodes)} nodes / {len(extract_res.edges)} edges)")
         except Exception as e:
             rec.status = "error"
@@ -323,10 +365,14 @@ def build(
         manifest.files[rel] = rec
         save_manifest(root, manifest)
 
-    if file_filter is None and active_doc_ids:
+    if file_filter is None:
         for doc_id in store.list_docs():
             if doc_id not in active_doc_ids:
                 store.delete_doc(doc_id)
+        for rel in list(manifest.files):
+            if rel not in active_paths:
+                manifest.files.pop(rel, None)
+        save_manifest(root, manifest)
 
     # Linker stage
     if cfg.extractors.enabled and report.nodes_total > 0:
@@ -357,7 +403,8 @@ def build(
     report.duration_s = round(time.time() - t0, 2)
     log.info(
         f"[bold]Build done[/bold] in {report.duration_s}s — "
-        f"parsed={report.parsed} skipped={report.skipped} errors={report.errors} "
+        f"parsed={report.parsed} degraded={report.degraded} "
+        f"skipped={report.skipped} errors={report.errors} "
         f"nodes+={report.nodes_total} edges+={report.edges_total} "
         f"blocks+={report.blocks_total} chunks+={report.chunks_total} "
         f"linker+={report.linker_edges} "
@@ -379,8 +426,20 @@ def _stage_parse(
     rec: FileRecord,
     *,
     quality: str | None = None,
+    dependency_policy: DependencyPolicy | None = None,
+    parser_failure_policy: str | None = None,
+    dependency_cache: dict[str, DependencyResult] | None = None,
 ) -> ParsedDoc:
-    return _stage_parse_with_quality(path, cfg, root, rec, quality=quality)
+    return _stage_parse_with_quality(
+        path,
+        cfg,
+        root,
+        rec,
+        quality=quality,
+        dependency_policy=dependency_policy,
+        parser_failure_policy=parser_failure_policy,
+        dependency_cache=dependency_cache,
+    )
 
 
 def _stage_parse_with_quality(
@@ -390,6 +449,9 @@ def _stage_parse_with_quality(
     rec: FileRecord,
     *,
     quality: str | None,
+    dependency_policy: DependencyPolicy | None = None,
+    parser_failure_policy: str | None = None,
+    dependency_cache: dict[str, DependencyResult] | None = None,
 ) -> ParsedDoc:
     t0 = time.time()
     ext = path.suffix.lower()
@@ -414,6 +476,10 @@ def _stage_parse_with_quality(
         path=path,
         profile=profile,
     )
+    failure_policy = parser_failure_policy or cfg.runtime.parser_failure
+    parser_names = [primary] if failure_policy == "error" else [primary, *fallback]
+    if ext == ".pdf" and failure_policy == "fallback" and "pymupdf" not in parser_names:
+        parser_names.append("pymupdf")
     metadata = _infer_doc_metadata(path, cfg, root)
     doc_id = make_doc_id(
         cfg.project.family,
@@ -426,17 +492,43 @@ def _stage_parse_with_quality(
     cache_dir = root / ".docgraph" / "cache" / rec.hash.split(":")[-1][:16] if rec.hash else None
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    parsed = _parse_with_fallback(
-        path,
-        doc_id=doc_id,
-        cache_dir=cache_dir,
-        metadata=metadata,
-        quality=parse_quality,
-        device=pcfg.device,
-        ocr_device=pcfg.ocr_device,
-        pdf_profile=profile,
-        parser_names=[primary, *fallback],
-    )
+    try:
+        parsed, attempts = _parse_with_fallback(
+            path,
+            doc_id=doc_id,
+            cache_dir=cache_dir,
+            metadata=metadata,
+            quality=parse_quality,
+            device=pcfg.device,
+            ocr_device=pcfg.ocr_device,
+            pdf_profile=profile,
+            parser_names=parser_names,
+            dependency_policy=dependency_policy or cfg.runtime.dependency_policy,
+            parser_failure_policy=failure_policy,
+            dependency_cache=dependency_cache,
+            return_attempts=True,
+        )
+    except ParserExhaustedError as exc:
+        rec.requested_parser = primary
+        rec.parser_attempts = exc.attempts
+        rec.quality_status = "failed"
+        rec.fallback_reason = _fallback_reason(exc.attempts)
+        rec.stage_log["parse"] = StageRecord(
+            duration_s=round(time.time() - t0, 3),
+            ok=False,
+            error=str(exc),
+        )
+        raise
+    rec.requested_parser = primary
+    rec.parser = parsed.parser
+    rec.parser_attempts = attempts
+    rec.quality_status = "ok" if parsed.parser == primary else "degraded"
+    rec.fallback_reason = _fallback_reason(attempts) if parsed.parser != primary else None
+    if rec.fallback_reason:
+        log.warning(
+            f"[parse] {path.name} degraded from {primary} to {parsed.parser}: "
+            f"{rec.fallback_reason}"
+        )
     rec.stage_log["parse"] = StageRecord(duration_s=round(time.time() - t0, 3), ok=True)
     rec.status = "parsed"
     return parsed
@@ -453,16 +545,51 @@ def _parse_with_fallback(
     ocr_device: str | None,
     pdf_profile: Any | None,
     parser_names: list[str],
-) -> ParsedDoc:
+    dependency_policy: DependencyPolicy = "fallback",
+    parser_failure_policy: str = "fallback",
+    dependency_cache: dict[str, DependencyResult] | None = None,
+    return_attempts: bool = False,
+) -> ParsedDoc | tuple[ParsedDoc, list[dict[str, Any]]]:
     errors: list[str] = []
+    attempts: list[dict[str, Any]] = []
     for name in parser_names:
         cls = parser_registry.get(name)
         if cls is None:
-            errors.append(f"{name}: not registered")
+            detail = "not registered"
+            errors.append(f"{name}: {detail}")
+            attempts.append({"parser": name, "status": "unavailable", "reason": detail})
+            if parser_failure_policy == "error":
+                break
+            continue
+        dependency = (
+            dependency_cache[name]
+            if dependency_cache is not None and name in dependency_cache
+            else ensure_parser_dependency(name, dependency_policy)
+        )
+        if dependency_cache is not None:
+            dependency_cache[name] = dependency
+        if not dependency.available:
+            detail = dependency.reason or "dependency unavailable"
+            errors.append(f"{name}: {detail}")
+            attempts.append(
+                {
+                    "parser": name,
+                    "status": "dependency_missing",
+                    "reason": detail,
+                    "install_attempted": dependency.attempted_install,
+                }
+            )
+            log.warning(f"[parse] {name} unavailable for {path.name}: {detail}")
+            if dependency_policy == "error" or parser_failure_policy == "error":
+                break
             continue
         parser = cls()
         if not parser.can_parse(path):
-            errors.append(f"{name}: unavailable or unsupported")
+            detail = "unavailable or unsupported"
+            errors.append(f"{name}: {detail}")
+            attempts.append({"parser": name, "status": "unavailable", "reason": detail})
+            if parser_failure_policy == "error":
+                break
             continue
         ctx = ParseContext(
             doc_id=doc_id,
@@ -477,13 +604,37 @@ def _parse_with_fallback(
             },
         )
         try:
-            return parser.parse(path, ctx)
+            dependency_spec = parser_dependency(name)
+            if dependency_spec and dependency_spec.model_notice:
+                log.info(f"[parse] {dependency_spec.model_notice}")
+            parsed = parser.parse(path, ctx)
+            if not any(page.blocks for page in parsed.pages):
+                raise RuntimeError("parse quality gate failed: parser returned no L0 blocks")
+            if path.suffix.lower() == ".pdf" and pdf_profile is not None:
+                verdict = assess_pdf_parse(parsed, pdf_profile)
+                if not verdict.ok:
+                    raise RuntimeError(f"parse quality gate failed: {verdict.reason}")
+            attempts.append({"parser": name, "status": "succeeded"})
+            return (parsed, attempts) if return_attempts else parsed
         except Exception as e:
             errors.append(f"{name}: {e}")
+            attempts.append({"parser": name, "status": "failed", "reason": str(e)})
             log.warning(f"[parse] parser {name} failed for {path.name}: {e}")
-    raise RuntimeError(
-        f"No parser succeeded for {path} (tried: {parser_names}; errors: {errors})"
+            if parser_failure_policy == "error":
+                break
+    raise ParserExhaustedError(
+        f"No parser succeeded for {path} (tried: {parser_names}; errors: {errors})",
+        attempts,
     )
+
+
+def _fallback_reason(attempts: list[dict[str, Any]]) -> str | None:
+    reasons = [
+        f"{attempt['parser']}: {attempt.get('reason', attempt['status'])}"
+        for attempt in attempts
+        if attempt.get("status") != "succeeded"
+    ]
+    return "; ".join(reasons) or None
 
 
 def _normalize_quality(quality: str | None) -> str:
@@ -530,10 +681,11 @@ def _stage_extract(
     t0 = time.time()
     classes = extractor_registry.resolve_order(cfg.extractors.enabled)
     if not classes:
-        raise RuntimeError(
-            f"No extractors enabled. enabled={cfg.extractors.enabled} "
-            f"registered={extractor_registry.list_names()}"
+        rec.stage_log["extract"] = StageRecord(
+            duration_s=round(time.time() - t0, 3),
+            ok=True,
         )
+        return ExtractResult()
 
     merged = ExtractResult()
     for cls in classes:
@@ -573,15 +725,6 @@ def _stage_extract(
         merged.stats.duration_s += res.stats.duration_s
         merged.stats.llm_calls += res.stats.llm_calls
         merged.stats.failed += res.stats.failed
-
-    # 按节点 ID 去重（优先保留后面 extractor 的，可能更丰富）
-    seen: set[str] = set()
-    dedup_nodes: list = []
-    for n in merged.nodes:
-        if n.id not in seen:
-            seen.add(n.id)
-            dedup_nodes.append(n)
-    merged.nodes = dedup_nodes
 
     rec.stage_log["extract"] = StageRecord(
         duration_s=round(time.time() - t0, 3),
@@ -632,8 +775,9 @@ def _stage_store(
     for edge in result.edges:
         try:
             store.upsert_edge(edge)
-        except Exception as e:
-            log.warning(f"edge upsert failed {edge.src}→{edge.dst}: {e}")
+        except Exception:
+            log.exception(f"edge upsert failed {edge.src}→{edge.dst}")
+            raise
     rec.stage_log["store"] = StageRecord(
         duration_s=round(time.time() - t0, 3),
         ok=True,

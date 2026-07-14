@@ -95,7 +95,7 @@ class LLMProvider(Protocol):
 class NullLLMProvider:
     name = "null"
 
-    def complete(self, *args, **kwargs) -> LLMResponse:  # noqa: ARG002
+    def complete(self, *args, **kwargs) -> LLMResponse:
         raise RuntimeError(
             "LLM is disabled (llm.enabled=false in config). "
             "Set llm.enabled=true and configure provider to use LLM extractors."
@@ -360,7 +360,7 @@ def _llm_deadline(timeout_s: float):
         yield
         return
 
-    def _raise_timeout(signum, frame):  # noqa: ARG001
+    def _raise_timeout(signum, frame):
         raise TimeoutError(f"LLM request exceeded {timeout_s:.1f}s")
 
     old_handler = signal.getsignal(signal.SIGALRM)
@@ -531,7 +531,7 @@ class LLMClient:
 
         last_err: Exception | None = None
         cur_prompt = prompt
-        for attempt in range(self.max_retries + 1):
+        for _attempt in range(self.max_retries + 1):
             resp = self.complete(
                 cur_prompt,
                 tier=tier,

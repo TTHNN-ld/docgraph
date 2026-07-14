@@ -16,6 +16,7 @@ import math
 import os
 import re
 
+from docgraph.embeddings.base import EmbeddingProvider
 
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
@@ -92,12 +93,13 @@ class BgeM3Encoder:
         return [v.tolist() for v in vecs]
 
 
-def make_encoder(name: str, **kwargs) -> "EmbeddingProvider":  # noqa: UP037
+def make_encoder(name: str, **kwargs) -> EmbeddingProvider:
     if name == "hash":
         return HashEncoder(**kwargs)
     if name == "bge_m3":
         return BgeM3Encoder(**kwargs)
     if name in ("openai", "openai_compat"):
         from docgraph.embeddings.openai_encoder import OpenAIEmbeddingProvider
+
         return OpenAIEmbeddingProvider(**kwargs)
     raise ValueError(f"Unknown embedding provider: {name}")

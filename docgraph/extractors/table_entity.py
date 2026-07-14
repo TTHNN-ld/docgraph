@@ -25,9 +25,9 @@ except ImportError:  # pragma: no cover
 
 from docgraph.core.ids import make_node_id
 from docgraph.core.logger import get_logger
-from docgraph.extractors.candidates import EntityCandidate, build_entity_candidates
 from docgraph.extractors._vlm_backstop import page_needs_vlm_for, vlm_extract
 from docgraph.extractors.base import ExtractContext
+from docgraph.extractors.candidates import EntityCandidate, build_entity_candidates
 from docgraph.extractors.schema_registry import (
     ConstraintDef,
     EntitySchema,
@@ -317,7 +317,8 @@ class TableEntityExtractor:
                                                        source_block_ids=candidate.block_ids,
                                                        source_chunk_ids=candidate.source_chunk_ids,
                                                        candidate_id=candidate.id)
-                            nodes.append(n["node"]); edges.extend(n["edges"])
+                            nodes.append(n["node"])
+                            edges.extend(n["edges"])
                             if sn == "register" and hasattr(item, "bitfields"):
                                 nodes.extend(n["bitfield_nodes"])
                                 edges.extend(n["bitfield_edges"])

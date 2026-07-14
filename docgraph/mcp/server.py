@@ -24,12 +24,11 @@ from docgraph.embeddings.factory import build_encoder
 from docgraph.embeddings.vector_factory import build_vector_store
 from docgraph.graph.schema import EdgeKind, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
-from docgraph.query.engine import QueryEngine
+from docgraph.query.engine import ContextRequestError, QueryEngine
 from docgraph.version import __version__
 
 # ---------------------------------------------------------------------------
-# Tool definitions  (7 tools: status, files, search_chunks, fetch, search,
-#                     section, neighbors)
+# Tool definitions
 # ---------------------------------------------------------------------------
 
 TOOLS = [
@@ -60,6 +59,11 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "default": 20},
+                "doc_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional document scope; omit to search the whole index.",
+                },
             },
             "required": ["query"],
         },
@@ -79,6 +83,82 @@ TOOLS = [
             "type": "object",
             "properties": {"chunk_id": {"type": "string"}},
             "required": ["chunk_id"],
+        },
+    },
+    {
+        "name": "docgraph_fetch_many",
+        "description": (
+            "READ MULTIPLE ORIGINAL CHUNKS. Given up to 20 chunk_ids from "
+            "docgraph_context or docgraph_search_chunks, returns complete L1 chunk "
+            "text, deduplicated L0 blocks, related L2 entities, and links from each "
+            "chunk to its blocks/entities. Prefer this over many docgraph_fetch calls "
+            "when validating broad cross-document evidence."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chunk_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 20,
+                }
+            },
+            "required": ["chunk_ids"],
+        },
+    },
+    {
+        "name": "docgraph_context",
+        "description": (
+            "DEFAULT DOCUMENT VIEW. Transparently chooses between complete L1 "
+            "and L1 retrieval according to the selected corpus size and response "
+            "budget. Returns original chunk text without summarizing it, reports "
+            "coverage/completeness, retrieval methods, candidate counts, omitted "
+            "content, rank reasons, and a continuation cursor. L2/VLM results are "
+            "returned separately as enrichments. The agent remains responsible "
+            "for deciding what is relevant and whether to continue or verify L0. "
+            "The returned chunks already contain complete L1 text; call fetch only "
+            "when table cells, image/layout evidence, or source verification is needed; "
+            "use fetch_many for several chunks."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["auto", "full", "search"],
+                    "default": "auto",
+                },
+                "doc_ids": {"type": "array", "items": {"type": "string"}},
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 80000,
+                    "default": 40000,
+                },
+                "max_chunks": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 160,
+                    "default": 80,
+                },
+                "include_enrichments": {"type": "boolean", "default": True},
+                "max_enrichment_chars": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 20000,
+                    "default": 8000,
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": (
+                        "Opaque continuation cursor. A search cursor retains the original "
+                        "task, so follow-up calls do not need to repeat it."
+                    ),
+                },
+            },
+            "required": [],
         },
     },
     {
@@ -173,19 +253,41 @@ def _tool_files(qe, args):
 
 
 def _tool_search_chunks(qe, args):
-    hits = qe.search_chunks(args["query"], limit=args.get("limit", 20))
+    hits = qe.search_chunks(
+        args["query"],
+        limit=args.get("limit", 20),
+        doc_ids=args.get("doc_ids"),
+    )
     return {
         "hits": hits,
         "usage_policy": (
             "These are L1 chunk candidates with snippets, page numbers, and "
-            "block_ids. Use docgraph_fetch(chunk_id) to read the complete "
-            "original content of any chunk that looks relevant."
+            "block_ids. Use docgraph_fetch(chunk_id) to read one complete "
+            "original chunk, or docgraph_fetch_many(chunk_ids) to verify several "
+            "related chunks without repeating shared blocks/entities."
         ),
     }
 
 
 def _tool_fetch(qe, args):
     return qe.fetch(args["chunk_id"])
+
+
+def _tool_fetch_many(qe, args):
+    return qe.fetch_many(args.get("chunk_ids", []))
+
+
+def _tool_context(qe, args):
+    return qe.document_context(
+        task=args.get("task"),
+        mode=args.get("mode", "auto"),
+        doc_ids=args.get("doc_ids"),
+        max_chars=args.get("max_chars", 40_000),
+        max_chunks=args.get("max_chunks", 80),
+        include_enrichments=args.get("include_enrichments", True),
+        max_enrichment_chars=args.get("max_enrichment_chars", 8_000),
+        cursor=args.get("cursor"),
+    )
 
 
 def _tool_search(qe, args):
@@ -259,6 +361,8 @@ HANDLERS = {
     "docgraph_files": _tool_files,
     "docgraph_search_chunks": _tool_search_chunks,
     "docgraph_fetch": _tool_fetch,
+    "docgraph_fetch_many": _tool_fetch_many,
+    "docgraph_context": _tool_context,
     "docgraph_search": _tool_search,
     "docgraph_section": _tool_section,
     "docgraph_neighbors": _tool_neighbors,
@@ -330,6 +434,16 @@ def _handle_request(qe, req: dict[str, Any]) -> dict[str, Any]:
                             "text": json.dumps(result, ensure_ascii=False, default=str),
                         }
                     ]
+                },
+            }
+        except ContextRequestError as e:
+            return {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "error": {
+                    "code": -32010,
+                    "message": str(e),
+                    "data": {"context_error": e.code},
                 },
             }
         except Exception as e:

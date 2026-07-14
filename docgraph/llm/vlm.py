@@ -101,7 +101,8 @@ class AnthropicVLMProvider:
                 ],
             }],
         }
-        if system: kwargs["system"] = system
+        if system:
+            kwargs["system"] = system
         msg = client.messages.create(**kwargs)
         text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
         usage = getattr(msg, "usage", None)

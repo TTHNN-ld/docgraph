@@ -26,6 +26,10 @@ class FileRecord(BaseModel):
     mtime: float | None = None
     size: int | None = None
     parser: str | None = None
+    requested_parser: str | None = None
+    parser_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    quality_status: str | None = None
+    fallback_reason: str | None = None
     status: str = "pending"  # pending|parsed|extracted|linked|embedded|error
     stage_log: dict[str, StageRecord] = Field(default_factory=dict)
     last_run: str | None = None

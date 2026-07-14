@@ -7,7 +7,7 @@ PDF parser，对中文混排、公式、复杂表格识别效果好。
 
 安装：
   pip install magic-pdf[full]
-  # 或参考 https://github.com/opendatalab/MinerU 的最新安装文档
+  # 此 adapter 面向 magic-pdf 1.x；MinerU 2.x+ 使用了不同 API。
 
 使用：
   config.yaml:
@@ -28,8 +28,16 @@ from typing import Any
 from docgraph.core.config import user_docgraph_dir
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import (
-    BBox, Block, BlockKind, ParsedDoc, ParsedFigure, ParsedPage, ParsedTable,
-    TableData, TextBlock, TocEntry,
+    BBox,
+    Block,
+    BlockKind,
+    ParsedDoc,
+    ParsedFigure,
+    ParsedPage,
+    ParsedTable,
+    TableData,
+    TextBlock,
+    TocEntry,
 )
 from docgraph.parsers.base import ParseContext
 
@@ -39,7 +47,7 @@ log = get_logger(__name__)
 class MinerUParser:
     """基于 magic-pdf (MinerU) 的 PDF parser。
 
-    通过当前 magic-pdf API 产出 middle JSON，再归一为 ParsedDoc。
+    通过 magic-pdf 1.x API 产出 middle JSON，再归一为 ParsedDoc。
     """
     name = "mineru"
     supports = {".pdf"}
@@ -535,8 +543,7 @@ def _resolve_mineru_asset(image_dir: Path, path: Path) -> Path:
 
 def _iter_spans(blk: dict[str, Any]):
     for line in blk.get("lines", []) or []:
-        for span in line.get("spans", []) or []:
-            yield span
+        yield from line.get("spans", []) or []
     for child in blk.get("blocks", []) or []:
         yield from _iter_spans(child)
 

@@ -15,7 +15,7 @@
 
 1. **L2 生产评估集**：为目标芯片文档集建立 golden set，按实体类型统计 candidate 覆盖率、schema 命中率、LLM/VLM 成功率、precision、recall 和 F1。
 2. **L2 schema 校准**：持续收紧 register、bitfield、pin、signal、interface、memory_map、interrupt、requirement 的必填字段、值域、证据和冲突处理。
-3. **Agent fetch 接口**：补齐 MCP/CLI 的 block、chunk、section 原文拉取能力，让默认路径稳定落在“L1 定位 → L0 取证 → L2 加速”。
+3. **自适应文档视图**：实现 `docgraph_context`。小语料在预算内返回完整 L1，大语料自动切到检索；公开选择理由、覆盖范围和遗漏量，并支持模式覆盖、游标分页和 L0 回溯。
 4. **Parser adapter 扩展**：在不改变 L0/L1 契约的前提下接入 Docling、Marker、Excel 专项表格解析等后端。
 5. **生产运维闭环**：将 `doctor`、`l2-audit`、`l2-eval`、成本统计和构建耗时纳入 CI/批处理流程。
 
@@ -95,6 +95,11 @@
 
 - **决定**：L2 升级为语义知识图谱。本体对齐 IP-XACT（IEEE 1685-2022），关系类型化（`belongs_to` / `contained_in` / `mapped_to` / `drives` / `clocks` / `resets` / `implements`）。抽取分三层：A 确定性事实（表格，保留）、B 确定性关系推断（章节归属 + 地址 join + 名字 join，新增）、C LLM 开放 IE（GraphRAG 式、本体约束，新增）。溯源移出图边（保留在节点 attrs），图谱边只留语义关系 + `has_bitfield`。详见 [RFC 0015](./rfcs/0015-semantic-kg-hybrid-extraction.md)。
 - **理由**：当前图谱 81% 边是溯源/结构，语义关系稀缺，无法回答芯片语义问题；纯规则不可扩展，纯 GraphRAG 对精确事实有幻觉风险。分层各取其长，B 层零 LLM 成本补大半语义边。
+
+### ADR-016 查询按 L1 上下文预算自适应
+
+- **决定**：`docgraph_context` 是 Agent 的统一文档入口，也是一个受预算约束的文档视图。选定语料的 L1 在预算内时按稳定顺序完整返回；超出预算时自动使用 L1 检索。服务端必须公开实际模式、选择理由、覆盖范围、候选数、遗漏量和分页状态，不得改写 chunk 或把检索结果表述为完整语料。Agent 可以覆盖自动模式并继续展开。L2/VLM 结果作为独立 enrichment 附带，不混入 L1 原文。详见 [RFC 0016](./rfcs/0016-adaptive-l1-context.md)。
+- **理由**：少量文档没有必要先依赖不完整的实体图谱；大型手册又不能整篇塞进上下文。以实际内容大小而不是文件数量作判断，可以同时照顾小项目的完整性和大项目的检索效率。
 
 ## 未决问题
 

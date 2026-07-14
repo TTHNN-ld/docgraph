@@ -46,7 +46,7 @@
 | 项目代号 | DocGraph |
 | 状态 | Active v0.4 |
 | 创建日期 | 2026-06-25 |
-| 最近更新 | 2026-07-03 |
+| 最近更新 | 2026-07-14 |
 | 类型 | 架构设计 |
 | 适用范围 | 芯片 Spec（datasheet、reference manual、TRM、errata、app note 等） |
 | 目标用户 | 芯片设计/验证工程师、Spec-driven Agent 开发者 |

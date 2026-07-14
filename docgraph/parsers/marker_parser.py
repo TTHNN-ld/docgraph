@@ -17,14 +17,20 @@ PDF parser，对表格、公式、章节结构识别比 PyMuPDF 强很多。
 """
 from __future__ import annotations
 
+from importlib.util import find_spec
 from pathlib import Path
 
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import (
-    ParsedDoc, ParsedFigure, ParsedPage, ParsedTable,
-    TextBlock, TocEntry,
+    ParsedDoc,
+    ParsedFigure,
+    ParsedPage,
+    ParsedTable,
+    TextBlock,
+    TocEntry,
 )
 from docgraph.parsers.base import ParseContext
+from docgraph.parsers.normalize import populate_l0_blocks
 
 log = get_logger(__name__)
 
@@ -38,7 +44,7 @@ class MarkerParser:
     _converter = None  # 模型加载较慢，做类级缓存
 
     def can_parse(self, path: Path) -> bool:
-        return path.suffix.lower() in self.supports
+        return path.suffix.lower() in self.supports and find_spec("marker") is not None
 
     @classmethod
     def _get_converter(cls):
@@ -144,7 +150,9 @@ def _md_chunk_to_page(md: str, page_no: int, images: dict, ctx) -> ParsedPage:
                 text=m.group(2).strip(), reading_order=order,
                 is_heading=True, heading_level=len(m.group(1)),
             ))
-            order += 1; i += 1; continue
+            order += 1
+            i += 1
+            continue
 
         # 图片 ![alt](path)
         m = re.match(r"^!\[(.*?)\]\(([^)]+)\)\s*$", stripped)
@@ -155,7 +163,8 @@ def _md_chunk_to_page(md: str, page_no: int, images: dict, ctx) -> ParsedPage:
             figures.append(ParsedFigure(
                 image_path=img_path, caption=alt or None,
             ))
-            i += 1; continue
+            i += 1
+            continue
 
         # 表格（GFM 风格）
         if "|" in stripped and i + 1 < n and re.match(r"^\s*\|?[\s\-:|]+\|?\s*$", lines[i + 1]):
@@ -164,10 +173,12 @@ def _md_chunk_to_page(md: str, page_no: int, images: dict, ctx) -> ParsedPage:
             j = i + 2
             while j < n and "|" in lines[j]:
                 row = [c.strip() for c in lines[j].strip().strip("|").split("|")]
-                if any(row): rows.append(row)
+                if any(row):
+                    rows.append(row)
                 j += 1
             tables.append(ParsedTable(headers=headers, rows=rows))
-            i = j; continue
+            i = j
+            continue
 
         # 普通段落 / 列表
         if stripped:
@@ -175,12 +186,13 @@ def _md_chunk_to_page(md: str, page_no: int, images: dict, ctx) -> ParsedPage:
             order += 1
         i += 1
 
-    return ParsedPage(
+    page = ParsedPage(
         page_no=page_no,
         text_blocks=text_blocks,
         tables=tables,
         figures=figures,
     )
+    return populate_l0_blocks(page, doc_id=ctx.doc_id, parser=MarkerParser.name)
 
 
 def _save_marker_image(src: str, images: dict, ctx, page_no: int) -> str | None:

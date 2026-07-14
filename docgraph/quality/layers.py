@@ -14,7 +14,6 @@ from typing import Any
 from docgraph.graph.schema import NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 
-
 _L2_PROVENANCE_KINDS = {
     NodeKind.REGISTER.value,
     NodeKind.BITFIELD.value,
@@ -443,7 +442,7 @@ def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[L
                 continue
             valid_node_ids.add(row["id"])
 
-    for reg_id, ranges in bitfields_by_register.items():
+    for _reg_id, ranges in bitfields_by_register.items():
         ranges.sort()
         prev_low = prev_high = None
         prev_id = ""

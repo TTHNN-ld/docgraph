@@ -8,12 +8,14 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections import deque
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from docgraph.graph.schema import (
     BBox,
@@ -158,6 +160,7 @@ class SQLiteGraphStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
+        self._transaction_depth = 0
 
     # ------- lifecycle -------
 
@@ -177,15 +180,13 @@ class SQLiteGraphStore:
         conn = self._connect()
         conn.executescript(_SCHEMA_V1)
         # 跑 migration（处理旧 v1 db 升级：blocks 表、chunks.block_ids、FTS）
-        try:
-            from docgraph.graph.migrations import current_db_version, run_migrations
-            from docgraph.graph.migrations import CURRENT_VERSION
-            if current_db_version(self.path) < CURRENT_VERSION:
-                conn.commit()
-                run_migrations(self.path)
-        except Exception as e:
-            # migration 失败不阻塞 init（最坏情况是缺新列，会在写入时报错）
-            pass
+        from docgraph.graph.migrations import CURRENT_VERSION, current_db_version, run_migrations
+
+        if current_db_version(self.path) < CURRENT_VERSION:
+            conn.commit()
+            self.close()
+            run_migrations(self.path)
+            conn = self._connect()
         # 记录版本
         conn.execute(
             "INSERT OR REPLACE INTO schema_versions(component, version, applied_at) "
@@ -202,12 +203,24 @@ class SQLiteGraphStore:
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         conn = self._connect()
+        outermost = self._transaction_depth == 0
+        if outermost:
+            conn.execute("BEGIN")
+        self._transaction_depth += 1
         try:
             yield conn
-            conn.commit()
+            if outermost:
+                conn.commit()
         except Exception:
-            conn.rollback()
+            if outermost:
+                conn.rollback()
             raise
+        finally:
+            self._transaction_depth -= 1
+
+    def _commit_if_autonomous(self) -> None:
+        if self._transaction_depth == 0:
+            self._connect().commit()
 
     # ------- node -------
 
@@ -271,7 +284,7 @@ class SQLiteGraphStore:
                 "INSERT OR IGNORE INTO aliases(alias, node_id) VALUES (?, ?)",
                 (alias, node.id),
             )
-        conn.commit()
+        self._commit_if_autonomous()
 
     def get_node(self, id: str) -> Node | None:
         conn = self._connect()
@@ -341,7 +354,7 @@ class SQLiteGraphStore:
                 edge.schema_version,
             ),
         )
-        conn.commit()
+        self._commit_if_autonomous()
 
     def neighbors(
         self,
@@ -451,7 +464,7 @@ class SQLiteGraphStore:
                 for b in blocks
             ],
         )
-        conn.commit()
+        self._commit_if_autonomous()
 
     def get_block(self, block_id: str) -> Block | None:
         conn = self._connect()
@@ -541,7 +554,7 @@ class SQLiteGraphStore:
             "INSERT INTO chunks_fts (chunk_id, text) VALUES (?, ?)",
             [(r[0], r[7]) for r in rows],
         )
-        conn.commit()
+        self._commit_if_autonomous()
 
     def get_chunk(self, chunk_id: str):
         conn = self._connect()
@@ -578,45 +591,172 @@ class SQLiteGraphStore:
         conn = self._connect()
         return int(conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()["c"])
 
+    def chunk_corpus_stats(self, doc_ids: list[str] | None = None) -> dict[str, Any]:
+        """Return L1 size and a deterministic snapshot id for a document scope."""
+        conn = self._connect()
+        where, params = self._chunk_scope(doc_ids)
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total_chunks,
+                   COALESCE(SUM(LENGTH(text)), 0) AS total_chars,
+                   COUNT(DISTINCT doc_id) AS total_docs
+            FROM chunks {where}
+            """,
+            params,
+        ).fetchone()
+        fingerprint_rows = conn.execute(
+            f"""
+            SELECT id, COALESCE(source_hash, hash, '') AS content_hash, text
+            FROM chunks {where}
+            ORDER BY id
+            """,
+            params,
+        ).fetchall()
+        digest = hashlib.sha256()
+        for item in fingerprint_rows:
+            digest.update(str(item["id"]).encode("utf-8"))
+            digest.update(b"\0")
+            identity = item["content_hash"] or item["text"] or ""
+            digest.update(str(identity).encode("utf-8"))
+            digest.update(b"\n")
+        return {
+            "total_docs": int(row["total_docs"]),
+            "total_chunks": int(row["total_chunks"]),
+            "total_chars": int(row["total_chars"]),
+            "snapshot": digest.hexdigest(),
+        }
+
+    def list_chunks_page(
+        self,
+        *,
+        doc_ids: list[str] | None = None,
+        after: tuple[str, int, int, str] | None = None,
+        limit: int = 100,
+    ) -> list:
+        """Read L1 chunks in stable keyset order."""
+        conn = self._connect()
+        where, params = self._chunk_scope(doc_ids)
+        clauses: list[str] = []
+        if where:
+            clauses.append(where.removeprefix("WHERE "))
+        if after is not None:
+            doc_id, page_start, page_end, chunk_id = after
+            clauses.append(
+                """
+                (doc_id > ?
+                 OR (doc_id = ? AND COALESCE(page_start, page, 0) > ?)
+                 OR (doc_id = ? AND COALESCE(page_start, page, 0) = ?
+                     AND COALESCE(page_end, page, 0) > ?)
+                 OR (doc_id = ? AND COALESCE(page_start, page, 0) = ?
+                     AND COALESCE(page_end, page, 0) = ? AND id > ?))
+                """
+            )
+            params.extend(
+                [
+                    doc_id,
+                    doc_id,
+                    page_start,
+                    doc_id,
+                    page_start,
+                    page_end,
+                    doc_id,
+                    page_start,
+                    page_end,
+                    chunk_id,
+                ]
+            )
+        sql_where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            f"""
+            SELECT * FROM chunks
+            {sql_where}
+            ORDER BY doc_id,
+                     COALESCE(page_start, page, 0),
+                     COALESCE(page_end, page, 0),
+                     id
+            LIMIT ?
+            """,
+            [*params, max(1, int(limit))],
+        ).fetchall()
+        return [self._row_to_chunk(row) for row in rows]
+
+    @staticmethod
+    def _chunk_scope(doc_ids: list[str] | None) -> tuple[str, list[Any]]:
+        if doc_ids is None:
+            return "", []
+        if not doc_ids:
+            return "WHERE 0", []
+        placeholders = ",".join("?" for _ in doc_ids)
+        return f"WHERE doc_id IN ({placeholders})", list(doc_ids)
+
     def search_chunks_fts(self, query: str, limit: int = 20):
         """全文检索（FTS5 + LIKE 降级）。返回 [(chunk_id, snippet), ...]。
 
         策略：先 FTS5 MATCH；若返回空且 query 可能含 CJK（unicode61 不分词 →
         MATCH 空但不报错），自动降级到 LIKE 做子串匹配。
         """
+        return self.search_chunks_text(query, limit=limit)["hits"]
+
+    def search_chunks_text(
+        self,
+        query: str,
+        limit: int = 20,
+        doc_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Text-search chunks and report which retrieval paths produced hits."""
         import re
         conn = self._connect()
         q = query.strip()
         if not q:
-            return []
+            return {"hits": [], "methods": [], "pool_truncated": False}
         _CJK = re.compile(r"[一-鿿㐀-䶿]")
         rows = []
         has_cjk = bool(_CJK.search(q))
+        scope_sql = ""
+        scope_params: list[str] = []
+        if doc_ids is not None:
+            if not doc_ids:
+                return {"hits": [], "methods": [], "pool_truncated": False}
+            placeholders = ",".join("?" for _ in doc_ids)
+            scope_sql = f" AND chunks.doc_id IN ({placeholders})"
+            scope_params = list(doc_ids)
         # 对纯 ASCII/拉丁 query 直接 MATCH；CJK 混合 query 需要 LIKE 降级
         if not has_cjk:
             try:
                 rows = conn.execute(
-                    "SELECT chunk_id, snippet(chunks_fts, 1, '【', '】', '…', 20) AS snip "
-                    "FROM chunks_fts WHERE chunks_fts MATCH ? LIMIT ?",
-                    (q, limit * 3),
+                    "SELECT chunks_fts.chunk_id, "
+                    "snippet(chunks_fts, 1, '【', '】', '…', 20) AS snip "
+                    "FROM chunks_fts JOIN chunks ON chunks.id = chunks_fts.chunk_id "
+                    f"WHERE chunks_fts MATCH ?{scope_sql} LIMIT ?",
+                    [q, *scope_params, limit + 1],
                 ).fetchall()
             except Exception:
                 rows = []
         fallback = conn.execute(
             "SELECT id AS chunk_id, substr(text,1,240) AS snip "
-            "FROM chunks WHERE text LIKE ? LIMIT ?",
-            (f"%{q}%", limit * 3),
+            f"FROM chunks WHERE text LIKE ?{scope_sql} LIMIT ?",
+            [f"%{q}%", *scope_params, limit + 1],
         ).fetchall()
         seen: set[str] = set()
         out: list[tuple[str, str]] = []
-        for r in list(rows) + list(fallback):
+        raw = list(rows) + list(fallback)
+        for r in raw:
             if r["chunk_id"] in seen:
                 continue
             seen.add(r["chunk_id"])
             out.append((r["chunk_id"], r["snip"]))
-            if len(out) >= limit * 3:
+            if len(out) >= limit:
                 break
-        return out
+        methods = []
+        if rows:
+            methods.append("fts")
+        if fallback:
+            methods.append("like")
+        return {
+            "hits": out,
+            "methods": methods,
+            "pool_truncated": len(rows) > limit or len(fallback) > limit,
+        }
 
     # ------- stats -------
 

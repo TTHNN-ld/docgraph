@@ -19,9 +19,9 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
+from docgraph.core.concurrency import llm_concurrency, map_concurrent
 from docgraph.core.ids import content_hash, make_node_id
 from docgraph.core.logger import get_logger
-from docgraph.core.concurrency import map_concurrent, llm_concurrency
 from docgraph.extractors.base import ExtractContext
 from docgraph.extractors.candidates import build_entity_candidates
 from docgraph.graph.schema import (
@@ -415,7 +415,7 @@ class FigureExtractor:
             results = []
 
         # Phase 3: 顺序应用 VLM 结果 + 物化语义实体
-        for task, res in zip(vlm_tasks, results):
+        for task, res in zip(vlm_tasks, results, strict=True):
             semantic, err = res if res else (None, RuntimeError("no result"))
             if err is not None:
                 failed += 1
@@ -517,7 +517,7 @@ class FigureExtractor:
 
     def _make_node(
         self,
-        fig: "Block",
+        fig: Block,
         page_no: int,
         fig_type: str,
         ctx: ExtractContext,

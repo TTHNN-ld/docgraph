@@ -40,6 +40,8 @@ def test_markdown_parser_basic():
     tbl = parsed.pages[0].tables[0]
     assert tbl.headers == ["A", "B"]
     assert tbl.rows == [["1", "2"]]
+    assert parsed.pages[0].blocks
+    assert any(block.table is not None for block in parsed.pages[0].blocks)
 
 
 def test_markdown_parser_image():
@@ -56,6 +58,7 @@ def test_markdown_parser_image():
     assert len(figs) == 1
     assert figs[0].image_path == "images/foo.png"
     assert figs[0].caption == "diagram"
+    assert any(block.image_path == "images/foo.png" for block in parsed.pages[0].blocks)
 
 
 # ---------------------------------------------------------------------------

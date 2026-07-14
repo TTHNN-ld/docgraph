@@ -51,7 +51,8 @@ class OpenAIEmbeddingProvider:
         self._client = None
 
     def _ensure_client(self) -> None:
-        if self._client is not None: return
+        if self._client is not None:
+            return
         if not self.api_key:
             raise RuntimeError(
                 "OpenAI embedding requires EMBEDDING_API_KEY or OPENAI_API_KEY env"

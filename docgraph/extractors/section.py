@@ -12,6 +12,7 @@ import time
 from docgraph.core.ids import content_hash, make_node_id, normalize_name
 from docgraph.extractors.base import ExtractContext
 from docgraph.graph.schema import (
+    BlockKind,
     Edge,
     EdgeKind,
     Evidence,
@@ -22,7 +23,6 @@ from docgraph.graph.schema import (
     NodeKind,
     ParsedDoc,
     TocEntry,
-    BlockKind,
 )
 
 _HEADING_NUM = re.compile(r"^(\d+(?:\.\d+){0,4})\s+(.+)$")

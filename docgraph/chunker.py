@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from docgraph.core.ids import content_hash, make_node_id, normalize_name
 from docgraph.graph.schema import Block, BlockKind, Chunk, NodeKind, ParsedDoc, TocEntry
 
-
 # token 粗估：4 char ≈ 1 token
 _CHARS_PER_TOKEN = 4
 MAX_CHUNK_CHARS = 2000  # ~500 tokens
@@ -69,7 +68,8 @@ def _chunk_blocks(
             return
         text = "\n".join(buf_text).strip()
         if not text:
-            buf_blocks = []; buf_text = []
+            buf_blocks = []
+            buf_text = []
             return
         page_start = min(b.page for b in buf_blocks)
         page_end = max(b.page for b in buf_blocks)
@@ -95,7 +95,8 @@ def _chunk_blocks(
                 "chunk_type": kind,
             },
         ))
-        buf_blocks = []; buf_text = []
+        buf_blocks = []
+        buf_text = []
 
     for b in sorted(blocks, key=lambda x: (x.page, x.reading_order)):
         block_section_path = _block_section_path(b, section_index, section_path)

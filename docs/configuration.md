@@ -34,6 +34,18 @@ parser/extractor/storage 默认值。
 Word、Excel 和 Markdown parser 由 `documents` extra 提供依赖，且需在
 `docs.include` 中显式加入对应扩展名；默认范围仅扫描 PDF。
 
+缺失依赖和 parser 失败策略可独立配置：
+
+```yaml
+runtime:
+  dependency_policy: prompt  # prompt | install | fallback | error
+  parser_failure: fallback   # fallback | error
+```
+
+`prompt` 只会在交互终端询问；非交互环境等价于 `fallback`。`install` 仅允许
+安装 DocGraph 内置白名单对应的 extras，不会根据配置执行任意包安装。
+CLI 的 `--install-missing` 和 `--strict-parsers` 可分别覆盖这两项。
+
 需要覆盖项目行为时再创建：
 
 ```yaml
@@ -89,9 +101,15 @@ storage:
 
 logging:
   level: info
+
+runtime:
+  dependency_policy: prompt
+  parser_failure: fallback
 ```
 
-MinerU 模型权重默认复用 `~/.docgraph/mineru-models/`，不会随每个项目重复下载；项目内 `.docgraph/cache/` 只保存该项目的解析中间产物和图片缓存。
+模型权重不会在 `pip install` 阶段下载。Docling/MinerU adapter 首次实际运行时由
+上游组件下载并缓存；下载失败按 `runtime.parser_failure` 处理。MinerU 模型目录默认
+复用 `~/.docgraph/mineru-models/`，项目内 `.docgraph/cache/` 只保存解析中间产物。
 
 ## 用户级示例：`~/.docgraph/config.yaml`
 

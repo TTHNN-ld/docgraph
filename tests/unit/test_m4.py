@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
@@ -950,7 +951,7 @@ def test_marker_parser_basics():
     from docgraph.parsers.marker_parser import MarkerParser
     p = MarkerParser()
     assert p.name == "marker"
-    assert p.can_parse(Path("x.pdf"))
+    assert p.can_parse(Path("x.pdf")) is (find_spec("marker") is not None)
     assert not p.can_parse(Path("x.docx"))
 
 
@@ -958,4 +959,4 @@ def test_mineru_parser_basics():
     from docgraph.parsers.mineru_parser import MinerUParser
     p = MinerUParser()
     assert p.name == "mineru"
-    assert p.can_parse(Path("x.pdf"))
+    assert p.can_parse(Path("x.pdf")) is (find_spec("magic_pdf") is not None)

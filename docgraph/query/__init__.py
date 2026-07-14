@@ -14,15 +14,15 @@ from docgraph.query.engine import (
 )
 
 __all__ = [
-    "QueryEngine",
-    "StatusReport",
-    "RegisterDetail",
-    "PinDetail",
-    "TimingDetail",
-    "FigureDetail",
-    "SectionDetail",
-    "TermDetail",
     "ContextBundle",
+    "FigureDetail",
     "ImpactReport",
     "Path",
+    "PinDetail",
+    "QueryEngine",
+    "RegisterDetail",
+    "SectionDetail",
+    "StatusReport",
+    "TermDetail",
+    "TimingDetail",
 ]

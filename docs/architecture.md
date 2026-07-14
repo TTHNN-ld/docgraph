@@ -6,7 +6,7 @@
 
 ## 1. 项目定位
 
-**DocGraph 是一个面向芯片 spec 文档的知识图谱引擎**，目标是让 spec-driven 芯片开发 Agent 拥有稳定、结构化、可追溯的文档查询接口，而不是把整篇 PDF 灌进 LLM 长上下文。
+**DocGraph 是一个面向芯片 spec 文档的知识图谱引擎**，目标是让芯片开发 Agent 得到稳定、可追溯的文档上下文。小文档可以直接读取完整 L1，大文档则先检索再取原文，避免无节制地占用上下文。
 
 参考 `codegraph` 的使用模式：
 
@@ -140,13 +140,16 @@ docs/*.pdf
 ```
 Agent ── MCP ──► Query Engine
                      │
-                     ├── Graph Query (SQLite + 递归 CTE)
-                     ├── Vector Query (sqlite_json / LanceDB)
-                     └── Hybrid Rerank
+                     ├── 小语料：顺序读取完整 L1
+                     ├── 大语料：FTS / Vector / Hybrid Rerank
+                     ├── 精确实体：L2 Graph Query
+                     └── 原文核对：L1 chunk → L0 blocks
                      │
                      ▼
-                结构化结果（节点 + 边 + 证据 + 摘要）
+                透明、可解释、可分页、可回溯的文档视图
 ```
+
+MCP 负责控制一次返回多少内容，并公开选择过程；它不替 Agent 总结文档或决定结论。Agent 可以继续展开、改写查询、切换读取模式，或直接回到 L0 原文。
 
 ## 相关文档
 

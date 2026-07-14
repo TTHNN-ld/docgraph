@@ -34,7 +34,7 @@ dependencies = [
 [project.optional-dependencies]
 llm = ["anthropic>=0.34", "openai>=1.40"]
 marker = ["marker-pdf>=1.0"]
-mineru = ["magic-pdf>=0.7"]
+mineru = ["magic-pdf[full]>=1.3,<2"]
 docling = ["docling>=2.0"]
 mcp = ["mcp>=1.0"]
 documents = ["markdown-it-py>=3.0", "openpyxl>=3.1", "python-docx>=1.1"]
@@ -83,17 +83,20 @@ openai_compat = "docgraph.llm.client:OpenAICompatProvider"
 [tool.hatch.build.targets.wheel]
 packages = ["docgraph"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"docgraph/web/templates" = "docgraph/web/templates"
-"docgraph/web/static"    = "docgraph/web/static"
-
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "RUF"]
-ignore = ["E501"]
+# Chinese prose and Typer's declarative parameter API intentionally use
+# full-width punctuation and function-call defaults.
+ignore = [
+  "E501", "B008", "RUF001", "RUF002", "RUF003",
+  # Parser/extractor capabilities are intentional immutable-by-convention
+  # class metadata; changing public string enums is not a lint migration.
+  "RUF005", "RUF012", "UP042",
+]
 
 [tool.mypy]
 python_version = "3.11"

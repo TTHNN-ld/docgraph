@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -197,6 +197,13 @@ class CostConfig(BaseModel):
     vlm_max_calls_per_doc: int = 500
 
 
+class RuntimeConfig(BaseModel):
+    """Runtime behavior for optional parsers and parser failures."""
+
+    dependency_policy: Literal["prompt", "install", "fallback", "error"] = "prompt"
+    parser_failure: Literal["fallback", "error"] = "fallback"
+
+
 class DocGraphConfig(BaseModel):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     docs: DocsConfig = Field(default_factory=DocsConfig)
@@ -207,6 +214,7 @@ class DocGraphConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     cost: CostConfig = Field(default_factory=CostConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
 
 DEFAULT_PROJECT_CONFIG_YAML = """\
@@ -240,6 +248,10 @@ storage:
 
 cost:
   budget_per_build_usd: 5.0
+
+runtime:
+  dependency_policy: prompt  # prompt | install | fallback | error
+  parser_failure: fallback   # fallback | error
 
 logging:
   level: info

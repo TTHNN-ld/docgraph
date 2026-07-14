@@ -14,7 +14,7 @@
 DocGraph 的事实底座不是某一次实体抽取结果，而是可审计、可回溯、可增量更新的文档结构镜像。芯片文档的寄存器、管脚、时序、接口、需求和图表常分布在表格、正文、章节标题和图片中，因此系统必须同时满足：
 
 - **解析不丢信息**：Parser 负责保留页面、表格单元格、图、公式、坐标、顺序和章节归属。
-- **定位足够精准**：Agent 先定位相关 chunk，再按需拉取 L0 原文片段，避免把全文当上下文。
+- **上下文用得合适**：小文档集可以直接读取完整 L1；内容较多时先定位相关 chunk，再按需拉取 L0 原文。
 - **实体可增强但不可独占**：L2 图谱提升查询效率和结构化程度；L2 缺失时，L1/L0 仍然能回答问题。
 - **新增文档类型不改底座**：新 parser 只需归一到 `ParsedDoc/Block`，新实体类型优先通过 schema registry 扩展。
 
@@ -47,7 +47,8 @@ DocGraph 的事实底座不是某一次实体抽取结果，而是可审计、�
 1. **L0 必须无损**：任何 PDF/DOCX/XLSX/MD 进来，L0 都要保留到"能重建原文语义"的程度——尤其是表格单元格、图、公式。Parser **不允许**像现在这样把表格丢成 `[]`。
 2. **L1 必须可寻址、可回溯**：每个 chunk 有稳定 ID，能反查到 L0 的页/坐标/原文。
 3. **L2 必须是可选增强，不得成为唯一入口**：L2 抽取失败**绝不能**导致信息丢失；agent 永远能绕过 L2 直达 L1/L0。
-4. **agent 默认走 "L1 检索 → 按需取 L0 片段 → L2 命中则直接用"**，禁止"读全文"作为常规路径。
+4. **agent 从 L1 开始读**：L1 在上下文预算内时可以完整返回；超出预算时必须先检索，再按需取 L0。L2 只负责加速，不决定原文能不能被读到。
+5. **MCP 不替 agent 下结论**：MCP 只提供受预算约束的文档视图。它不得改写 chunk、隐藏截断或把检索候选说成完整答案；agent 始终可以改查询、切换模式、继续分页或直接读取 L0。
 
 ---
 
@@ -211,27 +212,35 @@ TableEntityExtractor（通用）:
 
 ---
 
-## 5. Agent 使用模式（回答"省上下文 + 不丢信息"）
+## 5. Agent 使用模式
 
-> 常规 agent "全量读全文"被显式禁止为默认路径。
+Agent 统一从 `docgraph_context` 进入。工具先看选定文档的 L1 有多大，再决定怎样提供文档视图，但不替 agent 判断哪些内容应该被相信或写入结论。
 
 ```
-1. 定位(L1 检索优先)
-   docgraph_context / docgraph_search_chunks："PCIe MSI-X doorbell 配置在哪？"
-   → 命中章节 4.6 + 相关 table chunk
-
-2. 按需取原文(L0 片段)
-   docgraph_fetch(chunk_id) / docgraph_blocks(block_ids)
-   → 只拉相关的几千 token 无损原文（含完整表格），不是 42 页全文
-
-3. 实体直取(L2 命中时)
-   docgraph_register("USP") / docgraph_search("USP")
-   → 先拿结构化候选，再用 source_chunk_ids/source_block_ids 回溯验证
+                         ┌─ L1 在预算内 ─► 按文档和页码返回完整 L1
+docgraph_context(task) ──┤
+                         └─ L1 超出预算 ─► 检索相关 chunk ─► 按需 fetch L0
 ```
+
+这里的“完整”指完整 L1，不是把 PDF 文件或所有页面图片原样塞进上下文。L1 已经按章节、表格和图切好，并保留 `block_ids`。需要核对表格单元格、图片、公式或坐标时，再通过 `docgraph_fetch` 回到 L0。
+
+是否完整返回由内容大小决定，不由文件数量决定。一份上千页的手册即使只有一个文件，也必须走检索。默认同时检查 L1 字符数和 chunk 数；任一超过预算就切换到检索模式。
+
+`docgraph_context` 支持三种模式：
+
+- `auto`：默认。预算内返回完整 L1，超出预算走检索。
+- `full`：按稳定顺序读取 L1，超过单次返回上限时使用游标继续读取。
+- `search`：始终根据任务检索，不尝试完整返回。
+
+每次响应都要说明实际采用的模式、原因、语料总量、已返回多少内容、是否截断以及下一页游标。只有本次响应包含选定范围的全部 L1 时才能标记 `l1_complete=true`；分页和检索响应都必须标记为 false。检索模式还要标明 `coverage=retrieval_candidates`，不能暗示没有命中的内容在文档中不存在。
+
+MCP 返回原始 chunk 文本，不把多段内容压缩成一段摘要。检索模式同时返回所用检索方法、候选总数、未返回数量和每个 chunk 的排序理由。Agent 可以改写查询、指定文档、扩大或缩小预算、切换 `full/search`，也可以绕过 `docgraph_context` 直接调用 `search_chunks` 和 `fetch`。
+
+L2 命中可以作为独立的 `enrichments` 随结果返回，但不能混入 L1 `text`。小文档中 L2 覆盖不足时，完整 L1 仍能提供足够材料；大文档中则由 L1 检索控制上下文大小。
 
 L2 图谱是加速索引，不是唯一事实源。MCP 输出中的 `needs_source_check=true`
-表示该节点来自 VLM/LLM 或缺少确定性置信度，agent 必须用 `docgraph_sources`
-回到 L1/L0 证据后再生成结论。
+表示该节点来自 VLM/LLM 或缺少确定性置信度，agent 必须根据
+`source_chunk_ids` 调用 `docgraph_fetch`，回到 L1/L0 证据后再生成结论。
 
 各芯片设计阶段拿到"自己要的那部分全量"：
 
@@ -243,7 +252,7 @@ L2 图谱是加速索引，不是唯一事实源。MCP 输出中的 `needs_sourc
 | 物理/封装 | pin / ball / package | L0 表格（最权威） |
 | 后端实现 | SDC/STA 约束 / floorplan / placement / routing / power grid / PVT corner | L2 constraint/physical_constraint + L0 表格原文兜底 |
 
-**省上下文** = 只拉相关 chunk；**不丢信息** = 拉到的是 L0 无损原文，且永远有回原文的路径。两者不再矛盾。
+**省上下文**不是一律少读，而是不超过预算：小文档一次读完，大文档只读相关部分。**不丢信息**依靠 L1 到 L0 的回溯链保证。
 
 ---
 
@@ -255,7 +264,7 @@ L2 图谱是加速索引，不是唯一事实源。MCP 输出中的 `needs_sourc
 | L1 切块索引 | chunk 落地 + block 回溯 + 全文 + 语义索引 | `chunks` + `chunks_fts` + `block_ids` + page range + table profile + continued table 合并；语义索引后端可插拔（默认 `sqlite_json`，可选 LanceDB） | ✅ 就绪 |
 | L0/L1 质量门 | 可审计、可回归 | `docgraph doctor` / `--strict` 校验 block、chunk、FTS、表格证据、图证据和回溯链 | ✅ 就绪 |
 | L2 实体增强 | 通用 schema-guided + 指回 L0/L1 | `TableEntityExtractor` 是统一入口；schema registry 已有 register/pin/timing/signal/interface/requirement/memory_map/interrupt/constraint/physical_constraint 等预设；`doctor --strict` 校验 provenance 和强结构实体约束 | ✅ 可试生产 |
-| Agent 接口 | 检索→取原文片段 | Web/search/chunk detail 已能回溯 L1/L0；MCP/CLI 的 blocks/fetch 入口仍需补齐 | ⚠️ 补齐 |
+| Agent 接口 | 小语料完整 L1；大语料检索后取证 | MCP 提供 `docgraph_context` 自适应入口、稳定游标和覆盖声明；`search_chunks` / `fetch` 保留为底层取证入口 | ✅ 就绪 |
 
 对外命令保持少量核心入口：`docgraph init`、`docgraph build`、`docgraph doctor`、`docgraph serve` 和检索/查询类命令。
 

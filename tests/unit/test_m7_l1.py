@@ -144,7 +144,7 @@ def test_pdf_explicit_parser_bypasses_auto_router():
 
 def test_parse_stage_falls_back_when_selected_parser_raises(tmp_path):
     from docgraph.core.pipeline import _parse_with_fallback
-    from docgraph.graph.schema import DocMetadata, ParsedDoc, ParsedPage
+    from docgraph.graph.schema import Block, BlockKind, DocMetadata, ParsedDoc, ParsedPage
     from docgraph.parsers.base import registry
 
     class FailingParser:
@@ -168,7 +168,20 @@ def test_parse_stage_falls_back_when_selected_parser_raises(tmp_path):
             return ParsedDoc(
                 doc_id=ctx.doc_id,
                 source_path=str(path),
-                pages=[ParsedPage(page_no=1)],
+                pages=[
+                    ParsedPage(
+                        page_no=1,
+                        blocks=[
+                            Block(
+                                id=f"{ctx.doc_id}#p1#b0",
+                                doc_id=ctx.doc_id,
+                                page=1,
+                                kind=BlockKind.PARAGRAPH,
+                                text="content",
+                            )
+                        ],
+                    )
+                ],
                 parser=self.name,
             )
 

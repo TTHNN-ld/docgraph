@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from docgraph.core.ids import content_hash
 from docgraph.core.logger import get_logger
 from docgraph.embeddings.base import EmbeddingProvider
 from docgraph.embeddings.vector_store import VectorStore
@@ -92,23 +93,37 @@ def embed_graph(
 ) -> EmbedReport:
     t0 = time.time()
     vstore.init_schema()
-    existing_ids: set[str] = set()
-    if only_missing:
-        existing_ids = {nid for nid, _ in vstore.all_for_model(encoder.model)}
+    stored_hashes = vstore.stored_node_hashes(encoder.model) if only_missing else {}
 
     n_embedded = 0
+    current_node_ids: set[str] = set()
     for kind in _EMBED_KINDS:
         nodes = store.search_nodes(NodeQuery(kind=kind, limit=100000))
-        nodes = [n for n in nodes if n.id not in existing_ids]
+        current_node_ids.update(n.id for n in nodes)
+        desired_hashes = {
+            n.id: content_hash(text_for_embedding(n))
+            for n in nodes
+        }
+        nodes = [
+            n for n in nodes
+            if not only_missing or stored_hashes.get(n.id) != desired_hashes[n.id]
+        ]
         for i in range(0, len(nodes), batch):
             chunk = nodes[i : i + batch]
             texts = [text_for_embedding(n) for n in chunk]
             vecs = encoder.encode(texts)
             for n, v in zip(chunk, vecs, strict=False):
-                vstore.upsert(n.id, encoder.model, v)
+                vstore.upsert(
+                    n.id,
+                    encoder.model,
+                    v,
+                    content_hash=desired_hashes[n.id],
+                )
                 n_embedded += 1
 
     n_chunks = embed_chunks(store, vstore, encoder, batch=batch, only_missing=only_missing)
+    current_chunk_ids = {c.id for c in store.list_chunks(limit=1_000_000)}
+    vstore.prune(current_node_ids, "chunk", current_chunk_ids)
 
     rep = EmbedReport(
         nodes_embedded=n_embedded,
@@ -137,16 +152,30 @@ def embed_chunks(
     namespace 固定为 `chunk`；后续如果接段落、图片语义、外部文档片段，
     仍然走同一套 VectorStore item 接口。
     """
-    existing_ids: set[str] = set()
-    if only_missing:
-        existing_ids = {cid for cid, _ in vstore.all_items_for_model("chunk", encoder.model)}
-    chunks = [c for c in store.list_chunks(limit=1_000_000) if c.id not in existing_ids]
+    stored_hashes = (
+        vstore.stored_item_hashes("chunk", encoder.model) if only_missing else {}
+    )
+    all_chunks = store.list_chunks(limit=1_000_000)
+    desired_hashes = {
+        chunk.id: content_hash(text_for_chunk_embedding(chunk))
+        for chunk in all_chunks
+    }
+    chunks = [
+        chunk for chunk in all_chunks
+        if not only_missing or stored_hashes.get(chunk.id) != desired_hashes[chunk.id]
+    ]
     n_embedded = 0
     for i in range(0, len(chunks), batch):
         group = chunks[i : i + batch]
         texts = [text_for_chunk_embedding(c) for c in group]
         vecs = encoder.encode(texts)
         for chunk, vec in zip(group, vecs, strict=False):
-            vstore.upsert_item("chunk", chunk.id, encoder.model, vec)
+            vstore.upsert_item(
+                "chunk",
+                chunk.id,
+                encoder.model,
+                vec,
+                content_hash=desired_hashes[chunk.id],
+            )
             n_embedded += 1
     return n_embedded

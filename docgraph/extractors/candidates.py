@@ -11,7 +11,6 @@ from typing import Literal
 from docgraph.chunker import chunk_doc
 from docgraph.graph.schema import Block, BlockKind, Chunk, ParsedDoc, TableData
 
-
 CandidateKind = Literal["table", "text", "table_image", "page_image", "figure"]
 
 

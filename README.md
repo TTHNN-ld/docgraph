@@ -10,18 +10,33 @@ DocGraph 把 PDF/Word/Excel/Markdown 形态的芯片 spec 文档解析为 L0 无
 
 ## 安装
 
+PyPI 发布后可直接安装（当前尚未发布）：
+
+```bash
+pip install docgraph
+```
+
+从源码参与开发：
+
 ```bash
 git clone https://github.com/TTHNN-ld/docgraph.git
 cd docgraph
 python -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -e ".[docling,documents,llm,mcp]"  # PDF/Office/Markdown + LLM/VLM provider + MCP
+pip install -e ".[dev]"
 ```
 
 `llm` extra 只安装模型 provider；调用 LLM/VLM 前还需要按
 [启用 LLM 抽取](./docs/cookbook/02-enable-llm.md) 配置 provider、model 和 API key。
-可选 extras：`mineru`（扫描版 PDF OCR）、`marker`（备选 parser）。未安装
-`mineru` 时，自动路由会回退到 Docling/PyMuPDF，不会获得 MinerU 的扫描件解析能力。
+基础包自带 PyMuPDF。`build` 选中尚未安装的内置 parser 时，交互终端会询问是否
+安装对应 extra；CI 等非交互环境不会擅自修改环境，而是自动尝试下一 parser。
+可用 `docgraph build --install-missing` 明确授权安装，或提前执行
+`docgraph setup parsers` 安装推荐的 Docling 和 Office/Markdown 依赖。
+
+安装 parser 不等于预下载模型。Docling 在首次实际解析时由上游下载并缓存模型；
+模型下载或初始化失败也会触发 parser 回退，并记录在 `.docgraph/manifest.json`。
+当前 MinerU 接口仍是兼容旧版 `magic-pdf` 的 adapter，需显式执行
+`docgraph setup parsers --parser mineru`；在升级到 MinerU 当前 API 前不作为推荐安装项。
 
 ---
 
@@ -30,6 +45,8 @@ pip install -e ".[docling,documents,llm,mcp]"  # PDF/Office/Markdown + LLM/VLM p
 ```bash
 docgraph init                             # 在当前目录创建 .docgraph/
 docgraph build                            # 解析 docs/**/*.pdf 和 spec/**/*.pdf，构建 L0/L1/L2
+docgraph build --install-missing          # 非交互环境中允许补装缺失 parser
+docgraph build --strict-parsers           # parser 缺失/失败时直接报错，不降级
 docgraph status                           # 节点/边/文档统计
 docgraph doctor --strict                  # L0/L1 完整性 + L2 provenance/强结构检查
 docgraph l2 audit --strict                # L2 候选覆盖与 schema 质量审计

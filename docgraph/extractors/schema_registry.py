@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field
 
 from docgraph.graph.schema import DocType, NodeKind, RegisterDef
 
-
 # ---------------------------------------------------------------------------
 # Schema definition
 # ---------------------------------------------------------------------------

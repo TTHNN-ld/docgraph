@@ -15,6 +15,7 @@ from docgraph.core.config import (
     project_root_from_cwd,
     write_default_user_config,
 )
+from docgraph.core.dependencies import ensure_parser_dependency, parser_dependency
 from docgraph.core.dotenv import autoload_env
 from docgraph.core.logger import get_logger, set_level
 from docgraph.core.manifest import load_manifest
@@ -22,9 +23,9 @@ from docgraph.core.pipeline import build as run_build
 from docgraph.embeddings.vector_factory import build_vector_store
 from docgraph.graph.schema import NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
-from docgraph.quality.layers import audit_l0_l1
 from docgraph.quality.l2 import audit_l2_candidates
 from docgraph.quality.l2_eval import eval_l2_golden
+from docgraph.quality.layers import audit_l0_l1
 from docgraph.query.engine import QueryEngine
 from docgraph.version import __version__
 from docgraph.watcher import run_watch_loop
@@ -39,11 +40,13 @@ l2_app = typer.Typer(help="L2 quality audit and evaluation.")
 inspect_app = typer.Typer(help="Inspect extracted entities and raw graph nodes.")
 graph_app = typer.Typer(help="Graph context, trace, and impact queries.")
 admin_app = typer.Typer(help="Advanced maintenance and operations.")
+setup_app = typer.Typer(help="Install and prepare optional runtime components.")
 
 app.add_typer(l2_app, name="l2")
 app.add_typer(inspect_app, name="inspect")
 app.add_typer(graph_app, name="graph")
 app.add_typer(admin_app, name="admin")
+app.add_typer(setup_app, name="setup")
 
 console = Console()
 log = get_logger("docgraph.cli")
@@ -140,11 +143,31 @@ def build(
         "--quality",
         help="Parser quality profile: fast, balanced, or accurate",
     ),
+    install_missing: bool = typer.Option(
+        False,
+        "--install-missing",
+        help="Install allow-listed parser extras when they are missing",
+    ),
+    strict_parsers: bool = typer.Option(
+        False,
+        "--strict-parsers",
+        help="Fail instead of trying another parser",
+    ),
 ) -> None:
     root, store, _qe = _open_project()
     cfg = load_config(root)
     manifest = load_manifest(root)
-    r = run_build(root, cfg, store, manifest, force=force, file_filter=doc, quality=quality)
+    r = run_build(
+        root,
+        cfg,
+        store,
+        manifest,
+        force=force,
+        file_filter=doc,
+        quality=quality,
+        dependency_policy="install" if install_missing else None,
+        parser_failure_policy="error" if strict_parsers else None,
+    )
     store.close()
     table = Table(title="Build summary", show_header=True, header_style="bold")
     for col in ("metric", "value"):
@@ -153,6 +176,7 @@ def build(
         ("files", str(r.total_files)),
         ("quality", r.quality),
         ("parsed", str(r.parsed)),
+        ("degraded", str(r.degraded)),
         ("skipped", str(r.skipped)),
         ("errors", str(r.errors)),
         ("nodes_added", str(r.nodes_total)),
@@ -168,6 +192,41 @@ def build(
     ]:
         table.add_row(row[0], row[1])
     console.print(table)
+    if r.errors:
+        raise typer.Exit(code=1)
+
+
+@setup_app.command("parsers")
+def setup_parsers(
+    parser: list[str] | None = typer.Option(
+        None,
+        "--parser",
+        help="Parser to install; repeat for more than one",
+    ),
+) -> None:
+    """Install optional parser extras ahead of a build."""
+    requested = parser or ["docling", "docx", "xlsx", "markdown"]
+    failures = 0
+    for name in requested:
+        dependency = parser_dependency(name)
+        if dependency is None:
+            console.print(f"[red]Unknown built-in parser:[/red] {name}")
+            failures += 1
+            continue
+        if name == "mineru":
+            console.print(
+                "[yellow]MinerU currently uses DocGraph's legacy magic-pdf adapter; "
+                "install it only for compatible environments.[/yellow]"
+            )
+        result = ensure_parser_dependency(name, "install")
+        if result.available:
+            state = "installed" if result.installed else "already available"
+            console.print(f"[green]{dependency.display_name}[/green]: {state}")
+        else:
+            console.print(f"[red]{dependency.display_name}[/red]: {result.reason}")
+            failures += 1
+    if failures:
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +448,7 @@ def search(
     kind: str = typer.Option(None, help="Filter by node kind"),
     limit: int = typer.Option(20, help="Max results"),
 ) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     kind_enum = NodeKind(kind) if kind else None
     results = qe.search(query, kind=kind_enum, limit=limit)
     store.close()
@@ -416,11 +475,12 @@ def query(text: str) -> None:
 
 @inspect_app.command()
 def register(name: str) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     d = qe.register(name)
     store.close()
     if d is None:
-        console.print(f"[yellow]Register not found:[/yellow] {name}")  ; return
+        console.print(f"[yellow]Register not found:[/yellow] {name}")
+        return
     n = d.node
     console.print(f"[bold green]{n.name}[/bold green]  [dim]({n.id})[/dim]")
     a = n.attrs
@@ -446,27 +506,29 @@ def register(name: str) -> None:
 
 @inspect_app.command()
 def pin(name: str) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     d = qe.pin(name)
     store.close()
     if d is None:
-        console.print(f"[yellow]Pin not found:[/yellow] {name}")  ; return
+        console.print(f"[yellow]Pin not found:[/yellow] {name}")
+        return
     _print_node(d.node)
 
 
 @inspect_app.command()
 def timing(name: str) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     d = qe.timing(name)
     store.close()
     if d is None:
-        console.print(f"[yellow]Timing param not found:[/yellow] {name}")  ; return
+        console.print(f"[yellow]Timing param not found:[/yellow] {name}")
+        return
     _print_node(d.node)
 
 
 @inspect_app.command()
 def figure(id_or_name: str) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     d = qe.figure(id_or_name)
     store.close()
     if d is None:
@@ -484,7 +546,7 @@ def figure(id_or_name: str) -> None:
 
 @inspect_app.command()
 def section(path_or_id: str) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     d = qe.section(path_or_id)
     store.close()
     if d is None:
@@ -499,7 +561,7 @@ def section(path_or_id: str) -> None:
 
 @inspect_app.command()
 def glossary(term: str) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     items = qe.glossary(term)
     store.close()
     if not items:
@@ -518,7 +580,7 @@ def glossary(term: str) -> None:
 
 @graph_app.command()
 def context(task: str) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     cb = qe.context(task)
     store.close()
     console.print(f"[bold]Context[/bold] for: {task}")
@@ -535,7 +597,7 @@ def context(task: str) -> None:
 
 @graph_app.command()
 def trace(from_id: str, to_id: str) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     paths = qe.trace(from_id, to_id)
     store.close()
     if not paths:
@@ -549,7 +611,7 @@ def trace(from_id: str, to_id: str) -> None:
 
 @graph_app.command()
 def impact(id: str, depth: int = typer.Option(2, "--depth", help="Influence depth")) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     rep = qe.impact(id, depth=depth)
     store.close()
     if rep is None:
@@ -569,7 +631,7 @@ def impact(id: str, depth: int = typer.Option(2, "--depth", help="Influence dept
 
 @inspect_app.command()
 def node(id: str) -> None:
-    root, store, qe = _open_project()
+    _root, store, qe = _open_project()
     n = qe.node(id)
     store.close()
     if n is None:
@@ -744,7 +806,7 @@ def federate_add(
         console.print(f"[green]Added[/green] {entry.name} → {entry.path}")
     except Exception as e:
         console.print(f"[red]Failed:[/red] {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
 
 @federate_app.command("ls")

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,12 @@ class PdfProfile:
     table_candidate_count: int = 0
     register_keyword_count: int = 0
     cjk_ratio: float = 0.0
+
+
+@dataclass(frozen=True)
+class ParseQualityVerdict:
+    ok: bool
+    reason: str | None = None
 
 
 _TABLE_HINTS = (
@@ -179,6 +186,26 @@ def pdf_parser_chain(
             chain = ["pymupdf", *chain]
     deduped = list(dict.fromkeys(name for name in chain if name))
     return deduped[0], deduped[1:]
+
+
+def assess_pdf_parse(parsed: Any, profile: PdfProfile | None) -> ParseQualityVerdict:
+    """Reject empty results and scan-like PyMuPDF results without useful text."""
+    blocks = [block for page in parsed.pages for block in page.blocks]
+    if not blocks:
+        return ParseQualityVerdict(False, "parser returned no L0 blocks")
+
+    if profile is None or not profile.is_probably_scanned or parsed.parser != "pymupdf":
+        return ParseQualityVerdict(True)
+
+    text_chars = sum(len((getattr(block, "text", None) or "").strip()) for block in blocks)
+    minimum = max(80, profile.page_count * 20)
+    if text_chars < minimum:
+        return ParseQualityVerdict(
+            False,
+            f"scan-like PDF yielded only {text_chars} text characters with PyMuPDF "
+            f"(minimum {minimum})",
+        )
+    return ParseQualityVerdict(True)
 
 
 def _looks_tagged(doc, metadata: dict) -> bool:

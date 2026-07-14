@@ -9,6 +9,9 @@ M2 升级：
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 from collections import deque
 
 from pydantic import BaseModel, Field
@@ -78,6 +81,23 @@ class Path(BaseModel):
     nodes: list[str]
     edges: list[Edge] = Field(default_factory=list)
     length: int
+
+
+class ContextRequestError(ValueError):
+    """A stable, client-actionable context request error."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+_CONTEXT_CURSOR_VERSION = 1
+_CONTEXT_MAX_CHARS = 80_000
+_CONTEXT_MAX_CHUNKS = 160
+_CONTEXT_MAX_ENRICHMENT_CHARS = 20_000
+_CONTEXT_CANDIDATE_LIMIT = 300
+_CONTEXT_SEARCH_PAGE_CHUNKS = 20
+_FETCH_MANY_MAX_CHUNKS = 20
 
 
 # ---------------------------------------------------------------------------
@@ -383,43 +403,11 @@ class QueryEngine:
         chunk = self.store.get_chunk(chunk_id)
         if chunk is None:
             return {"error": "not_found", "chunk_id": chunk_id}
-        blocks = self.store.get_blocks(chunk.block_ids) if chunk.block_ids else []
-
-        # Collect L2 entities that reference this chunk or its blocks
-        entities_by_id: dict[str, dict] = {}
-        for node in self.store.get_entities_for_chunk(chunk_id):
-            entities_by_id.setdefault(node.id, _entity_summary(node))
-        for block in blocks:
-            for node in self.store.get_entities_for_block(block.id):
-                entities_by_id.setdefault(node.id, _entity_summary(node))
-
+        evidence = self._chunk_evidence(chunk)
         return {
-            "chunk": {
-                "id": chunk.id,
-                "kind": chunk.kind,
-                "doc_id": chunk.doc_id,
-                "page": chunk.page,
-                "page_start": chunk.page_start or chunk.page,
-                "page_end": chunk.page_end or chunk.page,
-                "section_id": chunk.section_id,
-                "section_node_id": chunk.section_node_id,
-                "text": chunk.text,
-                "block_ids": chunk.block_ids,
-                "attrs": chunk.attrs,
-            },
-            "blocks": [
-                {
-                    "id": b.id,
-                    "page": b.page,
-                    "kind": b.kind.value,
-                    "text": b.text,
-                    "table": b.table.model_dump() if b.table else None,
-                    "image_path": b.image_path,
-                    "section_path": b.section_path,
-                }
-                for b in blocks
-            ],
-            "entities": list(entities_by_id.values()),
+            "chunk": evidence["chunk"],
+            "blocks": evidence["blocks"],
+            "entities": evidence["entities"],
             "usage_policy": (
                 "The chunk text and blocks are the authoritative source (L0/L1). "
                 "Entities are L2 extraction candidates — check each entity's "
@@ -428,6 +416,400 @@ class QueryEngine:
                 "If true (vlm/llm), verify against the original blocks above."
             ),
         }
+
+    def fetch_many(self, chunk_ids: list[str]) -> dict:
+        """Return deduplicated L0/L1 evidence for several chunks in one call."""
+        if not isinstance(chunk_ids, list):
+            raise ContextRequestError("invalid_chunk_ids", "chunk_ids must be a list")
+        normalized: list[str] = []
+        for raw_id in chunk_ids:
+            chunk_id = str(raw_id).strip()
+            if chunk_id and chunk_id not in normalized:
+                normalized.append(chunk_id)
+        if not normalized:
+            raise ContextRequestError("invalid_chunk_ids", "chunk_ids cannot be empty")
+        if len(normalized) > _FETCH_MANY_MAX_CHUNKS:
+            raise ContextRequestError(
+                "too_many_chunk_ids",
+                f"fetch_many accepts at most {_FETCH_MANY_MAX_CHUNKS} chunk_ids",
+            )
+
+        chunks: list[dict] = []
+        blocks_by_id: dict[str, dict] = {}
+        entities_by_id: dict[str, dict] = {}
+        links: dict[str, dict] = {}
+        missing: list[str] = []
+        for chunk_id in normalized:
+            chunk = self.store.get_chunk(chunk_id)
+            if chunk is None:
+                missing.append(chunk_id)
+                continue
+            evidence = self._chunk_evidence(chunk)
+            chunks.append(evidence["chunk"])
+            block_ids: list[str] = []
+            entity_ids: list[str] = []
+            for block in evidence["blocks"]:
+                blocks_by_id.setdefault(block["id"], block)
+                block_ids.append(block["id"])
+            for entity in evidence["entities"]:
+                entities_by_id.setdefault(entity["id"], entity)
+                entity_ids.append(entity["id"])
+            links[chunk.id] = {
+                "block_ids": block_ids,
+                "entity_ids": sorted(set(entity_ids)),
+            }
+
+        return {
+            "requested_chunk_ids": normalized,
+            "missing_chunk_ids": missing,
+            "chunks": chunks,
+            "blocks": list(blocks_by_id.values()),
+            "entities": list(entities_by_id.values()),
+            "links": links,
+            "usage_policy": (
+                "Batch evidence is deduplicated across chunks. Chunk text and blocks "
+                "are authoritative L1/L0 source; entities are L2 candidates. Use "
+                "links[chunk_id] to see which blocks and entities support each chunk."
+            ),
+        }
+
+    def _chunk_evidence(self, chunk) -> dict:
+        blocks = self.store.get_blocks(chunk.block_ids) if chunk.block_ids else []
+        entities_by_id: dict[str, dict] = {}
+        for node in self.store.get_entities_for_chunk(chunk.id):
+            entities_by_id.setdefault(node.id, _entity_summary(node))
+        for block in blocks:
+            for node in self.store.get_entities_for_block(block.id):
+                entities_by_id.setdefault(node.id, _entity_summary(node))
+        return {
+            "chunk": _chunk_view(chunk),
+            "blocks": [_block_view(block) for block in blocks],
+            "entities": list(entities_by_id.values()),
+        }
+
+    def document_context(
+        self,
+        *,
+        task: str | None = None,
+        mode: str = "auto",
+        doc_ids: list[str] | None = None,
+        max_chars: int = 40_000,
+        max_chunks: int = 80,
+        include_enrichments: bool = True,
+        max_enrichment_chars: int = 8_000,
+        cursor: str | None = None,
+    ) -> dict:
+        """Return a transparent, budgeted L1 view without summarizing chunks."""
+        requested_mode = (mode or "auto").strip().lower()
+        if requested_mode not in {"auto", "full", "search"}:
+            raise ContextRequestError(
+                "invalid_mode", "mode must be one of: auto, full, search"
+            )
+        max_chars = _bounded_int(
+            "max_chars", max_chars, minimum=1, maximum=_CONTEXT_MAX_CHARS
+        )
+        max_chunks = _bounded_int(
+            "max_chunks", max_chunks, minimum=1, maximum=_CONTEXT_MAX_CHUNKS
+        )
+        max_enrichment_chars = _bounded_int(
+            "max_enrichment_chars",
+            max_enrichment_chars,
+            minimum=0,
+            maximum=_CONTEXT_MAX_ENRICHMENT_CHARS,
+        )
+        scope = self._resolve_context_scope(doc_ids)
+        stats = self.store.chunk_corpus_stats(scope)
+        if stats["total_chunks"] == 0:
+            raise ContextRequestError(
+                "l1_not_built", "the selected document scope has no L1 chunks"
+            )
+
+        effective_mode = requested_mode
+        reason = f"requested_{requested_mode}"
+        if requested_mode == "auto":
+            if (
+                stats["total_chars"] <= max_chars
+                and stats["total_chunks"] <= max_chunks
+            ):
+                effective_mode = "full"
+                reason = "corpus_within_budget"
+            else:
+                effective_mode = "search"
+                reason = "corpus_exceeds_budget"
+        cursor_data = _decode_context_cursor(cursor) if cursor else None
+        normalized_task = (task or "").strip()
+        if (
+            not normalized_task
+            and cursor_data is not None
+            and cursor_data.get("kind") == "search"
+        ):
+            normalized_task = str(cursor_data.get("task") or "").strip()
+        if effective_mode == "search" and not normalized_task:
+            raise ContextRequestError(
+                "task_required",
+                "task is required when the selected corpus exceeds the full-context budget",
+            )
+
+        request_key = _context_request_key(
+            effective_mode=effective_mode,
+            task=normalized_task,
+            doc_ids=scope,
+        )
+        if cursor_data is not None:
+            if cursor_data.get("snapshot") != stats["snapshot"]:
+                raise ContextRequestError(
+                    "cursor_expired", "the L1 index changed after this cursor was issued"
+                )
+            if cursor_data.get("request_key") != request_key:
+                raise ContextRequestError(
+                    "cursor_mismatch", "cursor does not match this mode, task, or document scope"
+                )
+
+        if effective_mode == "full":
+            result = self._context_full(
+                scope=scope,
+                stats=stats,
+                max_chars=max_chars,
+                max_chunks=max_chunks,
+                cursor_data=cursor_data,
+                request_key=request_key,
+            )
+        else:
+            result = self._context_search(
+                task=normalized_task,
+                scope=scope,
+                stats=stats,
+                max_chars=max_chars,
+                max_chunks=max_chunks,
+                cursor_data=cursor_data,
+                request_key=request_key,
+            )
+
+        chunks = result.pop("_chunks")
+        enrichments, enrichments_truncated = self._context_enrichments(
+            chunks,
+            enabled=include_enrichments,
+            max_chars=max_enrichment_chars,
+        )
+        result["selection"].update(
+            {
+                "requested_mode": requested_mode,
+                "reason": reason,
+                "enrichments_truncated": enrichments_truncated,
+            }
+        )
+        result["enrichments"] = enrichments
+        result["usage_policy"] = (
+            "This is a budgeted document view, not an answer or summary. "
+            "Only coverage=complete_l1 with l1_complete=true contains the whole "
+            "selected L1 scope in this response. Retrieval candidates may omit "
+            "relevant content; refine the task, change mode, continue the cursor, "
+            "or use docgraph_search_chunks/docgraph_fetch as needed."
+            " Chunks already contain complete L1 text; do not fetch every chunk. "
+            "Use docgraph_fetch or docgraph_fetch_many only when L0 table cells, "
+            "image/layout evidence, or source verification is actually needed."
+        )
+        return result
+
+    def _resolve_context_scope(self, doc_ids: list[str] | None) -> list[str] | None:
+        if doc_ids is None:
+            return None
+        normalized = sorted({str(doc_id).strip() for doc_id in doc_ids if str(doc_id).strip()})
+        if not normalized:
+            raise ContextRequestError("empty_scope", "doc_ids cannot be empty")
+        available = set(self.store.list_docs())
+        missing = [doc_id for doc_id in normalized if doc_id not in available]
+        if missing:
+            raise ContextRequestError(
+                "document_not_found", f"unknown doc_ids: {', '.join(missing)}"
+            )
+        return normalized
+
+    def _context_full(
+        self,
+        *,
+        scope: list[str] | None,
+        stats: dict,
+        max_chars: int,
+        max_chunks: int,
+        cursor_data: dict | None,
+        request_key: str,
+    ) -> dict:
+        after = None
+        if cursor_data is not None:
+            if cursor_data.get("kind") != "full":
+                raise ContextRequestError("cursor_mismatch", "cursor is not a full-mode cursor")
+            raw_after = cursor_data.get("after")
+            if not isinstance(raw_after, list) or len(raw_after) != 4:
+                raise ContextRequestError("invalid_cursor", "full-mode cursor is malformed")
+            after = (str(raw_after[0]), int(raw_after[1]), int(raw_after[2]), str(raw_after[3]))
+
+        candidates = self.store.list_chunks_page(
+            doc_ids=scope,
+            after=after,
+            limit=max_chunks + 1,
+        )
+        selected = []
+        returned_chars = 0
+        for chunk in candidates:
+            if len(selected) >= max_chunks or returned_chars + len(chunk.text) > max_chars:
+                break
+            selected.append(chunk)
+            returned_chars += len(chunk.text)
+        if candidates and not selected:
+            raise ContextRequestError(
+                "budget_too_small",
+                f"max_chars={max_chars} cannot fit the next chunk ({len(candidates[0].text)} chars)",
+            )
+        has_more = len(candidates) > len(selected)
+        next_cursor = None
+        if has_more and selected:
+            next_cursor = _encode_context_cursor(
+                {
+                    "v": _CONTEXT_CURSOR_VERSION,
+                    "kind": "full",
+                    "snapshot": stats["snapshot"],
+                    "request_key": request_key,
+                    "after": list(_chunk_sort_key(selected[-1])),
+                }
+            )
+        complete_in_response = after is None and not has_more and len(selected) == stats["total_chunks"]
+        selection = {
+            **_context_stats(stats),
+            "mode": "full",
+            "coverage": "complete_l1" if complete_in_response else "paginated_l1",
+            "l1_complete": complete_in_response,
+            "returned_chunks": len(selected),
+            "returned_chars": returned_chars,
+            "candidate_chunks": stats["total_chunks"],
+            "unreturned_candidates": max(stats["total_chunks"] - len(selected), 0),
+            "corpus_chunks_not_returned": max(stats["total_chunks"] - len(selected), 0),
+            "retrieval_methods": [],
+            "candidate_pool_truncated": False,
+            "truncated": has_more,
+            "next_cursor": next_cursor,
+        }
+        return {
+            "selection": selection,
+            "chunks": [_chunk_view(chunk) for chunk in selected],
+            "_chunks": selected,
+        }
+
+    def _context_search(
+        self,
+        *,
+        task: str,
+        scope: list[str] | None,
+        stats: dict,
+        max_chars: int,
+        max_chunks: int,
+        cursor_data: dict | None,
+        request_key: str,
+    ) -> dict:
+        offset = 0
+        if cursor_data is not None:
+            if cursor_data.get("kind") != "search":
+                raise ContextRequestError("cursor_mismatch", "cursor is not a search-mode cursor")
+            offset = int(cursor_data.get("offset", 0))
+            if offset < 0:
+                raise ContextRequestError("invalid_cursor", "search cursor offset is invalid")
+
+        search = self.search_chunks_with_meta(
+            task,
+            limit=_CONTEXT_CANDIDATE_LIMIT,
+            doc_ids=scope,
+            candidate_limit=_CONTEXT_CANDIDATE_LIMIT,
+        )
+        candidates = search["hits"]
+        selected_chunks = []
+        selected_hits = []
+        returned_chars = 0
+        response_chunk_limit = min(max_chunks, _CONTEXT_SEARCH_PAGE_CHUNKS)
+        for hit in candidates[offset:]:
+            if len(selected_chunks) >= response_chunk_limit:
+                break
+            chunk = self.store.get_chunk(hit["chunk_id"])
+            if chunk is None:
+                continue
+            if returned_chars + len(chunk.text) > max_chars:
+                break
+            selected_chunks.append(chunk)
+            selected_hits.append(hit)
+            returned_chars += len(chunk.text)
+        if candidates[offset:] and not selected_chunks:
+            first = self.store.get_chunk(candidates[offset]["chunk_id"])
+            size = len(first.text) if first is not None else 0
+            raise ContextRequestError(
+                "budget_too_small",
+                f"max_chars={max_chars} cannot fit the next candidate chunk ({size} chars)",
+            )
+
+        consumed = offset + len(selected_hits)
+        unreturned_candidates = max(len(candidates) - consumed, 0)
+        next_cursor = None
+        if unreturned_candidates:
+            next_cursor = _encode_context_cursor(
+                {
+                    "v": _CONTEXT_CURSOR_VERSION,
+                    "kind": "search",
+                    "snapshot": stats["snapshot"],
+                    "request_key": request_key,
+                    "offset": consumed,
+                    "task": task,
+                }
+            )
+        views = []
+        for chunk, hit in zip(selected_chunks, selected_hits, strict=True):
+            view = _chunk_view(chunk)
+            view["score"] = hit["score"]
+            view["rank_reasons"] = hit["rank_reasons"]
+            views.append(view)
+        selection = {
+            **_context_stats(stats),
+            "mode": "search",
+            "coverage": "retrieval_candidates",
+            "l1_complete": False,
+            "returned_chunks": len(selected_chunks),
+            "returned_chars": returned_chars,
+            "response_chunk_limit": response_chunk_limit,
+            "candidate_chunks": len(candidates),
+            "unreturned_candidates": unreturned_candidates,
+            "corpus_chunks_not_returned": max(stats["total_chunks"] - len(selected_chunks), 0),
+            "retrieval_methods": search["methods"],
+            "candidate_pool_truncated": search["candidate_pool_truncated"],
+            "truncated": bool(unreturned_candidates or search["candidate_pool_truncated"]),
+            "next_cursor": next_cursor,
+        }
+        return {"selection": selection, "chunks": views, "_chunks": selected_chunks}
+
+    def _context_enrichments(
+        self,
+        chunks: list,
+        *,
+        enabled: bool,
+        max_chars: int,
+    ) -> tuple[list[dict], bool]:
+        if not enabled or max_chars == 0:
+            return [], False
+        nodes: dict[str, Node] = {}
+        for chunk in chunks:
+            for node in self.store.get_entities_for_chunk(chunk.id):
+                nodes.setdefault(node.id, node)
+            for block in self.store.get_blocks(chunk.block_ids):
+                for node in self.store.get_entities_for_block(block.id):
+                    nodes.setdefault(node.id, node)
+        enrichments: list[dict] = []
+        used = 0
+        truncated = False
+        for node in sorted(nodes.values(), key=lambda item: item.id):
+            item = _entity_enrichment(node)
+            size = len(json.dumps(item, ensure_ascii=False, default=str))
+            if used + size > max_chars:
+                truncated = True
+                continue
+            enrichments.append(item)
+            used += size
+        return enrichments, truncated
 
     def context_with_blocks(self, task: str, max_nodes: int = 20) -> dict:
         """Evidence-first context for agents.
@@ -526,16 +908,56 @@ class QueryEngine:
             "blocks": list(blocks.values()),
         }
 
-    def search_chunks(self, query: str, limit: int = 20) -> list[dict]:
+    def search_chunks(
+        self,
+        query: str,
+        limit: int = 20,
+        doc_ids: list[str] | None = None,
+    ) -> list[dict]:
         """混合检索 L1 chunk。
 
         FTS5/LIKE 是确定性入口；若已配置 encoder 且 chunk 向量存在，则补充
         semantic 候选。两路候选统一交给 `_score_chunk_hit` 排序。
         """
+        return self.search_chunks_with_meta(
+            query,
+            limit=limit,
+            doc_ids=doc_ids,
+            candidate_limit=max(limit * 3, limit),
+        )["hits"]
+
+    def search_chunks_with_meta(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+        doc_ids: list[str] | None = None,
+        candidate_limit: int = 60,
+    ) -> dict:
+        """Hybrid L1 search with transparent retrieval metadata."""
+        candidate_limit = max(limit, candidate_limit)
+        scope = set(doc_ids) if doc_ids is not None else None
         candidates: dict[str, dict] = {}
-        for cid, snip in self.store.search_chunks_fts(query, limit=limit * 3):
-            candidates.setdefault(cid, {"snippet": snip or "", "semantic_score": None})
-        for cid, semantic_score in self._semantic_chunk_search_raw(query, top_k=limit * 3):
+        retrieval_queries = [query, *_retrieval_terms(query)]
+        retrieval_queries = list(dict.fromkeys(item for item in retrieval_queries if item))
+        per_term_limit = max(20, candidate_limit // max(len(retrieval_queries), 1))
+        text_methods: set[str] = set()
+        text_pool_truncated = False
+        for index, retrieval_query in enumerate(retrieval_queries):
+            text_result = self.store.search_chunks_text(
+                retrieval_query,
+                limit=candidate_limit if index == 0 else per_term_limit,
+                doc_ids=doc_ids,
+            )
+            text_methods.update(text_result["methods"])
+            text_pool_truncated = text_pool_truncated or text_result["pool_truncated"]
+            for cid, snip in text_result["hits"]:
+                candidates.setdefault(
+                    cid,
+                    {"snippet": snip or "", "semantic_score": None},
+                )
+        semantic_hits = self._semantic_chunk_search_raw(query, top_k=candidate_limit)
+        for cid, semantic_score in semantic_hits:
             candidates.setdefault(cid, {"snippet": "", "semantic_score": semantic_score})
             candidates[cid]["semantic_score"] = semantic_score
 
@@ -543,6 +965,8 @@ class QueryEngine:
         for cid, meta in candidates.items():
             c = self.store.get_chunk(cid)
             if c is None:
+                continue
+            if scope is not None and c.doc_id not in scope:
                 continue
             snip = meta.get("snippet") or ""
             score, reasons = _score_chunk_hit(query, c, snip)
@@ -553,7 +977,7 @@ class QueryEngine:
                 if not snip:
                     snip = (c.text or "")[:240]
             ranked.append((score, {
-                "chunk_id": c.id, "kind": c.kind, "page": c.page,
+                "chunk_id": c.id, "doc_id": c.doc_id, "kind": c.kind, "page": c.page,
                 "page_start": c.page_start or c.page,
                 "page_end": c.page_end or c.page,
                 "section_id": c.section_id,
@@ -564,7 +988,21 @@ class QueryEngine:
                 "rank_reasons": reasons,
             }))
         ranked.sort(key=lambda item: item[0], reverse=True)
-        return [item for _, item in ranked[:limit]]
+        pool_truncated = (
+            text_pool_truncated
+            or len(semantic_hits) >= candidate_limit
+            or len(ranked) > candidate_limit
+        )
+        ranked = ranked[:candidate_limit]
+        methods = sorted(text_methods)
+        if semantic_hits:
+            methods.append("semantic")
+        return {
+            "hits": [item for _, item in ranked[:limit]],
+            "methods": methods,
+            "candidate_chunks": len(ranked),
+            "candidate_pool_truncated": pool_truncated,
+        }
 
     def _semantic_chunk_search_raw(self, query: str, top_k: int = 20) -> list[tuple[str, float]]:
         if self.vstore is None or self.encoder is None:
@@ -581,11 +1019,137 @@ class QueryEngine:
 # ---------------------------------------------------------------------------
 
 
+def _bounded_int(name: str, value: int, *, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise ContextRequestError("invalid_budget", f"{name} must be an integer")
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ContextRequestError("invalid_budget", f"{name} must be an integer") from exc
+    if normalized < minimum or normalized > maximum:
+        raise ContextRequestError(
+            "invalid_budget", f"{name} must be between {minimum} and {maximum}"
+        )
+    return normalized
+
+
+def _context_request_key(
+    *,
+    effective_mode: str,
+    task: str,
+    doc_ids: list[str] | None,
+) -> str:
+    raw = json.dumps(
+        {"mode": effective_mode, "task": task, "doc_ids": doc_ids},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _encode_context_cursor(payload: dict) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_context_cursor(cursor: str) -> dict:
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        raw = base64.urlsafe_b64decode((cursor + padding).encode("ascii"))
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ContextRequestError("invalid_cursor", "cursor is malformed") from exc
+    if not isinstance(data, dict) or data.get("v") != _CONTEXT_CURSOR_VERSION:
+        raise ContextRequestError("invalid_cursor", "cursor version is unsupported")
+    return data
+
+
+def _chunk_sort_key(chunk) -> tuple[str, int, int, str]:
+    page_start = chunk.page_start if chunk.page_start is not None else chunk.page or 0
+    page_end = chunk.page_end if chunk.page_end is not None else chunk.page or 0
+    return chunk.doc_id, int(page_start), int(page_end), chunk.id
+
+
+def _chunk_view(chunk) -> dict:
+    return {
+        "id": chunk.id,
+        "doc_id": chunk.doc_id,
+        "kind": chunk.kind,
+        "page": chunk.page,
+        "page_start": chunk.page_start if chunk.page_start is not None else chunk.page,
+        "page_end": chunk.page_end if chunk.page_end is not None else chunk.page,
+        "section_id": chunk.section_id,
+        "section_node_id": chunk.section_node_id,
+        "text": chunk.text,
+        "block_ids": chunk.block_ids,
+        "attrs": chunk.attrs,
+    }
+
+
+def _context_stats(stats: dict) -> dict:
+    return {
+        "total_docs": stats["total_docs"],
+        "total_chunks": stats["total_chunks"],
+        "total_chars": stats["total_chars"],
+    }
+
+
+def _entity_enrichment(node: Node) -> dict:
+    item = _entity_summary(node)
+    item.update(
+        {
+            "doc_id": node.doc_id,
+            "attrs": node.attrs,
+            "evidence": node.evidence.model_dump(mode="json"),
+        }
+    )
+    return item
+
+
 def _tokenize_task(task: str) -> list[str]:
     import re
     # 大写下划线的标识符容易是 register/pin 名
     tokens = re.findall(r"[A-Z][A-Z0-9_]{2,}", task)
     return tokens[:6]
+
+
+def _retrieval_terms(query: str, limit: int = 12) -> list[str]:
+    """Extract useful lexical probes from an agent's natural-language task."""
+    import re
+
+    stopwords = {
+        "all",
+        "and",
+        "are",
+        "containing",
+        "description",
+        "descriptions",
+        "find",
+        "for",
+        "from",
+        "have",
+        "into",
+        "modeling",
+        "need",
+        "that",
+        "the",
+        "their",
+        "this",
+        "value",
+        "values",
+        "with",
+    }
+    terms: list[str] = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_]{1,}|[\u3400-\u9fff]{2,}", query):
+        normalized = token.lower()
+        if normalized in stopwords or normalized.isdigit():
+            continue
+        if normalized not in terms:
+            terms.append(normalized)
+        if len(terms) >= limit:
+            break
+    return terms
 
 
 def _score_chunk_hit(query: str, chunk, snippet: str) -> tuple[float, list[str]]:
@@ -597,6 +1161,12 @@ def _score_chunk_hit(query: str, chunk, snippet: str) -> tuple[float, list[str]]
     table_profile = attrs.get("table_profile") or {}
     reasons: list[str] = []
     score = 0.0
+    terms = _retrieval_terms(query)
+
+    matched_terms = [term for term in terms if term in text]
+    if matched_terms:
+        score += min(len(matched_terms) * 0.45, 4.5)
+        reasons.append(f"term-overlap:{len(matched_terms)}")
 
     if q and q in text:
         score += 1.0
@@ -606,6 +1176,10 @@ def _score_chunk_hit(query: str, chunk, snippet: str) -> tuple[float, list[str]]
         reasons.append("snippet")
 
     first_line = text.splitlines()[0] if text else ""
+    heading_matches = sum(1 for term in terms if term in first_line)
+    if heading_matches:
+        score += min(heading_matches * 0.6, 2.4)
+        reasons.append(f"heading-terms:{heading_matches}")
     if q and q in first_line:
         score += 3.0
         reasons.append("heading")
@@ -623,6 +1197,10 @@ def _score_chunk_hit(query: str, chunk, snippet: str) -> tuple[float, list[str]]
     if chunk.kind in {"table", "logical_table"} or chunk.chunk_type in {"table", "logical_table"}:
         caption = str(table_profile.get("caption") or "").lower()
         headers = " ".join(str(h).lower() for h in table_profile.get("headers") or [])
+        header_matches = sum(1 for term in terms if term in headers)
+        if header_matches:
+            score += min(header_matches * 0.8, 4.0)
+            reasons.append(f"table-header-terms:{header_matches}")
         if q and q in caption:
             score += 2.0
             reasons.append("caption")
@@ -692,6 +1270,20 @@ def _block_brief(block: Block) -> dict:
         "page": block.page,
         "kind": block.kind.value,
         "text": (block.text or "")[:2000] if block.text else None,
+        "table": block.table.model_dump() if block.table else None,
+        "image_path": block.image_path,
+        "section_path": block.section_path,
+        "attrs": block.attrs,
+    }
+
+
+def _block_view(block: Block) -> dict:
+    return {
+        "id": block.id,
+        "doc_id": block.doc_id,
+        "page": block.page,
+        "kind": block.kind.value,
+        "text": block.text,
         "table": block.table.model_dump() if block.table else None,
         "image_path": block.image_path,
         "section_path": block.section_path,

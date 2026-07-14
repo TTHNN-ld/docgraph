@@ -7,6 +7,7 @@ is configured as `lancedb`.
 from __future__ import annotations
 
 import math
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,7 @@ class LanceDBVectorStore:
         return self._db
 
     def init_schema(self) -> None:
-        db = self._connect()
+        self._connect()
         self._ensure_table(
             "vec_nodes",
             {
@@ -42,6 +43,7 @@ class LanceDBVectorStore:
                 "model": "string",
                 "dim": "int32",
                 "vector": "float32_list",
+                "content_hash": "string",
             },
         )
         self._ensure_table(
@@ -52,13 +54,22 @@ class LanceDBVectorStore:
                 "model": "string",
                 "dim": "int32",
                 "vector": "float32_list",
+                "content_hash": "string",
             },
         )
 
     def _ensure_table(self, name: str, fields: dict[str, str]) -> None:
         db = self._connect()
         if name in set(db.table_names()):
-            return
+            table = db.open_table(name)
+            schema = table.schema
+            if callable(schema):
+                schema = schema()
+            if set(fields).issubset(set(schema.names)):
+                return
+            # Vector data is derived and can be recreated safely when the
+            # local table predates the current schema.
+            db.drop_table(name)
         import pyarrow as pa
 
         pa_fields = []
@@ -72,7 +83,13 @@ class LanceDBVectorStore:
         schema = pa.schema(pa_fields)
         db.create_table(name, schema=schema)
 
-    def upsert(self, node_id: str, model: str, vector: list[float]) -> None:
+    def upsert(
+        self,
+        node_id: str,
+        model: str,
+        vector: list[float],
+        content_hash: str | None = None,
+    ) -> None:
         table = self._table("vec_nodes")
         table.delete(f"node_id = '{_sql_quote(node_id)}'")
         table.add([{
@@ -80,9 +97,17 @@ class LanceDBVectorStore:
             "model": model,
             "dim": len(vector),
             "vector": _float32(vector),
+            "content_hash": content_hash,
         }])
 
-    def upsert_item(self, namespace: str, item_id: str, model: str, vector: list[float]) -> None:
+    def upsert_item(
+        self,
+        namespace: str,
+        item_id: str,
+        model: str,
+        vector: list[float],
+        content_hash: str | None = None,
+    ) -> None:
         table = self._table("vec_items")
         table.delete(
             f"namespace = '{_sql_quote(namespace)}' AND item_id = '{_sql_quote(item_id)}'"
@@ -93,13 +118,75 @@ class LanceDBVectorStore:
             "model": model,
             "dim": len(vector),
             "vector": _float32(vector),
+            "content_hash": content_hash,
         }])
 
     def delete(self, node_id: str) -> None:
         self._table("vec_nodes").delete(f"node_id = '{_sql_quote(node_id)}'")
 
     def delete_by_doc(self, doc_ids: list[str], graph_db: Path) -> int:
-        return 0
+        if not doc_ids:
+            return 0
+        placeholders = ",".join("?" * len(doc_ids))
+        with sqlite3.connect(str(graph_db)) as conn:
+            node_ids = {
+                row[0]
+                for row in conn.execute(
+                    f"SELECT id FROM nodes WHERE doc_id IN ({placeholders})", doc_ids
+                ).fetchall()
+            }
+            chunk_ids = {
+                row[0]
+                for row in conn.execute(
+                    f"SELECT id FROM chunks WHERE doc_id IN ({placeholders})", doc_ids
+                ).fetchall()
+            }
+        node_table = self._table("vec_nodes")
+        item_table = self._table("vec_items")
+        for node_id in node_ids:
+            node_table.delete(f"node_id = '{_sql_quote(node_id)}'")
+        for chunk_id in chunk_ids:
+            item_table.delete(
+                "namespace = 'chunk' AND "
+                f"item_id = '{_sql_quote(chunk_id)}'"
+            )
+        return len(node_ids) + len(chunk_ids)
+
+    def stored_node_hashes(self, model: str) -> dict[str, str | None]:
+        return {
+            str(row["node_id"]): row.get("content_hash")
+            for row in self._all_rows("vec_nodes")
+            if row.get("model") == model
+        }
+
+    def stored_item_hashes(self, namespace: str, model: str) -> dict[str, str | None]:
+        return {
+            str(row["item_id"]): row.get("content_hash")
+            for row in self._all_rows("vec_items")
+            if row.get("namespace") == namespace and row.get("model") == model
+        }
+
+    def prune(self, node_ids: set[str], namespace: str, item_ids: set[str]) -> int:
+        node_rows = self._all_rows("vec_nodes")
+        item_rows = self._all_rows("vec_items")
+        stale_nodes = {
+            str(row["node_id"]) for row in node_rows if str(row["node_id"]) not in node_ids
+        }
+        stale_items = {
+            str(row["item_id"])
+            for row in item_rows
+            if row.get("namespace") == namespace and str(row["item_id"]) not in item_ids
+        }
+        node_table = self._table("vec_nodes")
+        item_table = self._table("vec_items")
+        for node_id in stale_nodes:
+            node_table.delete(f"node_id = '{_sql_quote(node_id)}'")
+        for item_id in stale_items:
+            item_table.delete(
+                f"namespace = '{_sql_quote(namespace)}' AND "
+                f"item_id = '{_sql_quote(item_id)}'"
+            )
+        return len(stale_nodes) + len(stale_items)
 
     def all_for_model(self, model: str) -> list[tuple[str, list[float]]]:
         rows = [r for r in self._all_rows("vec_nodes") if r.get("model") == model]

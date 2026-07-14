@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -90,7 +90,7 @@ class DocType(str, Enum):
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class BBox(BaseModel):
@@ -231,7 +231,7 @@ class ParsedPage(BaseModel):
     tables: list[ParsedTable] = Field(default_factory=list)
     figures: list[ParsedFigure] = Field(default_factory=list)
     formulas: list[ParsedFormula] = Field(default_factory=list)
-    quality: "PageQuality | None" = None
+    quality: PageQuality | None = None
     rendered_image_path: str | None = None  # 整页渲染 PNG（VLM 兜底用）
 
     @property
@@ -386,31 +386,31 @@ class RegisterDef(BaseModel):
 
 
 __all__ = [
-    "NODE_SCHEMA_VERSION",
     "EDGE_SCHEMA_VERSION",
-    "NodeKind",
-    "EdgeKind",
-    "DocType",
+    "NODE_SCHEMA_VERSION",
     "BBox",
-    "Location",
-    "Evidence",
-    "DocMetadata",
-    "TextBlock",
-    "BlockKind",
-    "TableData",
+    "BitFieldDef",
     "Block",
-    "ParsedTable",
+    "BlockKind",
+    "Chunk",
+    "DocMetadata",
+    "DocType",
+    "Edge",
+    "EdgeKind",
+    "Evidence",
+    "ExtractResult",
+    "ExtractStats",
+    "Location",
+    "Node",
+    "NodeKind",
+    "PageQuality",
+    "ParsedDoc",
     "ParsedFigure",
     "ParsedFormula",
     "ParsedPage",
-    "PageQuality",
-    "TocEntry",
-    "ParsedDoc",
-    "Node",
-    "Edge",
-    "Chunk",
-    "ExtractStats",
-    "ExtractResult",
-    "BitFieldDef",
+    "ParsedTable",
     "RegisterDef",
+    "TableData",
+    "TextBlock",
+    "TocEntry",
 ]

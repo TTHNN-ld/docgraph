@@ -45,7 +45,7 @@ def export_ipxact(
     lines: list[str] = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<ipxact:component xmlns:ipxact="http://www.accellera.org/XMLSchema/IPXACT/1685-2014">',
-        f'  <ipxact:vendor>docgraph</ipxact:vendor>',
+        '  <ipxact:vendor>docgraph</ipxact:vendor>',
         f'  <ipxact:library>{escape(family)}</ipxact:library>',
         f'  <ipxact:name>{escape(component)}</ipxact:name>',
         '  <ipxact:version>0.1</ipxact:version>',
@@ -65,7 +65,6 @@ def export_ipxact(
         addr = attrs.get("address") or attrs.get("offset") or "0x0"
         width = attrs.get("width") or 32
         access = attrs.get("access") or ""
-        reset = attrs.get("reset_value") or ""
         lines.append("        <ipxact:register>")
         lines.append(f"          <ipxact:name>{escape(reg.name)}</ipxact:name>")
         lines.append(f"          <ipxact:description>{escape(reg.summary or '')}</ipxact:description>")
@@ -130,7 +129,7 @@ def export_systemrdl(
         width = int(attrs.get("width") or 32)
         addr = attrs.get("address") or attrs.get("offset") or None
         lines.append("")
-        lines.append(f"  reg {{")
+        lines.append("  reg {")
         lines.append(f'    name = "{_esc(reg.name)}";')
         if reg.summary:
             lines.append(f'    desc = "{_esc(reg.summary)}";')
@@ -139,7 +138,7 @@ def export_systemrdl(
         for bf in bfs:
             ba = bf.attrs or {}
             hi, lo = int(ba.get("bit_high", 0)), int(ba.get("bit_low", 0))
-            lines.append(f"    field {{")
+            lines.append("    field {")
             if ba.get("description"):
                 lines.append(f'      desc = "{_esc(ba["description"])}";')
             if ba.get("access"):

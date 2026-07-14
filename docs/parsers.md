@@ -120,8 +120,10 @@ parsers:
 1. PDF 先由 PyMuPDF 生成 `PdfProfile`：页数、文本层、图片密度、表格候选、寄存器/位域关键词密度、tagged/Word 导出特征等。
 2. `primary: auto` 根据 profile 和 `quality` 选择 `docling` / `mineru` / `pymupdf`。
 3. 显式指定 `primary: docling|mineru|pymupdf` 时，按用户配置优先。
-4. parser 未安装或不支持当前文件时，按自动链路或 `fallback` 顺序降级。
-5. 文件级仍然只选择一个主 parser；后续可在 block 级补强表格或图片，但不会默认整篇多 parser 混跑。
+4. parser 未安装时，交互构建按策略询问是否安装；非交互构建默认继续降级。
+5. parser 初始化、模型下载或解析失败时，按自动链路或 `fallback` 顺序降级；PDF
+   最后补入 PyMuPDF。扫描件若没有抽出足够文本，不会被当成成功结果。
+6. 文件级仍然只选择一个主 parser；后续可在 block 级补强表格或图片，但不会默认整篇多 parser 混跑。
 
 `quality` 是面向用户的唯一速度/质量旋钮：
 
@@ -132,6 +134,18 @@ parsers:
 | `accurate` | 自动路由仍优先匹配文档类型；无法判断时偏向 MinerU 的高保真/OCR 路径 |
 
 日常只需要 `docgraph build`；需要覆盖时使用 `docgraph build --quality fast|balanced|accurate`。
+
+依赖准备与故障策略：
+
+```bash
+docgraph setup parsers                    # 推荐项：Docling + Office/Markdown
+docgraph setup parsers --parser mineru   # 显式安装旧 magic-pdf adapter 依赖
+docgraph build --install-missing          # 授权本次构建补装缺失 extra
+docgraph build --strict-parsers           # 禁止回退，适合质量门禁
+```
+
+每个尝试及失败原因写入 manifest 的 `parser_attempts`；发生回退时同时写入
+`requested_parser`、实际 `parser`、`quality_status=degraded` 和 `fallback_reason`。
 
 ### 4.2 页级质量与 VLM 兜底
 
@@ -179,7 +193,7 @@ PyMuPDF / Docling / MinerU / XLSX
 - PyMuPDF：优先填 `table_source=cells`
 - Docling：优先填 `table_source=cells`，保留 HTML、bbox、图片块和图题作为追溯证据
 - MinerU：当前能稳定提供版面分类、bbox、caption、表格/图片裁剪；若未启用表格识别，则填 `table_source=image`
-- MinerU：当前接入 magic-pdf current API；不保留 MinerU 0.x API 分支
+- MinerU：当前 adapter 仍依赖旧 `magic_pdf` API；现代 MinerU API 迁移完成前不列入推荐安装
 - XLSX：直接填 `cells`
 
 ### 4.4 VLM 调用成本控制

@@ -1,17 +1,17 @@
 """Extractor 层。"""
-from docgraph.extractors.base import Extractor, ExtractContext, ExtractorRegistry, registry
+from docgraph.extractors.base import ExtractContext, Extractor, ExtractorRegistry, registry
 from docgraph.extractors.figure import FigureExtractor
 from docgraph.extractors.glossary import GlossaryExtractor
 from docgraph.extractors.section import SectionExtractor
 from docgraph.extractors.table_entity import TableEntityExtractor
 
 __all__ = [
-    "Extractor",
     "ExtractContext",
+    "Extractor",
     "ExtractorRegistry",
-    "registry",
+    "FigureExtractor",
+    "GlossaryExtractor",
     "SectionExtractor",
     "TableEntityExtractor",
-    "GlossaryExtractor",
-    "FigureExtractor",
+    "registry",
 ]

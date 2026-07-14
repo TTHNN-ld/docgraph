@@ -17,7 +17,6 @@ from docgraph.graph.schema import NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.graph.store import NodeQuery
 
-
 _KIND_ALIASES = {
     "registers": "register",
     "register": "register",

@@ -20,8 +20,8 @@ from functools import partial
 
 from pydantic import BaseModel, Field
 
+from docgraph.core.concurrency import llm_concurrency, map_concurrent
 from docgraph.core.ids import make_node_id, normalize_name
-from docgraph.core.concurrency import map_concurrent, llm_concurrency
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import Edge, EdgeKind, Evidence, Location, Node, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
@@ -256,7 +256,7 @@ class LLMIELinker:
                 partial(self._run_extract, llm_client=llm_client), tasks
             )
             # Phase 3: 顺序建边/建实体（store 写入不并发，避免 sqlite 锁冲突）
-            for (chunk, _names), res in zip(tasks, results):
+            for (chunk, _names), res in zip(tasks, results, strict=True):
                 result, err = res
                 if err is not None:
                     rep.failed += 1

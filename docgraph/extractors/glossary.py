@@ -13,6 +13,7 @@ import time
 from docgraph.core.ids import content_hash, make_node_id
 from docgraph.extractors.base import ExtractContext
 from docgraph.graph.schema import (
+    BlockKind,
     Edge,
     ExtractResult,
     ExtractStats,
@@ -21,7 +22,6 @@ from docgraph.graph.schema import (
     NodeKind,
     ParsedDoc,
     ParsedPage,
-    BlockKind,
 )
 
 _GLOSSARY_TITLE = re.compile(

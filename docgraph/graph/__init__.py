@@ -1,6 +1,7 @@
 """docgraph.graph —— 图谱存储层。"""
 from docgraph.graph.schema import (
     BBox,
+    BitFieldDef,
     Chunk,
     DocMetadata,
     DocType,
@@ -18,15 +19,15 @@ from docgraph.graph.schema import (
     ParsedPage,
     ParsedTable,
     RegisterDef,
-    BitFieldDef,
     TextBlock,
     TocEntry,
 )
-from docgraph.graph.store import GraphStore, NodeQuery, Subgraph
 from docgraph.graph.sqlite_store import SQLiteGraphStore
+from docgraph.graph.store import GraphStore, NodeQuery, Subgraph
 
 __all__ = [
     "BBox",
+    "BitFieldDef",
     "Chunk",
     "DocMetadata",
     "DocType",
@@ -35,20 +36,19 @@ __all__ = [
     "Evidence",
     "ExtractResult",
     "ExtractStats",
+    "GraphStore",
     "Location",
     "Node",
     "NodeKind",
+    "NodeQuery",
     "ParsedDoc",
     "ParsedFigure",
     "ParsedFormula",
     "ParsedPage",
     "ParsedTable",
     "RegisterDef",
-    "BitFieldDef",
+    "SQLiteGraphStore",
+    "Subgraph",
     "TextBlock",
     "TocEntry",
-    "GraphStore",
-    "NodeQuery",
-    "Subgraph",
-    "SQLiteGraphStore",
 ]

@@ -26,6 +26,7 @@ from docgraph.graph.schema import (
     TocEntry,
 )
 from docgraph.parsers.base import ParseContext
+from docgraph.parsers.normalize import populate_l0_blocks
 
 
 class DocxParser:
@@ -108,6 +109,7 @@ class DocxParser:
             text_blocks=text_blocks,
             tables=tables,
         )
+        populate_l0_blocks(single_page, doc_id=ctx.doc_id, parser=self.name)
 
         return ParsedDoc(
             doc_id=ctx.doc_id,

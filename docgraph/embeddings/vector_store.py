@@ -48,7 +48,8 @@ class VectorStore:
                   node_id TEXT PRIMARY KEY,
                   model   TEXT NOT NULL,
                   dim     INTEGER NOT NULL,
-                  vector  TEXT NOT NULL
+                  vector  TEXT NOT NULL,
+                  content_hash TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_vec_model ON vec_nodes(model);
                 CREATE TABLE IF NOT EXISTS vec_items (
@@ -57,12 +58,14 @@ class VectorStore:
                   model     TEXT NOT NULL,
                   dim       INTEGER NOT NULL,
                   vector    TEXT NOT NULL,
+                  content_hash TEXT,
                   PRIMARY KEY(namespace, item_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_vec_items_ns_model
                   ON vec_items(namespace, model);
                 """
             )
+            self._ensure_content_hash_columns(c)
             c.commit()
         except sqlite3.OperationalError as e:
             # 向量库是派生数据；如果 WAL/shm 损坏，直接重建。
@@ -75,7 +78,8 @@ class VectorStore:
                       node_id TEXT PRIMARY KEY,
                       model   TEXT NOT NULL,
                       dim     INTEGER NOT NULL,
-                      vector  TEXT NOT NULL
+                      vector  TEXT NOT NULL,
+                      content_hash TEXT
                     );
                     CREATE INDEX IF NOT EXISTS idx_vec_model ON vec_nodes(model);
                     CREATE TABLE IF NOT EXISTS vec_items (
@@ -84,12 +88,14 @@ class VectorStore:
                       model     TEXT NOT NULL,
                       dim       INTEGER NOT NULL,
                       vector    TEXT NOT NULL,
+                      content_hash TEXT,
                       PRIMARY KEY(namespace, item_id)
                     );
                     CREATE INDEX IF NOT EXISTS idx_vec_items_ns_model
                       ON vec_items(namespace, model);
                     """
                 )
+                self._ensure_content_hash_columns(c)
                 c.commit()
             else:
                 raise
@@ -110,33 +116,55 @@ class VectorStore:
             except Exception:
                 pass
 
-    def upsert(self, node_id: str, model: str, vector: list[float]) -> None:
+    @staticmethod
+    def _ensure_content_hash_columns(conn: sqlite3.Connection) -> None:
+        for table in ("vec_nodes", "vec_items"):
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if "content_hash" not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN content_hash TEXT")
+
+    def upsert(
+        self,
+        node_id: str,
+        model: str,
+        vector: list[float],
+        content_hash: str | None = None,
+    ) -> None:
         c = self._connect()
         c.execute(
             """
-            INSERT INTO vec_nodes (node_id, model, dim, vector)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO vec_nodes (node_id, model, dim, vector, content_hash)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(node_id) DO UPDATE SET
               model = excluded.model,
               dim   = excluded.dim,
-              vector = excluded.vector
+              vector = excluded.vector,
+              content_hash = excluded.content_hash
             """,
-            (node_id, model, len(vector), json.dumps(vector)),
+            (node_id, model, len(vector), json.dumps(vector), content_hash),
         )
         c.commit()
 
-    def upsert_item(self, namespace: str, item_id: str, model: str, vector: list[float]) -> None:
+    def upsert_item(
+        self,
+        namespace: str,
+        item_id: str,
+        model: str,
+        vector: list[float],
+        content_hash: str | None = None,
+    ) -> None:
         c = self._connect()
         c.execute(
             """
-            INSERT INTO vec_items (namespace, item_id, model, dim, vector)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO vec_items (namespace, item_id, model, dim, vector, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(namespace, item_id) DO UPDATE SET
               model = excluded.model,
               dim   = excluded.dim,
-              vector = excluded.vector
+              vector = excluded.vector,
+              content_hash = excluded.content_hash
             """,
-            (namespace, item_id, model, len(vector), json.dumps(vector)),
+            (namespace, item_id, model, len(vector), json.dumps(vector), content_hash),
         )
         c.commit()
 
@@ -146,28 +174,73 @@ class VectorStore:
         c.commit()
 
     def delete_by_doc(self, doc_ids: list[str], graph_db: Path) -> int:
-        """删除 graph 中已不存在节点的向量。"""
+        """删除指定文档当前对应的 node/chunk 向量。"""
         c = self._connect()
         if not doc_ids:
             return 0
-        # 从 graph.db 找出当前节点 id
         gconn = sqlite3.connect(str(graph_db))
         try:
             placeholders = ",".join("?" * len(doc_ids))
-            cur = gconn.execute(
+            node_ids = {
+                row[0] for row in gconn.execute(
                 f"SELECT id FROM nodes WHERE doc_id IN ({placeholders})", doc_ids
-            )
-            keep = {r[0] for r in cur.fetchall()}
+                ).fetchall()
+            }
+            chunk_ids = {
+                row[0] for row in gconn.execute(
+                    f"SELECT id FROM chunks WHERE doc_id IN ({placeholders})", doc_ids
+                ).fetchall()
+            }
         finally:
             gconn.close()
-
-        cur = c.execute("SELECT node_id FROM vec_nodes")
-        all_ids = {r["node_id"] for r in cur.fetchall()}
-        to_delete = all_ids - keep
-        for nid in to_delete:
+        for nid in node_ids:
             c.execute("DELETE FROM vec_nodes WHERE node_id = ?", (nid,))
+        for chunk_id in chunk_ids:
+            c.execute(
+                "DELETE FROM vec_items WHERE namespace = 'chunk' AND item_id = ?",
+                (chunk_id,),
+            )
         c.commit()
-        return len(to_delete)
+        return len(node_ids) + len(chunk_ids)
+
+    def stored_node_hashes(self, model: str) -> dict[str, str | None]:
+        c = self._connect()
+        return {
+            row["node_id"]: row["content_hash"]
+            for row in c.execute(
+                "SELECT node_id, content_hash FROM vec_nodes WHERE model = ?", (model,)
+            ).fetchall()
+        }
+
+    def stored_item_hashes(self, namespace: str, model: str) -> dict[str, str | None]:
+        c = self._connect()
+        return {
+            row["item_id"]: row["content_hash"]
+            for row in c.execute(
+                "SELECT item_id, content_hash FROM vec_items "
+                "WHERE namespace = ? AND model = ?",
+                (namespace, model),
+            ).fetchall()
+        }
+
+    def prune(self, node_ids: set[str], namespace: str, item_ids: set[str]) -> int:
+        c = self._connect()
+        stale_nodes = {
+            row["node_id"] for row in c.execute("SELECT node_id FROM vec_nodes").fetchall()
+        } - node_ids
+        stale_items = {
+            row["item_id"]
+            for row in c.execute(
+                "SELECT item_id FROM vec_items WHERE namespace = ?", (namespace,)
+            ).fetchall()
+        } - item_ids
+        c.executemany("DELETE FROM vec_nodes WHERE node_id = ?", [(item,) for item in stale_nodes])
+        c.executemany(
+            "DELETE FROM vec_items WHERE namespace = ? AND item_id = ?",
+            [(namespace, item) for item in stale_items],
+        )
+        c.commit()
+        return len(stale_nodes) + len(stale_items)
 
     def all_for_model(self, model: str) -> list[tuple[str, list[float]]]:
         c = self._connect()
