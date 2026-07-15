@@ -182,6 +182,22 @@ L2 不参与“小不小”的判断。它可以作为 `enrichments` 随 `docgra
 
 工具保持少而清楚。寄存器、管脚、时序等专项查询可以继续留在 Query Engine 或 CLI；只有确实能减少调用次数、并且有稳定输入输出契约时，才加入 MCP。
 
+### 稳定工具契约
+
+| 工具 | 主要输入 | 主要返回字段 |
+|---|---|---|
+| `docgraph_status` | 无 | `nodes_total`, `edges_total`, `docs`, `by_kind`, `by_edge_kind`, `vector_count` |
+| `docgraph_files` | 无 | `docs` |
+| `docgraph_context` | `task`, `mode`, `doc_ids`, `max_chars`, `max_chunks`, `include_enrichments`, `max_enrichment_chars`, `cursor` | `selection`, `chunks`, `enrichments`, `usage_policy` |
+| `docgraph_search_chunks` | `query`, `limit`, `doc_ids` | `hits`, `usage_policy` |
+| `docgraph_fetch` | `chunk_id` | `chunk`, `blocks`, `entities`, `usage_policy` |
+| `docgraph_fetch_many` | `chunk_ids` | `requested_chunk_ids`, `missing_chunk_ids`, `chunks`, `blocks`, `entities`, `links`, `usage_policy` |
+| `docgraph_search` | `query`, `kind`, `limit` | `results`, `total`, `usage_policy` |
+| `docgraph_section` | `path_or_id` | `section`, `children` |
+| `docgraph_neighbors` | `id`, `edge_kinds`, `depth` | `nodes`, `edges`, `usage_policy` |
+
+这些字段属于 MCP v1 contract。可以增加新字段；删除字段、改名、改变 `selection.coverage` 语义或把 L1 文本改成摘要，都需要先更新设计文档和契约测试。
+
 ## 8. Agent 的常用路径
 
 ### 小文档集

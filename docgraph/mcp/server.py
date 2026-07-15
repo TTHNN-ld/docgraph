@@ -1,15 +1,16 @@
-"""MCP server —— 精简工具集，按 L0/L1/L2 层次暴露数据模型。
+"""MCP server —— 按 L0/L1/L2 层次暴露透明文档视图。
 
+默认入口：context (自适应完整 L1 / L1 检索视图)
 L1 发现层：search_chunks / section
-L0 原文层：fetch (chunk + blocks + entities)
+L0 原文层：fetch / fetch_many (chunk + blocks + entities)
 L2 提示层：search (带 source_quality 标注 + 验证路径)
 图谱浏览：neighbors
 元信息：status / files
 
 设计原则：
-- Agent 自己决定检索策略和验证深度，工具不做预聚合或判断
+- Agent 自己决定检索策略和验证深度，工具不替 Agent 总结或判断结论
 - L2 实体始终带 source_quality，agent 自行决定是否信任
-- 默认路径：L1 定位 → fetch 读原文(含 entities) → L2 search 加速
+- 默认路径：context 透明文档视图 → 按需 fetch_many/fetch 取证 → L2 search/neighbors 加速
 """
 from __future__ import annotations
 

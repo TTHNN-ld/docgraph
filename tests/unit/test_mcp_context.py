@@ -351,6 +351,121 @@ def test_fetch_many_reports_missing_chunks_and_rejects_empty_input(tmp_path) -> 
     store.close()
 
 
+def test_mcp_tool_contracts_are_stable() -> None:
+    from docgraph.mcp.server import TOOLS
+
+    tools = {tool["name"]: tool for tool in TOOLS}
+
+    assert list(tools) == [
+        "docgraph_status",
+        "docgraph_files",
+        "docgraph_search_chunks",
+        "docgraph_fetch",
+        "docgraph_fetch_many",
+        "docgraph_context",
+        "docgraph_search",
+        "docgraph_section",
+        "docgraph_neighbors",
+    ]
+    assert tools["docgraph_context"]["inputSchema"]["properties"]["mode"]["enum"] == [
+        "auto",
+        "full",
+        "search",
+    ]
+    context_props = tools["docgraph_context"]["inputSchema"]["properties"]
+    for name in (
+        "task",
+        "doc_ids",
+        "max_chars",
+        "max_chunks",
+        "include_enrichments",
+        "max_enrichment_chars",
+        "cursor",
+    ):
+        assert name in context_props
+
+    search_props = tools["docgraph_search_chunks"]["inputSchema"]["properties"]
+    assert "doc_ids" in search_props
+    fetch_many_schema = tools["docgraph_fetch_many"]["inputSchema"]
+    assert fetch_many_schema["required"] == ["chunk_ids"]
+    assert fetch_many_schema["properties"]["chunk_ids"]["maxItems"] == 20
+
+    json.dumps(TOOLS)
+
+
+def test_mcp_tools_list_returns_all_contract_tools(tmp_path) -> None:
+    from docgraph.mcp.server import _handle_request
+
+    store = _store(tmp_path)
+    engine = QueryEngine(store)
+
+    response = _handle_request(
+        engine,
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+    )
+
+    names = [tool["name"] for tool in response["result"]["tools"]]
+    assert names == [
+        "docgraph_status",
+        "docgraph_files",
+        "docgraph_search_chunks",
+        "docgraph_fetch",
+        "docgraph_fetch_many",
+        "docgraph_context",
+        "docgraph_search",
+        "docgraph_section",
+        "docgraph_neighbors",
+    ]
+    json.dumps(response)
+    store.close()
+
+
+def test_mcp_fetch_many_returns_deduplicated_evidence(tmp_path) -> None:
+    from docgraph.mcp.server import _handle_request
+
+    store = _store(tmp_path)
+    block_id = "doc#p1#b0"
+    store.upsert_blocks(
+        [
+            Block(
+                id=block_id,
+                doc_id="doc",
+                page=1,
+                kind=BlockKind.PARAGRAPH,
+                text="Shared source paragraph.",
+            )
+        ]
+    )
+    store.upsert_chunks(
+        [
+            _chunk("chunk-a", "First L1 view.", block_ids=[block_id]),
+            _chunk("chunk-b", "Second L1 view.", block_ids=[block_id]),
+        ]
+    )
+    engine = QueryEngine(store)
+
+    response = _handle_request(
+        engine,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "docgraph_fetch_many",
+                "arguments": {"chunk_ids": ["chunk-a", "chunk-b"]},
+            },
+        },
+    )
+    payload = json.loads(response["result"]["content"][0]["text"])
+
+    assert [chunk["id"] for chunk in payload["chunks"]] == ["chunk-a", "chunk-b"]
+    assert [block["id"] for block in payload["blocks"]] == [block_id]
+    assert payload["links"]["chunk-a"]["block_ids"] == [block_id]
+    assert payload["links"]["chunk-b"]["block_ids"] == [block_id]
+    assert "deduplicated" in payload["usage_policy"]
+    store.close()
+
+
 def test_mcp_registers_context_and_returns_stable_error_code(tmp_path) -> None:
     from docgraph.mcp.server import TOOLS, _handle_request
 
