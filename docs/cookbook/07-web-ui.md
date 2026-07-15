@@ -5,7 +5,7 @@ DocGraph 自带一个轻量 Web UI，把抽取出的图谱直观展示给人看�
 ## 启动
 
 ```bash
-pip install 'docgraph[web]'
+pip install 'docgraph-core[web]'
 cd my-chip-project/
 docgraph serve --web --port 8000
 # 浏览器打开 http://127.0.0.1:8000

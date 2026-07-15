@@ -29,7 +29,7 @@ class LanceDBVectorStore:
             except ImportError as e:  # pragma: no cover - optional dependency
                 raise RuntimeError(
                     "LanceDB vector backend requires lancedb. "
-                    "Install with: pip install 'docgraph[lancedb]'"
+                    "Install with: pip install 'docgraph-core[lancedb]'"
                 ) from e
             self._db = lancedb.connect(str(self.db_path))
         return self._db

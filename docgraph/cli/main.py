@@ -315,10 +315,11 @@ def _setup_report(root: Path, cfg) -> dict:
             },
         )
     if missing_recommended:
+        parser_extras = _parser_extra_install_hints(missing_recommended)
         next_steps.append(
             {
                 "message": "Install recommended parser extras for better PDF/Office/Markdown parsing.",
-                "commands": ["docgraph setup parsers"],
+                "commands": [parser_extras] if parser_extras else ["docgraph setup parsers"],
             }
         )
     if not embeddings["available"]:
@@ -486,10 +487,27 @@ def _embedding_setup_status(cfg) -> dict:
 
 
 def _extra_install_hint(extra: str) -> str:
+    return _extras_install_hint([extra])
+
+
+def _extras_install_hint(extras: list[str]) -> str:
+    normalized = [extra for extra in dict.fromkeys(extras) if extra]
+    extra_spec = ",".join(normalized)
     source_root = Path(__file__).resolve().parents[2]
     if (source_root / "pyproject.toml").is_file():
-        return f'python -m pip install -e ".[{extra}]"'
-    return f'python -m pip install "docgraph[{extra}]"'
+        return f'python -m pip install -e ".[{extra_spec}]"'
+    return f'python -m pip install "docgraph-core[{extra_spec}]"'
+
+
+def _parser_extra_install_hints(parser_names: list[str]) -> str | None:
+    extras: list[str] = []
+    for name in parser_names:
+        dependency = parser_dependency(name)
+        if dependency and dependency.extra:
+            extras.append(dependency.extra)
+    if not extras:
+        return None
+    return _extras_install_hint(extras)
 
 
 def _print_setup_report(report: dict) -> None:

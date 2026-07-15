@@ -13,7 +13,7 @@ DocGraph 把 PDF/Word/Excel/Markdown 形态的芯片 spec 文档解析为 L0 无
 PyPI 发布后可直接安装（当前尚未发布）：
 
 ```bash
-pip install docgraph
+pip install docgraph-core
 ```
 
 从源码参与开发：

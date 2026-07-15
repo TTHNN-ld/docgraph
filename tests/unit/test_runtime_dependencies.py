@@ -96,6 +96,17 @@ def test_runtime_config_defaults_are_safe():
     assert runtime.parser_failure == "fallback"
 
 
+def test_default_user_config_validates():
+    import yaml
+
+    from docgraph.core.config import DEFAULT_USER_CONFIG_YAML, DocGraphConfig
+
+    cfg = DocGraphConfig.model_validate(yaml.safe_load(DEFAULT_USER_CONFIG_YAML))
+
+    assert cfg.llm.vlm is not None
+    assert cfg.embeddings.provider == "hash"
+
+
 def test_setup_command_reports_ready_with_fallback(monkeypatch, tmp_path):
     from docgraph.cli import main
     from docgraph.core.dependencies import DependencyResult
@@ -128,7 +139,10 @@ def test_setup_command_reports_ready_with_fallback(monkeypatch, tmp_path):
     assert payload["project"]["initialized"] is False
     assert payload["next_steps"][0]["commands"] == ["docgraph init"]
     assert payload["next_steps"][1]["commands"] == ["docgraph build"]
-    assert any("setup parsers" in command for step in payload["next_steps"] for command in step["commands"])
+    assert any(
+        'python -m pip install -e ".[docling,documents]"' in step["commands"]
+        for step in payload["next_steps"]
+    )
     assert any(row["parser"] == "docling" and not row["available"] for row in payload["parsers"])
 
 

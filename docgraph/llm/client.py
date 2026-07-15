@@ -133,7 +133,7 @@ class AnthropicProvider:
         except ImportError as e:
             raise RuntimeError(
                 "anthropic package not installed. "
-                "Install with: pip install 'docgraph[llm]'"
+                "Install with: pip install 'docgraph-core[llm]'"
             ) from e
         kwargs = {"api_key": self.api_key}
         if self.base_url:

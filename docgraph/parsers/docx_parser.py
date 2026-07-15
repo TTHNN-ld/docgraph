@@ -43,7 +43,7 @@ class DocxParser:
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
                 "python-docx not installed. Install with: "
-                "pip install 'docgraph[documents]'"
+                "pip install 'docgraph-core[documents]'"
             ) from e
 
         doc = Document(str(path))

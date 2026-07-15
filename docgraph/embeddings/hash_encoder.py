@@ -81,7 +81,7 @@ class BgeM3Encoder:
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
                 "sentence-transformers required. "
-                "Install with: pip install 'docgraph[embeddings]'"
+                "Install with: pip install 'docgraph-core[embeddings]'"
             ) from e
         self._model = SentenceTransformer(self.model, device=_pick_device())
 

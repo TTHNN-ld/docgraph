@@ -275,7 +275,7 @@ llm:
     fast: claude-haiku-4-5-20251001
     balanced: claude-sonnet-4-6
     accurate: claude-opus-4-8
-  vlm:
+  vlm: {}
     # provider: openai_compat
     # model: GLM-4.6V-Flash
     # api_key: sk-...

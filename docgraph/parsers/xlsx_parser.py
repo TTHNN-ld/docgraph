@@ -43,7 +43,7 @@ class XlsxParser:
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
                 "openpyxl not installed. Install with: "
-                "pip install 'docgraph[documents]'"
+                "pip install 'docgraph-core[documents]'"
             ) from e
 
         wb = load_workbook(filename=str(path), data_only=True, read_only=True)

@@ -43,7 +43,7 @@ def create_app(root: Path | None = None):
         from fastapi.staticfiles import StaticFiles
     except ImportError as e:  # pragma: no cover
         raise RuntimeError(
-            "fastapi/uvicorn not installed. Install: pip install 'docgraph[web]'"
+            "fastapi/uvicorn not installed. Install: pip install 'docgraph-core[web]'"
         ) from e
 
     root = root or project_root_from_cwd()
@@ -87,7 +87,7 @@ def run(
         import uvicorn
     except ImportError as e:  # pragma: no cover
         raise RuntimeError(
-            "uvicorn not installed. Install: pip install 'docgraph[web]'"
+            "uvicorn not installed. Install: pip install 'docgraph-core[web]'"
         ) from e
 
     app = create_app(root)

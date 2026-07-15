@@ -12,4 +12,4 @@
 - [06 — 导出 IP-XACT / SystemRDL](./06-export-ipxact-rdl.md)
 - [07 — Web UI 可视化](./07-web-ui.md)
 
-所有示例都假设你已 `pip install docgraph` 并在项目根有 `docs/` 或 `spec/` 目录。
+所有示例都假设你已 `pip install docgraph-core` 并在项目根有 `docs/` 或 `spec/` 目录。

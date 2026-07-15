@@ -140,7 +140,7 @@ def _is_interactive() -> bool:
 def _install_prompt(dependency: ParserDependency) -> str:
     return (
         f"{dependency.display_name} is required but not installed. "
-        f"Install the docgraph[{dependency.extra}] extra now? [y/N] "
+        f"Install the docgraph-core[{dependency.extra}] extra now? [y/N] "
     )
 
 
@@ -149,5 +149,5 @@ def _extra_install_command(extra: str) -> tuple[list[str], str]:
     if (source_root / "pyproject.toml").is_file():
         target = f"{source_root}[{extra}]"
         return [sys.executable, "-m", "pip", "install", "-e", target], target
-    target = f"docgraph[{extra}]"
+    target = f"docgraph-core[{extra}]"
     return [sys.executable, "-m", "pip", "install", target], target
