@@ -277,20 +277,21 @@ def build(
     dg_dir = root / ".docgraph"
     cache_dir = dg_dir / "cache"
 
-    llm_client = _build_llm_client(root, cfg, cache_dir)
-    # VLM cost 计入同一个 tracker（如果文本 LLM 开启）
-    vlm_tracker = llm_client.tracker if llm_client is not None else CostTracker()
-    vlm_client = _build_vlm_client(root, cfg, cache_dir, tracker=vlm_tracker)
+    llm_client = None
+    vlm_tracker = CostTracker()
+    vlm_client = None
+    model_clients_initialized = False
 
     log.info(
         f"[bold]Build start[/bold] — {len(files)} files, "
-        f"LLM={'yes' if llm_client else 'no'} "
-        f"VLM={'yes' if vlm_client else 'no'} "
+        f"LLM={'lazy' if cfg.llm.enabled else 'no'} "
+        f"VLM={'lazy' if cfg.llm.enabled else 'no'} "
         f"budget={cfg.cost.budget_per_build_usd:.2f}"
     )
 
     active_doc_ids: set[str] = set()
     active_paths: set[str] = set()
+    index_changed = False
     dependency_cache: dict[str, DependencyResult] = {}
     for path in files:
         rel = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
@@ -322,6 +323,12 @@ def build(
                 parser_failure_policy=effective_failure_policy,
                 dependency_cache=dependency_cache,
             )
+            if not model_clients_initialized:
+                llm_client = _build_llm_client(root, cfg, cache_dir)
+                # VLM cost 计入同一个 tracker（如果文本 LLM 开启）
+                vlm_tracker = llm_client.tracker if llm_client is not None else CostTracker()
+                vlm_client = _build_vlm_client(root, cfg, cache_dir, tracker=vlm_tracker)
+                model_clients_initialized = True
             extract_res = _stage_extract(
                 parsed, cfg, rec, llm_client, vlm_client, root, doc_id=parsed.doc_id
             )
@@ -335,6 +342,7 @@ def build(
             rec.parser = parsed.parser
             rec.error = None
             report.parsed += 1
+            index_changed = True
             if rec.quality_status == "degraded":
                 report.degraded += 1
             report.extracted += 1
@@ -369,9 +377,11 @@ def build(
         for doc_id in store.list_docs():
             if doc_id not in active_doc_ids:
                 store.delete_doc(doc_id)
+                index_changed = True
         for rel in list(manifest.files):
             if rel not in active_paths:
                 manifest.files.pop(rel, None)
+                index_changed = True
         save_manifest(root, manifest)
 
     # Linker stage
@@ -383,17 +393,32 @@ def build(
             log.warning(f"[link] linker failed: {e}")
 
     # Embedding stage
-    try:
+    embedding_needed = index_changed
+    vstore = None
+    if not embedding_needed:
         vstore = build_vector_store(cfg.storage, dg_dir, create=True)
-        if vstore is None:
-            raise RuntimeError("vector store is disabled")
-        vstore.init_schema()
-        encoder = build_encoder(cfg.embeddings)
-        emb_rep = embed_graph(store, vstore, encoder)
-        report.embedded_nodes = emb_rep.nodes_embedded
-        report.embedded_chunks = emb_rep.chunks_embedded
-    except Exception as e:
-        log.warning(f"[embed] embedding failed: {e}")
+        if vstore is not None:
+            try:
+                vstore.init_schema()
+                embedding_needed = _embedding_missing_for_config(store, vstore, cfg)
+            except Exception as e:
+                log.warning(f"[embed] vector store check failed: {e}")
+                embedding_needed = True
+
+    if embedding_needed:
+        try:
+            vstore = vstore or build_vector_store(cfg.storage, dg_dir, create=True)
+            if vstore is None:
+                raise RuntimeError("vector store is disabled")
+            vstore.init_schema()
+            encoder = build_encoder(cfg.embeddings)
+            emb_rep = embed_graph(store, vstore, encoder)
+            report.embedded_nodes = emb_rep.nodes_embedded
+            report.embedded_chunks = emb_rep.chunks_embedded
+        except Exception as e:
+            log.warning(f"[embed] embedding failed: {e}")
+    else:
+        log.info("Embedding skip — no index changes and configured vectors are present")
 
     if llm_client:
         report.llm_cost_usd = round(llm_client.tracker.cost_usd, 4)
@@ -412,6 +437,31 @@ def build(
         f"llm_calls={report.llm_calls} llm_cost=${report.llm_cost_usd:.4f}"
     )
     return report
+
+
+def _embedding_missing_for_config(store: SQLiteGraphStore, vstore: Any, cfg: DocGraphConfig) -> bool:
+    """Return true when the current embedding model has no vectors yet.
+
+    This keeps an all-skipped build fast while still rebuilding vectors when a
+    user changes the embedding provider/model/dimension.
+    """
+    model = _expected_embedding_model(cfg)
+    if store.count_nodes() > 0 and not vstore.stored_node_hashes(model):
+        return True
+    if store.list_chunks(limit=1) and not vstore.stored_item_hashes("chunk", model):
+        return True
+    return False
+
+
+def _expected_embedding_model(cfg: DocGraphConfig) -> str:
+    provider = (cfg.embeddings.provider or "hash").strip().lower()
+    if provider == "hash":
+        return f"hash-{cfg.embeddings.dim or 256}"
+    if provider == "bge_m3":
+        return cfg.embeddings.model or "BAAI/bge-m3"
+    if provider in {"openai", "openai_compat"}:
+        return cfg.embeddings.model or "text-embedding-3-small"
+    return provider
 
 
 # ---------------------------------------------------------------------------

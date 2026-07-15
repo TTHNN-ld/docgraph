@@ -1,10 +1,13 @@
 """Typer CLI —— docgraph init / build / status / query / register / watch / serve ..."""
 from __future__ import annotations
 
+import importlib.util
+import os
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from docgraph.core.bootstrap import bootstrap
@@ -40,7 +43,7 @@ l2_app = typer.Typer(help="L2 quality audit and evaluation.")
 inspect_app = typer.Typer(help="Inspect extracted entities and raw graph nodes.")
 graph_app = typer.Typer(help="Graph context, trace, and impact queries.")
 admin_app = typer.Typer(help="Advanced maintenance and operations.")
-setup_app = typer.Typer(help="Install and prepare optional runtime components.")
+setup_app = typer.Typer(help="Check and prepare optional runtime components.")
 
 app.add_typer(l2_app, name="l2")
 app.add_typer(inspect_app, name="inspect")
@@ -50,6 +53,9 @@ app.add_typer(setup_app, name="setup")
 
 console = Console()
 log = get_logger("docgraph.cli")
+
+_SETUP_PARSERS = ["pymupdf", "docling", "docx", "xlsx", "markdown", "mineru", "marker"]
+_RECOMMENDED_PARSERS = {"docling", "docx", "xlsx", "markdown"}
 
 
 def _print_json(data: object) -> None:
@@ -196,6 +202,24 @@ def build(
         raise typer.Exit(code=1)
 
 
+@setup_app.callback(invoke_without_command=True)
+def setup(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """Check the local DocGraph runtime without modifying the environment."""
+    if ctx.invoked_subcommand is not None:
+        return
+    root = project_root_from_cwd()
+    autoload_env(root)
+    cfg = load_config(root)
+    report = _setup_report(root, cfg)
+    if json_output:
+        _print_json(report)
+        return
+    _print_setup_report(report)
+
+
 @setup_app.command("parsers")
 def setup_parsers(
     parser: list[str] | None = typer.Option(
@@ -227,6 +251,291 @@ def setup_parsers(
             failures += 1
     if failures:
         raise typer.Exit(code=1)
+
+
+def _setup_report(root: Path, cfg) -> dict:
+    parser_rows = []
+    missing_required: list[str] = []
+    missing_recommended: list[str] = []
+    for name in _SETUP_PARSERS:
+        dependency = parser_dependency(name)
+        if dependency is None:
+            continue
+        result = ensure_parser_dependency(name, "fallback")
+        if name == "pymupdf":
+            role = "required"
+        elif name in _RECOMMENDED_PARSERS:
+            role = "recommended"
+        else:
+            role = "optional"
+        if not result.available:
+            if role == "required":
+                missing_required.append(name)
+            elif role == "recommended":
+                missing_recommended.append(name)
+        parser_rows.append(
+            {
+                "parser": name,
+                "display_name": dependency.display_name,
+                "role": role,
+                "available": result.available,
+                "extra": dependency.extra,
+                "reason": result.reason,
+                "model_notice": dependency.model_notice,
+            }
+        )
+
+    llm = _llm_setup_status(cfg)
+    vlm = _vlm_setup_status(cfg)
+    embeddings = _embedding_setup_status(cfg)
+    project_initialized = docgraph_dir(root).is_dir()
+
+    runtime_degraded = (
+        not embeddings["available"]
+        or (llm["enabled"] and not llm["available"])
+        or (vlm["enabled"] and not vlm["available"])
+    )
+    if missing_required:
+        status = "NOT_READY"
+        summary = "Core parser dependency is missing."
+    elif missing_recommended or runtime_degraded:
+        status = "READY_WITH_FALLBACK"
+        summary = "Build can run, but some optional runtime features will fall back or be skipped."
+    else:
+        status = "READY"
+        summary = "Runtime is ready for the default build path."
+
+    next_steps = [{"message": "Continue with the current environment.", "commands": ["docgraph build"]}]
+    if not project_initialized:
+        next_steps.insert(
+            0,
+            {
+                "message": "Initialize this project before building.",
+                "commands": ["docgraph init"],
+            },
+        )
+    if missing_recommended:
+        next_steps.append(
+            {
+                "message": "Install recommended parser extras for better PDF/Office/Markdown parsing.",
+                "commands": ["docgraph setup parsers"],
+            }
+        )
+    if not embeddings["available"]:
+        next_steps.append(embeddings["suggestion"])
+    if llm["enabled"] and not llm["available"]:
+        next_steps.append(llm["suggestion"])
+    if vlm["enabled"] and not vlm["available"]:
+        next_steps.append(vlm["suggestion"])
+
+    return {
+        "status": status,
+        "summary": summary,
+        "project": {
+            "root": str(root),
+            "initialized": project_initialized,
+            "config": str(config_path(root)) if config_path(root).is_file() else None,
+        },
+        "parsers": parser_rows,
+        "llm": llm,
+        "vlm": vlm,
+        "embeddings": embeddings,
+        "runtime": {
+            "dependency_policy": cfg.runtime.dependency_policy,
+            "parser_failure": cfg.runtime.parser_failure,
+        },
+        "next_steps": next_steps,
+        "suggestions": [step["message"] for step in next_steps],
+    }
+
+
+def _llm_setup_status(cfg) -> dict:
+    if not cfg.llm.enabled:
+        return {
+            "enabled": False,
+            "available": True,
+            "provider": cfg.llm.provider,
+            "model": None,
+            "reason": "disabled",
+            "suggestion": None,
+        }
+    provider = cfg.llm.providers.get(cfg.llm.provider)
+    if provider is None:
+        return {
+            "enabled": True,
+            "available": False,
+            "provider": cfg.llm.provider,
+            "model": cfg.llm.tiers.balanced,
+            "reason": "provider is not configured",
+            "suggestion": {
+                "message": "Configure llm.providers in ~/.docgraph/config.yaml or disable llm.enabled.",
+                "commands": [],
+            },
+        }
+    has_key = bool(provider.api_key or os.environ.get(provider.api_key_env))
+    return {
+        "enabled": True,
+        "available": has_key,
+        "provider": cfg.llm.provider,
+        "model": cfg.llm.tiers.balanced,
+        "reason": None if has_key else f"{provider.api_key_env} is not set",
+        "suggestion": (
+            None
+            if has_key
+            else {
+                "message": "Set the LLM API key or disable llm.enabled.",
+                "commands": [f"export {provider.api_key_env}=..."],
+            }
+        ),
+    }
+
+
+def _vlm_setup_status(cfg) -> dict:
+    vlm_cfg = cfg.llm.vlm
+    if not cfg.llm.enabled:
+        return {
+            "enabled": False,
+            "available": True,
+            "provider": vlm_cfg.provider,
+            "model": vlm_cfg.model or cfg.llm.vlm_model,
+            "reason": "disabled",
+            "suggestion": None,
+        }
+    provider_name = vlm_cfg.provider or cfg.llm.provider
+    model = vlm_cfg.model or cfg.llm.vlm_model or cfg.llm.tiers.accurate
+    if vlm_cfg.api_key or os.environ.get(vlm_cfg.api_key_env):
+        has_key = True
+        missing_reason = None
+    else:
+        provider = cfg.llm.providers.get(provider_name)
+        has_key = bool(provider and (provider.api_key or os.environ.get(provider.api_key_env)))
+        missing_reason = (
+            f"{vlm_cfg.api_key_env} and fallback provider key are not set"
+            if not has_key
+            else None
+        )
+    return {
+        "enabled": True,
+        "available": has_key,
+        "provider": provider_name,
+        "model": model,
+        "reason": missing_reason,
+        "suggestion": (
+            None
+            if has_key
+            else {
+                "message": "Set VLM_API_KEY, configure the LLM provider key, or disable llm.enabled.",
+                "commands": ["export VLM_API_KEY=..."],
+            }
+        ),
+    }
+
+
+def _embedding_setup_status(cfg) -> dict:
+    provider = (cfg.embeddings.provider or "hash").strip().lower()
+    if provider == "hash":
+        return {
+            "provider": provider,
+            "available": True,
+            "reason": "built-in zero-dependency encoder",
+            "suggestion": None,
+        }
+    if provider == "bge_m3":
+        available = importlib.util.find_spec("sentence_transformers") is not None
+        return {
+            "provider": provider,
+            "available": available,
+            "reason": None if available else "sentence-transformers is not installed",
+            "suggestion": (
+                None
+                if available
+                else {
+                    "message": "Install the embeddings extra, or switch embeddings.provider to hash.",
+                    "commands": [_extra_install_hint("embeddings")],
+                }
+            ),
+        }
+    if provider in {"openai", "openai_compat"}:
+        available = bool(
+            cfg.embeddings.api_key
+            or os.environ.get(cfg.embeddings.api_key_env)
+            or os.environ.get(cfg.embeddings.api_key_fallback_env)
+        )
+        return {
+            "provider": provider,
+            "available": available,
+            "reason": None if available else "embedding API key is not configured",
+            "suggestion": (
+                None
+                if available
+                else {
+                    "message": "Set EMBEDDING_API_KEY or switch embeddings.provider to hash.",
+                    "commands": ["export EMBEDDING_API_KEY=..."],
+                }
+            ),
+        }
+    return {
+        "provider": provider,
+        "available": False,
+        "reason": "unknown embedding provider",
+        "suggestion": {
+            "message": "Use embeddings.provider=hash or configure a supported provider.",
+            "commands": [],
+        },
+    }
+
+
+def _extra_install_hint(extra: str) -> str:
+    source_root = Path(__file__).resolve().parents[2]
+    if (source_root / "pyproject.toml").is_file():
+        return f'python -m pip install -e ".[{extra}]"'
+    return f'python -m pip install "docgraph[{extra}]"'
+
+
+def _print_setup_report(report: dict) -> None:
+    color = {
+        "READY": "green",
+        "READY_WITH_FALLBACK": "yellow",
+        "NOT_READY": "red",
+    }.get(report["status"], "white")
+    console.print(f"[bold {color}]{report['status']}[/bold {color}] — {report['summary']}")
+
+    parser_table = Table(title="Parsers", show_header=True, header_style="bold")
+    for column in ("parser", "role", "available", "extra", "note"):
+        parser_table.add_column(column)
+    for row in report["parsers"]:
+        available = "[green]yes[/green]" if row["available"] else "[red]no[/red]"
+        note = row["reason"] or row["model_notice"] or ""
+        parser_table.add_row(
+            row["parser"],
+            row["role"],
+            available,
+            row["extra"] or "core",
+            note,
+        )
+    console.print(parser_table)
+
+    runtime_table = Table(title="Runtime", show_header=True, header_style="bold")
+    runtime_table.add_column("component")
+    runtime_table.add_column("status")
+    runtime_table.add_column("detail")
+    for name in ("llm", "vlm", "embeddings"):
+        item = report[name]
+        status = "[green]ok[/green]" if item["available"] else "[red]missing[/red]"
+        if not item.get("enabled", True):
+            status = "[cyan]disabled[/cyan]"
+        detail = item.get("reason") or item.get("model") or item.get("provider") or ""
+        runtime_table.add_row(name, status, str(detail))
+    runtime_table.add_row("dependency_policy", report["runtime"]["dependency_policy"], "")
+    runtime_table.add_row("parser_failure", report["runtime"]["parser_failure"], "")
+    console.print(runtime_table)
+
+    if report["next_steps"]:
+        console.print("[bold]Next steps[/bold]")
+        for index, step in enumerate(report["next_steps"], start=1):
+            console.print(f"{index}. {step['message']}")
+            for command in step.get("commands") or []:
+                console.print(f"   [cyan]{escape(command)}[/cyan]")
 
 
 # ---------------------------------------------------------------------------

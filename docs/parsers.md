@@ -138,11 +138,16 @@ parsers:
 依赖准备与故障策略：
 
 ```bash
-docgraph setup parsers                    # 推荐项：Docling + Office/Markdown
+docgraph setup                            # 检查 parser、LLM/VLM、embedding 和回退状态
+docgraph setup parsers                    # 安装推荐项：Docling + Office/Markdown
 docgraph setup parsers --parser mineru   # 显式安装旧 magic-pdf adapter 依赖
 docgraph build --install-missing          # 授权本次构建补装缺失 extra
 docgraph build --strict-parsers           # 禁止回退，适合质量门禁
 ```
+
+`setup` 只检查并给出建议，不修改环境；`setup parsers` 才会安装白名单内的
+DocGraph extras。普通用户日常只需 `docgraph build`，缺失重型 parser 时自动
+回退并把原因写入 manifest。
 
 每个尝试及失败原因写入 manifest 的 `parser_attempts`；发生回退时同时写入
 `requested_parser`、实际 `parser`、`quality_status=degraded` 和 `fallback_reason`。

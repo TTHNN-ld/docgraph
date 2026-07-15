@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
+
+from typer.testing import CliRunner
 
 
 def test_noninteractive_prompt_does_not_install(monkeypatch):
@@ -91,3 +94,126 @@ def test_runtime_config_defaults_are_safe():
     runtime = DocGraphConfig().runtime
     assert runtime.dependency_policy == "prompt"
     assert runtime.parser_failure == "fallback"
+
+
+def test_setup_command_reports_ready_with_fallback(monkeypatch, tmp_path):
+    from docgraph.cli import main
+    from docgraph.core.dependencies import DependencyResult
+
+    available = {
+        "pymupdf": True,
+        "docling": False,
+        "docx": False,
+        "xlsx": False,
+        "markdown": False,
+        "mineru": False,
+        "marker": False,
+    }
+
+    def fake_ensure(parser_name, policy):
+        assert policy == "fallback"
+        return DependencyResult(
+            available=available[parser_name],
+            reason=None if available[parser_name] else f"{parser_name} missing",
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(main, "ensure_parser_dependency", fake_ensure)
+
+    result = CliRunner().invoke(main.app, ["setup", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "READY_WITH_FALLBACK"
+    assert payload["project"]["initialized"] is False
+    assert payload["next_steps"][0]["commands"] == ["docgraph init"]
+    assert payload["next_steps"][1]["commands"] == ["docgraph build"]
+    assert any("setup parsers" in command for step in payload["next_steps"] for command in step["commands"])
+    assert any(row["parser"] == "docling" and not row["available"] for row in payload["parsers"])
+
+
+def test_setup_command_reports_llm_and_vlm_configuration(monkeypatch, tmp_path):
+    from docgraph.cli import main
+    from docgraph.core.config import DocGraphConfig
+    from docgraph.core.dependencies import DependencyResult
+
+    cfg = DocGraphConfig.model_validate(
+        {
+            "llm": {
+                "enabled": True,
+                "provider": "openai_compat",
+                "providers": {
+                    "openai_compat": {
+                        "api_key_env": "MISSING_TEST_LLM_KEY",
+                        "base_url_env": "OPENAI_BASE_URL",
+                    }
+                },
+            }
+        }
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MISSING_TEST_LLM_KEY", raising=False)
+    monkeypatch.setattr(main, "load_config", lambda _root: cfg)
+    monkeypatch.setattr(
+        main,
+        "ensure_parser_dependency",
+        lambda _parser_name, _policy: DependencyResult(available=True),
+    )
+
+    result = CliRunner().invoke(main.app, ["setup", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["llm"]["enabled"] is True
+    assert payload["llm"]["available"] is False
+    assert payload["vlm"]["enabled"] is True
+    assert payload["vlm"]["available"] is False
+    assert any("export MISSING_TEST_LLM_KEY=..." in step["commands"] for step in payload["next_steps"])
+    assert any("export VLM_API_KEY=..." in step["commands"] for step in payload["next_steps"])
+
+
+def test_setup_command_gives_copyable_embedding_install_command(monkeypatch, tmp_path):
+    from docgraph.cli import main
+    from docgraph.core.config import DocGraphConfig
+    from docgraph.core.dependencies import DependencyResult
+
+    cfg = DocGraphConfig.model_validate({"embeddings": {"provider": "bge_m3"}})
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(main, "load_config", lambda _root: cfg)
+    monkeypatch.setattr(
+        main,
+        "ensure_parser_dependency",
+        lambda _parser_name, _policy: DependencyResult(available=True),
+    )
+    monkeypatch.setattr(main.importlib.util, "find_spec", lambda _name: None)
+
+    result = CliRunner().invoke(main.app, ["setup", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    commands = [command for step in payload["next_steps"] for command in step["commands"]]
+    assert 'python -m pip install -e ".[embeddings]"' in commands
+
+
+def test_setup_text_output_escapes_extra_install_command(monkeypatch, tmp_path):
+    from docgraph.cli import main
+    from docgraph.core.config import DocGraphConfig
+    from docgraph.core.dependencies import DependencyResult
+
+    cfg = DocGraphConfig.model_validate({"embeddings": {"provider": "bge_m3"}})
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(main, "load_config", lambda _root: cfg)
+    monkeypatch.setattr(
+        main,
+        "ensure_parser_dependency",
+        lambda _parser_name, _policy: DependencyResult(available=True),
+    )
+    monkeypatch.setattr(main.importlib.util, "find_spec", lambda _name: None)
+
+    result = CliRunner().invoke(main.app, ["setup"])
+
+    assert result.exit_code == 0
+    assert 'python -m pip install -e ".[embeddings]"' in result.output

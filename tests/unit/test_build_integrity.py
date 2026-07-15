@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from docgraph.core.config import DocGraphConfig, DocsConfig, ExtractorsConfig
+from docgraph.core.ids import file_hash
 from docgraph.core.manifest import FileRecord, Manifest
 from docgraph.core.pipeline import BuildReport, _stage_extract, build
 from docgraph.embeddings.hash_encoder import HashEncoder
@@ -15,6 +16,7 @@ from docgraph.embeddings.vector_store import VectorStore
 from docgraph.graph.schema import (
     Block,
     BlockKind,
+    Chunk,
     Node,
     NodeKind,
     ParsedDoc,
@@ -107,6 +109,110 @@ def test_full_build_removes_documents_and_manifest_entries_missing_from_source(
     assert report.errors == 0
     assert store.list_docs() == []
     assert manifest.files == {}
+    store.close()
+
+
+def test_build_skips_model_initialization_and_embedding_when_everything_is_cached(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from docgraph.core import pipeline
+
+    spec_dir = tmp_path / "spec"
+    spec_dir.mkdir()
+    doc_path = spec_dir / "cached.pdf"
+    doc_path.write_bytes(b"%PDF cached placeholder")
+    manifest = Manifest(
+        files={
+            "spec/cached.pdf": FileRecord(
+                path="spec/cached.pdf",
+                doc_id="doc",
+                hash=file_hash(doc_path),
+                status="extracted",
+            )
+        }
+    )
+    cfg = DocGraphConfig(docs=DocsConfig(include=["spec/cached.pdf"]))
+    store = SQLiteGraphStore(tmp_path / ".docgraph" / "graph.db")
+    store.init_schema()
+
+    def fail_model_init(*_args, **_kwargs):
+        raise AssertionError("model clients should not initialize when all files are skipped")
+
+    def fail_encoder_init(*_args, **_kwargs):
+        raise AssertionError("embedding should not run when there are no index changes")
+
+    monkeypatch.setattr(pipeline, "_build_llm_client", fail_model_init)
+    monkeypatch.setattr(pipeline, "_build_vlm_client", fail_model_init)
+    monkeypatch.setattr(pipeline, "build_encoder", fail_encoder_init)
+
+    report = build(tmp_path, cfg, store, manifest)
+
+    assert report.skipped == 1
+    assert report.parsed == 0
+    assert report.embedded_nodes == 0
+    assert report.embedded_chunks == 0
+    store.close()
+
+
+def test_build_embeds_when_embedding_config_changed_but_files_are_cached(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from docgraph.core import pipeline
+
+    spec_dir = tmp_path / "spec"
+    spec_dir.mkdir()
+    doc_path = spec_dir / "cached.pdf"
+    doc_path.write_bytes(b"%PDF cached placeholder")
+    manifest = Manifest(
+        files={
+            "spec/cached.pdf": FileRecord(
+                path="spec/cached.pdf",
+                doc_id="doc",
+                hash=file_hash(doc_path),
+                status="extracted",
+            )
+        }
+    )
+    cfg = DocGraphConfig.model_validate(
+        {
+            "docs": {"include": ["spec/cached.pdf"]},
+            "embeddings": {"provider": "bge_m3", "model": "new-model"},
+        }
+    )
+    store = SQLiteGraphStore(tmp_path / ".docgraph" / "graph.db")
+    store.init_schema()
+    store.upsert_chunks(
+        [
+            Chunk(
+                id="doc::chunk:1",
+                doc_id="doc",
+                page=1,
+                page_start=1,
+                page_end=1,
+                text="cached chunk",
+                block_ids=[],
+                source_hash="source:cached",
+            )
+        ]
+    )
+    built = {"encoder": False}
+
+    monkeypatch.setattr(pipeline, "_build_llm_client", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline, "_build_vlm_client", lambda *_args, **_kwargs: None)
+
+    def fake_build_encoder(_cfg):
+        built["encoder"] = True
+        return HashEncoder(dim=16)
+
+    monkeypatch.setattr(pipeline, "build_encoder", fake_build_encoder)
+
+    report = build(tmp_path, cfg, store, manifest)
+
+    assert report.skipped == 1
+    assert built["encoder"] is True
+    assert report.embedded_chunks == 1
     store.close()
 
 

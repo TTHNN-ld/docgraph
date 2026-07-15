@@ -46,6 +46,10 @@ runtime:
 安装 DocGraph 内置白名单对应的 extras，不会根据配置执行任意包安装。
 CLI 的 `--install-missing` 和 `--strict-parsers` 可分别覆盖这两项。
 
+`docgraph setup` 可在构建前检查当前环境：核心 parser、推荐 parser、
+LLM/VLM 配置、embedding 后端和运行时回退策略。该命令只报告状态和建议，不会
+安装依赖或下载模型；需要安装推荐 parser 时使用 `docgraph setup parsers`。
+
 需要覆盖项目行为时再创建：
 
 ```yaml

@@ -30,8 +30,9 @@ pip install -e ".[dev]"
 [启用 LLM 抽取](./docs/cookbook/02-enable-llm.md) 配置 provider、model 和 API key。
 基础包自带 PyMuPDF。`build` 选中尚未安装的内置 parser 时，交互终端会询问是否
 安装对应 extra；CI 等非交互环境不会擅自修改环境，而是自动尝试下一 parser。
-可用 `docgraph build --install-missing` 明确授权安装，或提前执行
-`docgraph setup parsers` 安装推荐的 Docling 和 Office/Markdown 依赖。
+首次使用可运行 `docgraph setup` 查看当前环境是否已准备好。需要提前安装推荐
+parser 时，执行 `docgraph setup parsers`；需要在一次构建中明确授权补装依赖时，
+使用 `docgraph build --install-missing`。
 
 安装 parser 不等于预下载模型。Docling 在首次实际解析时由上游下载并缓存模型；
 模型下载或初始化失败也会触发 parser 回退，并记录在 `.docgraph/manifest.json`。
@@ -44,9 +45,8 @@ pip install -e ".[dev]"
 
 ```bash
 docgraph init                             # 在当前目录创建 .docgraph/
+docgraph setup                            # 可选：检查 parser、LLM/VLM 和 embedding 环境
 docgraph build                            # 解析 docs/**/*.pdf 和 spec/**/*.pdf，构建 L0/L1/L2
-docgraph build --install-missing          # 非交互环境中允许补装缺失 parser
-docgraph build --strict-parsers           # parser 缺失/失败时直接报错，不降级
 docgraph status                           # 节点/边/文档统计
 docgraph doctor --strict                  # L0/L1 完整性 + L2 provenance/强结构检查
 docgraph l2 audit --strict                # L2 候选覆盖与 schema 质量审计
@@ -57,6 +57,9 @@ docgraph inspect register freeze_reg      # 查看寄存器详情 + bitfields
 
 docgraph serve --mcp                      # 启动 MCP server，供 Claude Code 等 agent 调用
 ```
+
+日常路径只需要 `init → build`。`setup` 是环境检查和准备入口，不是必经步骤；
+`--install-missing`、`--strict-parsers` 和 `--quality` 保留给 CI 或质量门禁等专家场景。
 
 ---
 
