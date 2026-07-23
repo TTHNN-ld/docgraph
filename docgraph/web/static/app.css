@@ -214,7 +214,19 @@ button:hover { background: #4c7ee0; }
 .dot-figure    { background: #ec4899; }
 .dot-term      { background: #64748b; }
 
-#graph { width: 100%; height: 720px; background: var(--bg-alt); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; }
+.graph-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 2px; }
+.graph-toolbar { display: inline-flex; align-items: center; gap: 6px; }
+.graph-toolbar button { white-space: nowrap; }
+.graph-label-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.graph-label-toggle input { margin: 0; }
+.graph-icon-button { min-width: 30px; padding: 3px 8px; font-size: 17px; line-height: 1.1; }
+.graph-help { margin: 0 0 8px; }
+#graph { position: relative; width: 100%; height: 720px; background: var(--bg-alt); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; cursor: grab; }
+#graph:active { cursor: grabbing; }
+#graph.graph-panning { cursor: grabbing; }
+.graph-label-layer { position: absolute; inset: 0; z-index: 10; pointer-events: none; overflow: hidden; }
+.graph-node-label { position: absolute; top: 0; left: 0; display: block; max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 5px; border: 1px solid rgba(255,255,255,.86); border-radius: 4px; background: rgba(255,255,255,.78); box-shadow: 0 1px 2px rgba(15,23,42,.12); color: #334155; font: 11px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.graph-node-label-register, .graph-node-label-module, .graph-node-label-interface, .graph-node-label-memory_map { font-weight: 600; }
 
 details summary { cursor: pointer; color: var(--fg-muted); margin: 8px 0; }
 

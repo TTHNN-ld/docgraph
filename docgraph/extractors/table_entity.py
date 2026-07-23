@@ -42,9 +42,11 @@ from docgraph.extractors.schema_registry import (
     get_schema,
     schemas_for_doctype,
 )
+from docgraph.graph.l2 import classify_edge, classify_extracted_node
 from docgraph.graph.schema import (
     BitFieldDef,
     BlockKind,
+    DerivationMethod,
     DocType,
     Edge,
     EdgeKind,
@@ -173,6 +175,7 @@ class TableEntityExtractor:
                 if not self._table_has_cells(candidate.table):
                     continue
                 result = None
+                derivation_method = DerivationMethod.DETERMINISTIC
                 table_for_extract = candidate.table
                 context_name = None
                 if sn == "register" and candidate.table is not None:
@@ -202,6 +205,7 @@ class TableEntityExtractor:
                 if result is None and ctx.has_llm:
                     if llm_calls < self.MAX_LLM_TOTAL and schema_calls_by_sn[sn] < self.MAX_LLM_PER_SCHEMA:
                         result = self._llm_extract(candidate.table, schema, sn, ctx)
+                        derivation_method = DerivationMethod.LLM_INFERRED
                         llm_calls += 1
                 schema_calls_by_sn[sn] += 1
                 if result is None:
@@ -218,6 +222,7 @@ class TableEntityExtractor:
                     source_block_ids=candidate.block_ids,
                     source_chunk_ids=candidate.source_chunk_ids,
                     candidate_id=candidate.id,
+                    derivation_method=derivation_method,
                 )
                 nodes.extend(n["nodes"])
                 edges.extend(n["edges"])
@@ -246,6 +251,7 @@ class TableEntityExtractor:
                         source_block_ids=candidate.block_ids,
                         source_chunk_ids=candidate.source_chunk_ids,
                         candidate_id=candidate.id,
+                        derivation_method=DerivationMethod.VLM_INFERRED,
                     )
                     nodes.extend(n["nodes"])
                     edges.extend(n["edges"])
@@ -278,6 +284,7 @@ class TableEntityExtractor:
                     source_block_ids=candidate.block_ids,
                     source_chunk_ids=candidate.source_chunk_ids,
                     candidate_id=candidate.id,
+                    derivation_method=DerivationMethod.LLM_INFERRED,
                 )
                 nodes.extend(n["nodes"])
                 edges.extend(n["edges"])
@@ -316,7 +323,8 @@ class TableEntityExtractor:
                                                        ctx, doc.doc_id,
                                                        source_block_ids=candidate.block_ids,
                                                        source_chunk_ids=candidate.source_chunk_ids,
-                                                       candidate_id=candidate.id)
+                                                       candidate_id=candidate.id,
+                                                       derivation_method=DerivationMethod.VLM_INFERRED)
                             nodes.append(n["node"])
                             edges.extend(n["edges"])
                             if sn == "register" and hasattr(item, "bitfields"):
@@ -479,7 +487,8 @@ class TableEntityExtractor:
                      seen: set[str], hits_per_page: dict,
                      source_block_ids: list[str] | None = None,
                      source_chunk_ids: list[str] | None = None,
-                     candidate_id: str | None = None) -> dict:
+                     candidate_id: str | None = None,
+                     derivation_method: DerivationMethod = DerivationMethod.DETERMINISTIC) -> dict:
         nodes: list[Node] = []
         edges: list[Edge] = []
         calls = 0
@@ -494,6 +503,7 @@ class TableEntityExtractor:
                         source_block_ids=source_block_ids or [],
                         source_chunk_ids=source_chunk_ids or [],
                         candidate_id=candidate_id,
+                        derivation_method=derivation_method,
                     )
                     nodes.extend(result["bitfield_nodes"])
                     edges.extend(result["bitfield_edges"])
@@ -505,6 +515,7 @@ class TableEntityExtractor:
                 source_block_ids=source_block_ids or [],
                 source_chunk_ids=source_chunk_ids or [],
                 candidate_id=candidate_id,
+                derivation_method=derivation_method,
             )
             nodes.append(result["node"])
             nodes.extend(result["bitfield_nodes"])
@@ -517,7 +528,8 @@ class TableEntityExtractor:
                          page: int, ctx: ExtractContext, doc_id: str,
                          source_block_ids: list[str] | None = None,
                          source_chunk_ids: list[str] | None = None,
-                         candidate_id: str | None = None) -> dict:
+                         candidate_id: str | None = None,
+                         derivation_method: DerivationMethod = DerivationMethod.DETERMINISTIC) -> dict:
         name = getattr(item, "name", "") or getattr(item, "symbol", "")
         attrs = self._dump_attrs(item)
         if schema.kind in (NodeKind.SIGNAL, NodeKind.INTERFACE):
@@ -543,6 +555,8 @@ class TableEntityExtractor:
             summary=getattr(item, "description", "") or "",
             attrs=attrs,
         )
+        extractor = f"table_entity:{schema_name}"
+        classify_extracted_node(node, method=derivation_method, extractor=extractor)
         edges: list[Edge] = []
         bf_nodes: list[Node] = []
         bf_edges: list[Edge] = []
@@ -581,14 +595,25 @@ class TableEntityExtractor:
                     },
                 )
                 bf_nodes.append(bf_n)
-                bf_edges.append(Edge(
+                classify_extracted_node(bf_n, method=derivation_method, extractor=extractor)
+                bf_edge = Edge(
                     src=node.id, dst=bf_n.id, kind=EdgeKind.HAS_BITFIELD,
                     confidence=schema.min_confidence,
                     evidence=Evidence(
                         pages=[page],
                         extractor=f"table_entity:{schema_name}",
                     ),
-                ))
+                )
+                classify_edge(
+                    bf_edge,
+                    method=derivation_method,
+                    extractor=extractor,
+                    verified=(
+                        node.attrs["l2_status"] == "fact"
+                        and bf_n.attrs["l2_status"] == "fact"
+                    ),
+                )
+                bf_edges.append(bf_edge)
             node.attrs["bitfield_ids"] = [n.id for n in bf_nodes]
         return {"node": node, "edges": edges, "bitfield_nodes": bf_nodes, "bitfield_edges": bf_edges}
 

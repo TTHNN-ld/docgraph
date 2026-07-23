@@ -156,6 +156,15 @@ def test_graph_page(client):
     r = client.get("/graph")
     assert r.status_code == 200
     assert "d3" in r.text.lower()
+    assert "适配图谱" in r.text
+    assert "installPointerZoom" in r.text
+    assert "Shift + 左键拖拽可线性平移视图" in r.text
+    assert "installLinearPan" in r.text
+    assert "显示节点名称" in r.text
+    assert "createGraphLabels" in r.text
+    assert "graph2ScreenCoords" in r.text
+    assert "startGraphLabelRenderLoop" in r.text
+    assert "bindGraphViewport" in r.text
 
 
 def test_plugins_page(client):

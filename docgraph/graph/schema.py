@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Schema 版本号（变更时务必加 migration）
@@ -84,6 +84,43 @@ class DocType(str, Enum):
     UNKNOWN = "unknown"
 
 
+class L2Status(str, Enum):
+    """Trust state for an L2 graph item.
+
+    Extraction remains recall-oriented: uncertain results stay queryable as
+    candidates instead of being discarded.  Only validated, traceable items
+    may be promoted to facts.
+    """
+
+    DOCUMENT_ENTITY = "document_entity"
+    CANDIDATE = "candidate"
+    FACT = "fact"
+    NEEDS_REVIEW = "needs_review"
+    CONFLICT = "conflict"
+    REJECTED = "rejected"
+
+
+class DerivationMethod(str, Enum):
+    DETERMINISTIC = "deterministic"
+    LLM_INFERRED = "llm_inferred"
+    VLM_INFERRED = "vlm_inferred"
+    MERGED = "merged"
+    MANUAL = "manual"
+
+
+class DerivationConfidence(str, Enum):
+    EXACT = "exact"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class ValidationSeverity(str, Enum):
+    ERROR = "error"
+    WARNING = "warning"
+    INFO = "info"
+
+
 # ---------------------------------------------------------------------------
 # 基础类型
 # ---------------------------------------------------------------------------
@@ -118,6 +155,24 @@ class Evidence(BaseModel):
     bboxes: list[BBox] = Field(default_factory=list)
     extractor: str  # "register@0.1" 之类
     raw_snippet: str | None = None
+
+
+class Derivation(BaseModel):
+    """How an L2 graph item was produced and whether it was verified."""
+
+    method: DerivationMethod
+    extractor: str
+    confidence: DerivationConfidence
+    verified: bool = False
+
+
+class ValidationIssue(BaseModel):
+    """Machine-readable reason why a candidate was not promoted to a fact."""
+
+    code: str
+    message: str
+    severity: ValidationSeverity = ValidationSeverity.ERROR
+    field: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +355,11 @@ class Node(BaseModel):
     created_at: str = Field(default_factory=_utcnow)
     updated_at: str = Field(default_factory=_utcnow)
 
+    @model_validator(mode="after")
+    def _ensure_l2_metadata(self) -> Node:
+        _ensure_graph_item_metadata(self.attrs, self.kind, self.evidence.extractor)
+        return self
+
 
 class Edge(BaseModel):
     """图谱边。"""
@@ -311,6 +371,11 @@ class Edge(BaseModel):
     evidence: Evidence
     attrs: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=_utcnow)
+
+    @model_validator(mode="after")
+    def _ensure_l2_metadata(self) -> Edge:
+        _ensure_graph_item_metadata(self.attrs, None, self.evidence.extractor)
+        return self
 
 
 class Chunk(BaseModel):
@@ -355,6 +420,59 @@ class ExtractResult(BaseModel):
     stats: ExtractStats = Field(default_factory=ExtractStats)
 
 
+_DOCUMENT_ENTITY_KINDS = {
+    NodeKind.DOCUMENT,
+    NodeKind.SECTION,
+    NodeKind.FIGURE,
+    NodeKind.TABLE,
+    NodeKind.FORMULA,
+    NodeKind.CODEBLOCK,
+    NodeKind.CHUNK,
+}
+
+
+def _ensure_graph_item_metadata(
+    attrs: dict[str, Any],
+    kind: NodeKind | None,
+    extractor: str,
+) -> None:
+    """Populate conservative metadata for legacy and third-party producers.
+
+    This is intentionally non-promoting: unknown outputs become candidates (or
+    document entities), never facts.  Extractors must explicitly validate and
+    promote deterministic results.
+    """
+
+    if "l2_status" not in attrs:
+        attrs["l2_status"] = (
+            L2Status.DOCUMENT_ENTITY.value
+            if kind in _DOCUMENT_ENTITY_KINDS
+            else L2Status.CANDIDATE.value
+        )
+    source = str(attrs.get("source") or extractor or "unknown")
+    if "derivation" not in attrs:
+        lowered = source.lower()
+        if "vlm" in lowered:
+            method = DerivationMethod.VLM_INFERRED
+            confidence = DerivationConfidence.LOW
+        elif "llm" in lowered:
+            method = DerivationMethod.LLM_INFERRED
+            confidence = DerivationConfidence.LOW
+        elif attrs.get("extraction_confidence") == "deterministic":
+            method = DerivationMethod.DETERMINISTIC
+            confidence = DerivationConfidence.HIGH
+        else:
+            method = DerivationMethod.MERGED
+            confidence = DerivationConfidence.MEDIUM
+        attrs["derivation"] = Derivation(
+            method=method,
+            extractor=source,
+            confidence=confidence,
+            verified=False,
+        ).model_dump(mode="json")
+    attrs.setdefault("validation_issues", [])
+
+
 # ---------------------------------------------------------------------------
 # 寄存器子 schema —— table_entity:register 产出节点的 attrs 严格遵循
 # ---------------------------------------------------------------------------
@@ -393,6 +511,9 @@ __all__ = [
     "Block",
     "BlockKind",
     "Chunk",
+    "Derivation",
+    "DerivationConfidence",
+    "DerivationMethod",
     "DocMetadata",
     "DocType",
     "Edge",
@@ -400,6 +521,7 @@ __all__ = [
     "Evidence",
     "ExtractResult",
     "ExtractStats",
+    "L2Status",
     "Location",
     "Node",
     "NodeKind",
@@ -413,4 +535,6 @@ __all__ = [
     "TableData",
     "TextBlock",
     "TocEntry",
+    "ValidationIssue",
+    "ValidationSeverity",
 ]

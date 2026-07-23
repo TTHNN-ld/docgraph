@@ -107,6 +107,9 @@ def audit_l0_l1(store: SQLiteGraphStore, *, table_cell_warn_ratio: float = 0.98)
             "l2_nodes_with_source_chunks": 0,
             "l2_nodes_with_evidence": 0,
             "l2_nodes_structurally_valid": 0,
+            "l2_facts": 0,
+            "l2_candidates": 0,
+            "l2_needs_review": 0,
         }
         for doc_id in docs
     }
@@ -207,6 +210,7 @@ def audit_l0_l1(store: SQLiteGraphStore, *, table_cell_warn_ratio: float = 0.98)
         ))
 
     _audit_l2_provenance(nodes, by_doc, block_ids, chunk_ids, issues)
+    _audit_l2_trust(nodes, by_doc, issues)
     _audit_l2_structure(nodes, by_doc, issues)
     _extend_sample_issues(issues, "error", "l1.orphan_chunk", "chunks without block_ids", orphan_chunks)
     _extend_sample_issues(issues, "error", "l1.missing_block_ref", "chunks reference missing L0 block IDs", missing_block_refs)
@@ -263,6 +267,7 @@ def _totals(rows: list[dict[str, Any]], *, fts_count: int) -> dict[str, Any]:
             "chunks_with_section_node_id", "multi_page_chunks",
             "l2_nodes", "l2_nodes_with_source_blocks", "l2_nodes_with_source_chunks",
             "l2_nodes_with_evidence", "l2_nodes_structurally_valid",
+            "l2_facts", "l2_candidates", "l2_needs_review",
         ):
             total[key] += int(row.get(key) or 0)
         block_kinds.update(row.get("block_kinds") or {})
@@ -324,6 +329,9 @@ def _audit_l2_provenance(
             "l2_nodes_with_source_chunks": 0,
             "l2_nodes_with_evidence": 0,
             "l2_nodes_structurally_valid": 0,
+            "l2_facts": 0,
+            "l2_candidates": 0,
+            "l2_needs_review": 0,
         })
         doc["l2_nodes"] += 1
         attrs = json.loads(row["attrs"]) if row["attrs"] else {}
@@ -352,6 +360,52 @@ def _audit_l2_provenance(
     _extend_sample_issues(issues, "error", "l2.bad_source_blocks", "L2 nodes reference missing L0 block IDs", bad_blocks)
     _extend_sample_issues(issues, "error", "l2.bad_source_chunks", "L2 nodes reference missing L1 chunk IDs", bad_chunks)
     _extend_sample_issues(issues, "error", "l2.missing_evidence", "L2 nodes missing real evidence extractor", missing_evidence)
+
+
+def _audit_l2_trust(nodes, by_doc: dict[str, dict[str, Any]], issues: list[LayerIssue]) -> None:
+    """Check candidate/fact separation without rejecting legacy databases."""
+
+    legacy_metadata: dict[str, list[str]] = defaultdict(list)
+    invalid_facts: dict[str, list[str]] = defaultdict(list)
+    for row in nodes:
+        if row["kind"] not in _L2_PROVENANCE_KINDS:
+            continue
+        attrs = json.loads(row["attrs"]) if row["attrs"] else {}
+        doc = by_doc[row["doc_id"]]
+        status = attrs.get("l2_status")
+        derivation = attrs.get("derivation") or {}
+        validation_issues = attrs.get("validation_issues") or []
+        if not status or not derivation:
+            legacy_metadata[row["doc_id"]].append(row["id"])
+            status = "candidate"
+        if status == "fact":
+            doc["l2_facts"] += 1
+            has_error = any(issue.get("severity", "error") == "error" for issue in validation_issues)
+            if (
+                derivation.get("method") not in {"deterministic", "manual"}
+                or not derivation.get("verified")
+                or has_error
+            ):
+                invalid_facts[row["doc_id"]].append(row["id"])
+        elif status == "candidate":
+            doc["l2_candidates"] += 1
+        elif status in {"needs_review", "conflict", "rejected"}:
+            doc["l2_needs_review"] += 1
+
+    _extend_sample_issues(
+        issues,
+        "warning",
+        "l2.legacy_trust_metadata",
+        "L2 nodes missing candidate/fact derivation metadata",
+        legacy_metadata,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.invalid_fact_status",
+        "facts must be verified deterministic/manual results without validation errors",
+        invalid_facts,
+    )
 
 
 def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[LayerIssue]) -> None:
@@ -507,18 +561,45 @@ def _looks_like_access(value: Any) -> bool:
 
 
 def _looks_like_width(value: Any) -> bool:
+    """Check whether *value* is a plausible bit-width expression.
+
+    Chip specs use a wide variety of width notations beyond plain integers:
+    hex literals (``0x23``, ``0x8000_2000``), multi-width alternatives
+    (``32|64``), Chisel/Verilog parameterized expressions
+    (``UInt(logCell(TagTables))``), and bare type parameters (``t``).
+    This function errs on the side of permissiveness — it exists to catch
+    values that are clearly not widths, not to enforce a single canonical
+    format.
+    """
     text = str(value).strip()
     if _is_emptyish(text):
         return True
     import re
+    # Pure integer: zero is suspicious but not structurally invalid.
     if re.fullmatch(r"\d+", text):
-        return int(text) > 0
-    # Common HDL/spec forms: [31:0], 31:0, 512b, 1-bit, 32 bits, INT_NUM.
+        return True
+    # Hex literal: 0x8, 0x23, 0x8000_2000
+    if re.fullmatch(r"0x[0-9a-fA-F][0-9a-fA-F_]*", text):
+        return True
+    # Multi-width alternative: 32|64, 6|13|27
+    if re.fullmatch(r"\d+(\s*\|\s*\d+)+", text):
+        return True
+    # HDL bit-range: [31:0], 31:0
     if re.fullmatch(r"\[?\s*\d+\s*:\s*\d+\s*\]?", text):
         return True
+    # Width with unit suffix: 512b, 1-bit, 32 bits
     if re.search(r"\b\d+\s*-?\s*(?:b|bit|bits)\b", text, re.I):
         return True
-    return bool(re.fullmatch(r"[A-Z][A-Z0-9_]*(?:\s*[-+]\s*\d+)?", text))
+    # Uppercase constant / macro name (XLEN, DATA_WIDTH, INT_NUM)
+    if re.fullmatch(r"[A-Z][A-Z0-9_]*(?:\s*[-+]\s*\d+)?", text):
+        return True
+    # Single lowercase type parameter (t, n, w) — common in Chisel/Verilog
+    if re.fullmatch(r"[a-z]", text):
+        return True
+    # Parameterized expression: UInt(logCell(TagTables)), log2_up(NR)
+    if re.search(r"[A-Za-z_]\w*\s*\(.+\)", text):
+        return True
+    return False
 
 
 def _looks_like_number(value: Any) -> bool:

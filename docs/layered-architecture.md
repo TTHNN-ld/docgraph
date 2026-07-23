@@ -166,6 +166,12 @@ L2 不仅是"实体 + 出处"，还要有实体间的语义关系。本体对齐
 
 **溯源移出图边**：`illustrated_by` / `contains` 标 deprecated（保留节点 attrs 的 `source_block_ids` / `source_chunk_ids`），图谱边只留语义关系 + `has_bitfield`。详见 [RFC 0015](./rfcs/0015-semantic-kg-hybrid-extraction.md)。
 
+### 3.6 L2 候选与事实可信状态（ADR-017）
+
+L2 采用“宽松发现候选、严格确认事实”的可信模型。每个 node/edge 在 `attrs` 中携带 `l2_status`、`derivation` 和 `validation_issues`。Extractor 可以保留字段不完整或来自 LLM/VLM 的 candidate；只有证据可回溯、derivation 为 deterministic/manual、`verified=true` 且没有 validation error 的结果才能成为 fact。
+
+LLM/VLM 输出不能直接晋升为 fact。确定性表格 normalizer 的强结构结果在通过类型与 provenance 校验后可以晋升；旧 extractor 和第三方插件输出默认保守归类为 candidate 或 document entity。审计必须把错误晋升为 fact 视为硬错误，同时保留 candidate 供检索、复核和后续补全。详见 [RFC 0017](./rfcs/0017-l2-candidate-fact-trust-model.md)。
+
 ---
 
 ## 4. L2 抽取：从"专用正则"到"通用 schema-guided"

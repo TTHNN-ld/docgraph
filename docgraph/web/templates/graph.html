@@ -42,7 +42,16 @@
   </div>
 </form>
 
-<div id="graph-status" class="muted">加载中…</div>
+<div class="graph-header">
+  <div id="graph-status" class="muted">加载中…</div>
+  <div class="graph-toolbar" aria-label="关系图视图控制">
+    <label class="graph-label-toggle"><input type="checkbox" id="graph-labels-toggle" checked> 显示节点名称</label>
+    <button type="button" id="graph-fit" title="将全部可见节点置于视图中央">适配图谱</button>
+    <button type="button" id="graph-zoom-in" class="graph-icon-button" aria-label="放大关系图" title="放大">＋</button>
+    <button type="button" id="graph-zoom-out" class="graph-icon-button" aria-label="缩小关系图" title="缩小">−</button>
+  </div>
+</div>
+<p class="graph-help muted">左键拖拽可旋转；Shift + 左键拖拽可线性平移视图；滚轮以鼠标位置为中心缩放；点击“适配图谱”可重新居中。</p>
 <div id="graph"></div>
 
 {% endblock %}
@@ -58,6 +67,219 @@ const KIND_COLORS = {
   interrupt:'#ef4444', clock:    '#06b6d4', memory_map:'#8b5cf6',
   power_domain:'#84cc16', requirement:'#f97316', errata: '#dc2626',
 };
+let currentGraph = null;
+let graphWheelAbort = null;
+let refreshGraphLabels = null;
+let graphLabelAnimationFrame = null;
+let graphResizeObserver = null;
+
+const LABEL_PRIORITY = {
+  register: 6, module: 6, interface: 6, memory_map: 6,
+  interrupt: 5, signal: 4, pin: 4, clock: 4,
+  bitfield: 3, parameter: 3, requirement: 3,
+  section: 2, figure: 2,
+};
+
+function fitGraph(graph, duration = 500) {
+  if (graph) graph.zoomToFit(duration, 88);
+}
+
+function moveCameraAround(graph, anchor, scale, duration = 0) {
+  const camera = graph.camera();
+  const controls = graph.controls();
+  if (!camera || !controls || !controls.target) return;
+  const nextPosition = anchor.clone().add(
+    camera.position.clone().sub(anchor).multiplyScalar(scale)
+  );
+  graph.cameraPosition(nextPosition, anchor, duration);
+  controls.target.copy(anchor);
+  controls.update();
+}
+
+function installPointerZoom(graph, elem) {
+  graphWheelAbort?.abort();
+  graphWheelAbort = new AbortController();
+  elem.addEventListener('wheel', event => {
+    const camera = graph.camera();
+    const controls = graph.controls();
+    if (!camera || !controls || !controls.target) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const rect = elem.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    const Vector3 = camera.position.constructor;
+    const target = controls.target.clone();
+    const rayDirection = new Vector3(x, y, 0.5)
+      .unproject(camera)
+      .sub(camera.position)
+      .normalize();
+    const cameraDirection = new Vector3();
+    camera.getWorldDirection(cameraDirection);
+    const denominator = cameraDirection.dot(rayDirection);
+    if (Math.abs(denominator) < 0.0001) return;
+    const distance = target.clone().sub(camera.position).dot(cameraDirection) / denominator;
+    if (distance <= 0) return;
+
+    const anchor = camera.position.clone().add(rayDirection.multiplyScalar(distance));
+    const delta = Math.max(-120, Math.min(120, event.deltaY));
+    const scale = Math.exp(delta * 0.0015);
+    const nextTarget = anchor.clone().add(target.sub(anchor).multiplyScalar(scale));
+    const nextPosition = anchor.clone().add(
+      camera.position.clone().sub(anchor).multiplyScalar(scale)
+    );
+    graph.cameraPosition(nextPosition, nextTarget);
+    controls.target.copy(nextTarget);
+    controls.update();
+  }, { capture: true, passive: false, signal: graphWheelAbort.signal });
+
+}
+
+function configureNavigationControls(graph, elem) {
+  const controls = graph.controls();
+  if (!controls || !controls.mouseButtons) return;
+  // three.js MOUSE enum: ROTATE=0, DOLLY=1, PAN=2.
+  const ROTATE = 0;
+  controls.mouseButtons.LEFT = ROTATE;
+  elem.addEventListener('contextmenu', event => event.preventDefault(), {
+    signal: graphWheelAbort.signal,
+  });
+}
+
+function installLinearPan(graph, elem) {
+  let pan = null;
+
+  elem.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.shiftKey) return;
+    const camera = graph.camera();
+    const controls = graph.controls();
+    if (!camera || !controls || !controls.target) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    camera.updateMatrixWorld();
+    const Vector3 = camera.position.constructor;
+    const distance = camera.position.distanceTo(controls.target);
+    const pixelsToWorld = (2 * Math.tan((camera.fov || 60) * Math.PI / 360) * distance)
+      / elem.getBoundingClientRect().height;
+    pan = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      cameraPosition: camera.position.clone(),
+      target: controls.target.clone(),
+      right: new Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize(),
+      up: new Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize(),
+      pixelsToWorld,
+    };
+    controls.enabled = false;
+    elem.classList.add('graph-panning');
+    elem.setPointerCapture(event.pointerId);
+  }, { capture: true, signal: graphWheelAbort.signal });
+
+  elem.addEventListener('pointermove', event => {
+    if (!pan || event.pointerId !== pan.pointerId) return;
+    const camera = graph.camera();
+    const controls = graph.controls();
+    if (!camera || !controls) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const offset = pan.right.clone().multiplyScalar(-(event.clientX - pan.x) * pan.pixelsToWorld)
+      .add(pan.up.clone().multiplyScalar((event.clientY - pan.y) * pan.pixelsToWorld));
+    camera.position.copy(pan.cameraPosition).add(offset);
+    controls.target.copy(pan.target).add(offset);
+    camera.lookAt(controls.target);
+  }, { capture: true, signal: graphWheelAbort.signal });
+
+  const finishPan = event => {
+    if (!pan || event.pointerId !== pan.pointerId) return;
+    const controls = graph.controls();
+    if (controls) controls.enabled = true;
+    if (elem.hasPointerCapture(event.pointerId)) elem.releasePointerCapture(event.pointerId);
+    pan = null;
+    elem.classList.remove('graph-panning');
+  };
+  elem.addEventListener('pointerup', finishPan, { capture: true, signal: graphWheelAbort.signal });
+  elem.addEventListener('pointercancel', finishPan, { capture: true, signal: graphWheelAbort.signal });
+}
+
+function createGraphLabels(nodes, elem) {
+  const layer = document.createElement('div');
+  layer.className = 'graph-label-layer';
+  layer.style.zIndex = '10';
+  const labels = nodes.filter(node => node.name).map(node => {
+    const label = document.createElement('span');
+    label.className = `graph-node-label graph-node-label-${node.kind}`;
+    label.textContent = `${node.kind} · ${node.name}`;
+    layer.appendChild(label);
+    return { node, label, priority: LABEL_PRIORITY[node.kind] || 1 };
+  });
+  elem.appendChild(layer);
+
+  const update = () => {
+    const enabled = document.getElementById('graph-labels-toggle')?.checked;
+    layer.hidden = !enabled;
+    if (!enabled) return;
+    if (!currentGraph) return;
+    const layoutNodes = new Map(
+      (currentGraph.graphData()?.nodes || []).map(node => [node.id, node])
+    );
+    const rect = elem.getBoundingClientRect();
+    const visible = [];
+    for (const item of labels) {
+      const layoutNode = layoutNodes.get(item.node.id) || item.node;
+      if (!Number.isFinite(layoutNode.x) || !Number.isFinite(layoutNode.y)) continue;
+      const screen = currentGraph.graph2ScreenCoords(layoutNode.x, layoutNode.y, layoutNode.z || 0);
+      const x = screen.x;
+      const y = screen.y;
+      if (x < 0 || x > rect.width || y < 0 || y > rect.height) continue;
+      visible.push({ ...item, x, y });
+    }
+
+    visible.sort((a, b) => b.priority - a.priority || a.node.name.localeCompare(b.node.name));
+    const occupied = [];
+    for (const item of visible) {
+      const width = Math.min(210, 18 + item.label.textContent.length * 6.5);
+      const box = { left: item.x - width / 2, right: item.x + width / 2, top: item.y - 22, bottom: item.y - 4 };
+      const overlaps = occupied.some(other => !(box.right < other.left || box.left > other.right || box.bottom < other.top || box.top > other.bottom));
+      item.label.hidden = overlaps;
+      if (!overlaps) {
+        item.label.style.transform = `translate(${item.x}px, ${item.y}px) translate(-50%, -125%)`;
+        occupied.push(box);
+      }
+    }
+    const rendered = new Set(visible.map(item => item.label));
+    for (const item of labels) {
+      if (!rendered.has(item.label)) item.label.hidden = true;
+    }
+  };
+  return update;
+}
+
+function startGraphLabelRenderLoop(graph, update) {
+  if (graphLabelAnimationFrame !== null) {
+    cancelAnimationFrame(graphLabelAnimationFrame);
+  }
+  const renderFrame = () => {
+    if (currentGraph !== graph) return;
+    update();
+    graphLabelAnimationFrame = requestAnimationFrame(renderFrame);
+  };
+  renderFrame();
+}
+
+function bindGraphViewport(graph, elem) {
+  const resize = () => {
+    if (currentGraph !== graph) return;
+    graph.width(elem.clientWidth).height(elem.clientHeight);
+    refreshGraphLabels?.();
+  };
+  graphResizeObserver?.disconnect();
+  graphResizeObserver = new ResizeObserver(resize);
+  graphResizeObserver.observe(elem);
+  resize();
+}
 
 function fetchGraph() {
   const nodeKinds = [...document.querySelectorAll('input[name=node_kind]:checked')].map(cb => cb.value).join(',');
@@ -88,7 +310,7 @@ function render(data) {
   const elem = document.getElementById('graph');
   elem.innerHTML = '';
 
-  ForceGraph3D()(elem)
+  const graph = ForceGraph3D()(elem)
     .graphData({ nodes: data.nodes, links })
     .backgroundColor('#fafafa')
     .nodeRelSize(4)
@@ -107,9 +329,27 @@ function render(data) {
         window.location = '/search?q=' + encodeURIComponent(d.name);
       }
     });
+  currentGraph = graph;
+  bindGraphViewport(graph, elem);
+  installPointerZoom(graph, elem);
+  configureNavigationControls(graph, elem);
+  installLinearPan(graph, elem);
+  refreshGraphLabels = createGraphLabels(data.nodes, elem);
+  graph.onEngineStop(() => {
+    fitGraph(graph, 500);
+  });
+  startGraphLabelRenderLoop(graph, refreshGraphLabels);
 }
 
 function initGraphUI() {
+  document.getElementById('graph-labels-toggle').addEventListener('change', () => refreshGraphLabels?.());
+  document.getElementById('graph-fit').addEventListener('click', () => fitGraph(currentGraph));
+  document.getElementById('graph-zoom-in').addEventListener('click', () => {
+    if (currentGraph) moveCameraAround(currentGraph, currentGraph.controls().target.clone(), 0.8, 180);
+  });
+  document.getElementById('graph-zoom-out').addEventListener('click', () => {
+    if (currentGraph) moveCameraAround(currentGraph, currentGraph.controls().target.clone(), 1.25, 180);
+  });
   document.getElementById('graph-controls').addEventListener('submit', e => {
     e.preventDefault();
     fetchGraph().then(render);

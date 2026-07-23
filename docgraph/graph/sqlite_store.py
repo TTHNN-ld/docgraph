@@ -924,7 +924,11 @@ def _merge_attrs(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str
     if sources:
         attrs["sources"] = sources
 
+    _merge_l2_trust_metadata(attrs, existing, incoming)
+
     for key, value in incoming.items():
+        if key in {"l2_status", "derivation", "derivation_history", "validation_issues"}:
+            continue
         if key in {"source_block_ids", "source_chunk_ids"}:
             attrs[key] = _dedupe_preserve_order([*_as_list(attrs.get(key)), *_as_list(value)])
             continue
@@ -943,6 +947,37 @@ def _merge_attrs(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str
             attrs[key] = value
 
     return attrs
+
+
+def _merge_l2_trust_metadata(
+    attrs: dict[str, Any],
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+) -> None:
+    """Preserve the strongest trustworthy observation during evidence merging."""
+
+    rank = {
+        "rejected": 0,
+        "document_entity": 1,
+        "candidate": 1,
+        "needs_review": 2,
+        "fact": 3,
+        "conflict": 4,
+    }
+    existing_status = str(existing.get("l2_status") or "candidate")
+    incoming_status = str(incoming.get("l2_status") or "candidate")
+    chosen = incoming if rank.get(incoming_status, 0) > rank.get(existing_status, 0) else existing
+    attrs["l2_status"] = chosen.get("l2_status", "candidate")
+    attrs["derivation"] = chosen.get("derivation") or existing.get("derivation") or incoming.get("derivation")
+    attrs["validation_issues"] = list(chosen.get("validation_issues") or [])
+
+    history: list[dict[str, Any]] = []
+    for source in (existing, incoming):
+        for derivation in [*_as_list(source.get("derivation_history")), source.get("derivation")]:
+            if isinstance(derivation, dict) and derivation not in history:
+                history.append(derivation)
+    if history:
+        attrs["derivation_history"] = history
 
 
 def _merge_evidence(existing: Evidence, incoming: Evidence) -> Evidence:

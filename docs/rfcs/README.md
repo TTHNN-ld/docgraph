@@ -15,5 +15,6 @@
 |---|---|---|
 | [0015](./0015-semantic-kg-hybrid-extraction.md) | 语义知识图谱：IP-XACT 对齐本体与混合抽取 | Accepted |
 | [0016](./0016-adaptive-l1-context.md) | 按上下文预算提供 L1 文档视图 | Accepted |
+| [0017](./0017-l2-candidate-fact-trust-model.md) | L2 候选与事实可信状态模型 | Accepted |
 
 历史 RFC 会在 DESIGN.md / docs/roadmap.md 的 ADR 部分总结链接。

@@ -53,23 +53,18 @@ class GlossaryExtractor:
         # 找疑似术语章节：标题命中 _GLOSSARY_TITLE，或页内行集中匹配
         candidate_pages = self._find_glossary_pages(doc)
         for page in candidate_pages:
+            # 段落/列表行（原有启发式）
             for abbr, full in self._extract_lines(page):
                 if abbr in seen:
                     continue
                 seen.add(abbr)
-                node = Node(
-                    id=make_node_id(ctx.family, NodeKind.TERM, abbr, doc_id=doc.doc_id),
-                    kind=NodeKind.TERM,
-                    name=abbr,
-                    qualified_name=abbr,
-                    aliases=[full],
-                    doc_id=doc.doc_id,
-                    location=Location(page=page.page_no),
-                    attrs={"full": full, "source": "heuristic"},
-                    summary=f"{abbr}: {full}"[:120],
-                    hash=content_hash(f"{abbr}|{full}"),
-                )
-                nodes.append(node)
+                nodes.append(self._make_term_node(abbr, full, page.page_no, doc, ctx))
+            # 表格行：术语表常以表格形式出现（缩写 | 全称 | 描述）
+            for abbr, full in self._extract_table_lines(page):
+                if abbr in seen:
+                    continue
+                seen.add(abbr)
+                nodes.append(self._make_term_node(abbr, full, page.page_no, doc, ctx))
 
         return ExtractResult(
             nodes=nodes,
@@ -96,15 +91,29 @@ class GlossaryExtractor:
             if p.page_no in toc_pages:
                 out.append(p)
                 continue
-            # 兜底：页面内命中率高的也算
-            hits = sum(
-                1
-                for text in _page_text_blocks(p)
-                if _GLOSS_LINE.match(text.split("\n", 1)[0].strip())
-            )
-            if hits >= 5:
+            # 兜底：页面内命中率高的也算（段落行 + 表格行）
+            text_lines = list(self._extract_lines(p))
+            table_lines = list(self._extract_table_lines(p))
+            if len(text_lines) + len(table_lines) >= 5:
                 out.append(p)
         return out
+
+    def _make_term_node(
+        self, abbr: str, full: str, page_no: int,
+        doc: ParsedDoc, ctx: ExtractContext,
+    ) -> Node:
+        return Node(
+            id=make_node_id(ctx.family, NodeKind.TERM, abbr, doc_id=doc.doc_id),
+            kind=NodeKind.TERM,
+            name=abbr,
+            qualified_name=abbr,
+            aliases=[full],
+            doc_id=doc.doc_id,
+            location=Location(page=page_no),
+            attrs={"full": full, "source": "heuristic"},
+            summary=f"{abbr}: {full}"[:120],
+            hash=content_hash(f"{abbr}|{full}"),
+        )
 
     def _extract_lines(self, page: ParsedPage):
         for text in _page_text_blocks(page):
@@ -120,6 +129,40 @@ class GlossaryExtractor:
                     continue
                 yield abbr, full
 
+    def _extract_table_lines(self, page: ParsedPage):
+        """从表格块中提取缩写-全称对。
+
+        术语表常以表格形式出现，列标题包含「缩写/全称」或
+        「Abbreviation/Full Name」等。
+        """
+        for block in sorted(page.blocks, key=lambda b: b.reading_order):
+            if block.kind != BlockKind.TABLE:
+                continue
+            if block.table is None:
+                continue
+            headers = block.table.headers
+            rows = block.table.rows
+            if not headers or not rows:
+                continue
+            # 找缩略词列和全称列
+            abbr_col = _find_abbreviation_column(headers)
+            full_col = _find_full_name_column(headers)
+            if abbr_col is None or full_col is None:
+                continue
+            for row in rows:
+                if len(row) <= max(abbr_col, full_col):
+                    continue
+                abbr = (row[abbr_col] or "").strip()
+                full = (row[full_col] or "").strip()
+                if len(abbr) < 2:
+                    continue
+                if not full:
+                    continue
+                # 排除明显非术语的（数字开头或过长）
+                if abbr[0].isdigit():
+                    continue
+                yield abbr, full
+
 
 def _page_text_blocks(page: ParsedPage) -> list[str]:
     kinds = {BlockKind.HEADING, BlockKind.PARAGRAPH, BlockKind.LIST}
@@ -128,3 +171,32 @@ def _page_text_blocks(page: ParsedPage) -> list[str]:
         for block in sorted(page.blocks, key=lambda b: b.reading_order)
         if block.kind in kinds and block.text
     ]
+
+
+# 表头关键词：缩略词列
+_ABBR_HEADER = re.compile(
+    r"(?:abbreviations?|acronyms?|缩写|简称|abbr\.?)",
+    re.IGNORECASE,
+)
+
+# 表头关键词：全称列
+_FULL_HEADER = re.compile(
+    r"(?:full\s*(?:name|form)|全称|术语|description|描述|meaning|含义)",
+    re.IGNORECASE,
+)
+
+
+def _find_abbreviation_column(headers: list[str]) -> int | None:
+    """在表头中寻找缩略词/缩写列。"""
+    for i, h in enumerate(headers):
+        if _ABBR_HEADER.search(h):
+            return i
+    return None
+
+
+def _find_full_name_column(headers: list[str]) -> int | None:
+    """在表头中寻找全称列。"""
+    for i, h in enumerate(headers):
+        if _FULL_HEADER.search(h):
+            return i
+    return None

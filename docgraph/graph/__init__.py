@@ -3,6 +3,9 @@ from docgraph.graph.schema import (
     BBox,
     BitFieldDef,
     Chunk,
+    Derivation,
+    DerivationConfidence,
+    DerivationMethod,
     DocMetadata,
     DocType,
     Edge,
@@ -10,6 +13,7 @@ from docgraph.graph.schema import (
     Evidence,
     ExtractResult,
     ExtractStats,
+    L2Status,
     Location,
     Node,
     NodeKind,
@@ -21,6 +25,8 @@ from docgraph.graph.schema import (
     RegisterDef,
     TextBlock,
     TocEntry,
+    ValidationIssue,
+    ValidationSeverity,
 )
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.graph.store import GraphStore, NodeQuery, Subgraph
@@ -29,6 +35,9 @@ __all__ = [
     "BBox",
     "BitFieldDef",
     "Chunk",
+    "Derivation",
+    "DerivationConfidence",
+    "DerivationMethod",
     "DocMetadata",
     "DocType",
     "Edge",
@@ -37,6 +46,7 @@ __all__ = [
     "ExtractResult",
     "ExtractStats",
     "GraphStore",
+    "L2Status",
     "Location",
     "Node",
     "NodeKind",
@@ -51,4 +61,6 @@ __all__ = [
     "Subgraph",
     "TextBlock",
     "TocEntry",
+    "ValidationIssue",
+    "ValidationSeverity",
 ]

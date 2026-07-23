@@ -150,6 +150,7 @@ def _make_ie_node(
         "inferred_from": "llm_ie",
         "llm_confidence": confidence,
         "source_chunk_ids": [chunk.id],
+        "source_block_ids": chunk.block_ids,
         "name": name,
     }
     if pending:
