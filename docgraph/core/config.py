@@ -14,6 +14,33 @@ class ProjectConfig(BaseModel):
     description: str = ""
 
 
+class MinerUConfig(BaseModel):
+    """MinerU execution settings.
+
+    ``model_server_url`` is the OpenAI-compatible VLM inference endpoint used
+    by MinerU's ``*-http-client`` backends. It is deliberately distinct from
+    MinerU's document-level ``api_url``.
+    """
+
+    backend: Literal[
+        "pipeline",
+        "vlm-engine",
+        "hybrid-engine",
+        "vlm-http-client",
+        "hybrid-http-client",
+    ] = "vlm-http-client"
+    model_server_url: str | None = None
+    model_server_url_env: str = "MINERU_MODEL_SERVER_URL"
+    model: str | None = None
+    model_env: str = "MINERU_VL_MODEL_NAME"
+    api_key: str | None = None
+    api_key_env: str = "MINERU_VL_API_KEY"
+    timeout_seconds: int = Field(default=3600, ge=1)
+    formula: bool = True
+    table: bool = True
+    image_analysis: bool = True
+
+
 class ParserFormatConfig(BaseModel):
     primary: str
     fallback: list[str] = Field(default_factory=list)
@@ -22,6 +49,7 @@ class ParserFormatConfig(BaseModel):
     page_failure_strategy: str = "skip"
     device: str = "cpu"
     ocr_device: str | None = None
+    mineru: MinerUConfig = Field(default_factory=MinerUConfig)
 
     @field_validator("quality")
     @classmethod
@@ -288,6 +316,16 @@ embeddings:
   # dim: 1536
   # api_key: sk-...
   # base_url: https://api.example.com/v1
+
+# Optional: MinerU keeps PDF orchestration local and sends only VLM inference
+# to this OpenAI-compatible model server (vLLM/SGLang/MinerU openai-server).
+# parsers:
+#   pdf:
+#     mineru:
+#       backend: vlm-http-client
+#       model_server_url: http://gpu-server:30000
+#       model: MinerU2.5-2509-1.2B
+#       api_key_env: MINERU_VL_API_KEY
 
 # Optional: override the automatic PDF router.
 # parsers:

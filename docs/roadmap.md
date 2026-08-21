@@ -9,6 +9,7 @@
 - **L2 实体增强**：通过 schema registry + `TableEntityExtractor` 抽取 register、bitfield、pin、signal、interface、requirement、memory_map、interrupt 等实体；节点必须带 `source_block_ids`、`source_chunk_ids` 和 evidence。
 - **质量门禁**：`docgraph doctor --strict` 检查 L0/L1 完整性、FTS 一致性、表格/图证据、L2 provenance 和强结构约束；`docgraph l2 audit` 与 `docgraph l2 eval` 用于候选覆盖和 golden 评估。
 - **安装与配置**：用户级配置位于 `~/.docgraph/`；项目级 `docgraph.yaml` 可选；项目 `.docgraph/` 只保存生成数据库、缓存、manifest、日志和导出结果。
+- **MinerU 远程推理**：MinerU 3.x adapter 可通过 `vlm-http-client` / `hybrid-http-client` 使用独立 OpenAI-compatible VLM 服务，同时在 DocGraph 侧保持 `middle.json` 到 L0 的统一归一化和 parser fallback。
 - **默认体验**：`docgraph init` 创建项目运行目录与用户配置；普通项目无需维护配置文件，默认扫描 `docs/**/*.pdf` 与 `spec/**/*.pdf`，PDF 默认使用 PyMuPDF。
 
 ## 近期工程重点

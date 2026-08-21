@@ -239,8 +239,9 @@ def setup_parsers(
             continue
         if name == "mineru":
             console.print(
-                "[yellow]MinerU currently uses DocGraph's legacy magic-pdf adapter; "
-                "install it only for compatible environments.[/yellow]"
+                "[cyan]MinerU uses the 3.x orchestration client. Configure "
+                "parsers.pdf.mineru.model_server_url for an OpenAI-compatible "
+                "remote VLM backend.[/cyan]"
             )
         result = ensure_parser_dependency(name, "install")
         if result.available:

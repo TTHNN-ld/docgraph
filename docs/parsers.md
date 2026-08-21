@@ -94,7 +94,10 @@ class TableData(BaseModel):
 
 > **设计要点**：PDF 默认使用 `auto` 路由。PyMuPDF 先做轻量预检和兜底；Docling 处理可复制文本质量好的 born-digital / Word 导出 PDF；MinerU 处理扫描、图片密集和 OCR 场景。Marker、Unstructured、MarkItDown 等不进入常用主链路，可作为离线评测或插件后端。
 
-MinerU 的解析缓存、middle JSON 和导出的图片属于项目生成物，放在 `<project>/.docgraph/cache/`；模型权重属于用户级共享资源，默认放在 `~/.docgraph/mineru-models/`，可用 `DOCGRAPH_MINERU_MODELS_DIR` 覆盖，避免每个项目重复下载模型。
+MinerU 的解析缓存、middle JSON 和导出的图片属于项目生成物，放在
+`<project>/.docgraph/cache/`。使用 `vlm-http-client` / `hybrid-http-client` 时，
+VLM 权重只存在于独立模型服务器；DocGraph 所在机器负责文档编排、结果下载和
+`ParsedDoc/L0 Blocks` 归一化。
 
 ## 4. Parser 选择策略
 
@@ -140,7 +143,7 @@ parsers:
 ```bash
 docgraph setup                            # 检查 parser、LLM/VLM、embedding 和回退状态
 docgraph setup parsers                    # 安装推荐项：Docling + Office/Markdown
-docgraph setup parsers --parser mineru   # 显式安装旧 magic-pdf adapter 依赖
+docgraph setup parsers --parser mineru   # 安装 MinerU 3.x 编排客户端
 docgraph build --install-missing          # 授权本次构建补装缺失 extra
 docgraph build --strict-parsers           # 禁止回退，适合质量门禁
 ```
@@ -197,11 +200,63 @@ PyMuPDF / Docling / MinerU / XLSX
 
 - PyMuPDF：优先填 `table_source=cells`
 - Docling：优先填 `table_source=cells`，保留 HTML、bbox、图片块和图题作为追溯证据
-- MinerU：当前能稳定提供版面分类、bbox、caption、表格/图片裁剪；若未启用表格识别，则填 `table_source=image`
-- MinerU：当前 adapter 仍依赖旧 `magic_pdf` API；现代 MinerU API 迁移完成前不列入推荐安装
+- MinerU：使用 3.x `middle.json` 提供版面分类、bbox、caption、表格/图片裁剪；若未取得表格结构，则填 `table_source=image`
+- MinerU：Parser adapter 始终在 DocGraph 侧完成 L0 归一化；本地 engine 与远程 http-client backend 不改变下游契约
 - XLSX：直接填 `cells`
 
-### 4.4 VLM 调用成本控制
+### 4.4 MinerU 远程模型服务
+
+MinerU 把文档解析编排和 VLM 推理解耦。DocGraph 接入的是 OpenAI-compatible
+模型服务，而不是文档级 `mineru-api`：
+
+```text
+DocGraph → MinerU 3.x orchestration client → OpenAI-compatible model server
+                                      └────→ middle.json → ParsedDoc / L0
+```
+
+模型服务可由 MinerU 自带的 vLLM 包装器启动：
+
+```bash
+mineru-openai-server --engine vllm --host 0.0.0.0 --port 30000
+```
+
+也可以使用能够正确加载目标 MinerU VLM、实现兼容协议的 vLLM 或 SGLang
+服务。推荐在用户级 `~/.docgraph/config.yaml` 配置服务地址和凭证：
+
+```yaml
+parsers:
+  pdf:
+    mineru:
+      backend: vlm-http-client       # 或 hybrid-http-client
+      model_server_url: http://gpu-server:30000
+      model: MinerU2.5-2509-1.2B
+      api_key_env: MINERU_VL_API_KEY
+      timeout_seconds: 3600
+      formula: true
+      table: true
+      image_analysis: true
+```
+
+选择 `primary: mineru` 或由 `auto` 路由到 MinerU 后，adapter 调用 MinerU 3.x
+CLI。`model_server_url` 只用于模型推理；它对应 MinerU CLI 的 `--url`，不是
+文档级 `--api-url`。以下环境变量可作为配置兼容路径：
+
+```bash
+MINERU_MODEL_SERVER_URL=http://gpu-server:30000
+MINERU_VL_MODEL_NAME=MinerU2.5-2509-1.2B
+MINERU_VL_API_KEY=...
+```
+
+`vlm-http-client` 不要求 DocGraph 机器安装 PyTorch 或保存 VLM 权重。
+`hybrid-http-client` 仍会在客户端执行 MinerU 的小模型 pipeline，因此需要安装
+相应本地依赖。`pipeline`、`vlm-engine` 和 `hybrid-engine` 是本地执行模式，需按
+MinerU 官方安装说明补齐 `pipeline` / `vlm` 依赖。
+
+远程调用失败、超时或未产生 `middle.json` 时，错误进入现有
+`parser_attempts`，并按 `runtime.parser_failure` 和 PDF fallback 链处理，不会写入
+不完整的 L0/L1。
+
+### 4.5 VLM 调用成本控制
 
 默认 `table_entity` 最多调用 **8 次** VLM 兜底，避免大 PDF 一次性触发几十页视觉调用。可用环境变量覆盖：
 

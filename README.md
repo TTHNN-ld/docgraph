@@ -36,8 +36,9 @@ parser 时，执行 `docgraph setup parsers`；需要在一次构建中明确授
 
 安装 parser 不等于预下载模型。Docling 在首次实际解析时由上游下载并缓存模型；
 模型下载或初始化失败也会触发 parser 回退，并记录在 `.docgraph/manifest.json`。
-当前 MinerU 接口仍是兼容旧版 `magic-pdf` 的 adapter，需显式执行
-`docgraph setup parsers --parser mineru`；在升级到 MinerU 当前 API 前不作为推荐安装项。
+MinerU adapter 使用 3.x 客户端。可将 PDF 编排与 L0 归一化保留在 DocGraph
+所在机器，只把 VLM 推理发往独立的 vLLM/SGLang/OpenAI-compatible 模型服务；
+配置方式见 [Parser 文档](docs/parsers.md#44-mineru-远程模型服务)。
 
 ---
 

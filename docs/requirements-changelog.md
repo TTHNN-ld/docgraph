@@ -10,6 +10,19 @@
 - **影响范围**：涉及的代码、配置、文档或使用方式
 - **状态**：Accepted / Implemented / Superseded
 
+## 2026-08-21：MinerU 远程 VLM 推理服务
+
+- **需求**：MinerU 的视觉模型应能像 vLLM/SGLang 服务一样独立部署，避免 DocGraph 构建机器承担 VLM 权重和 GPU 推理。
+- **决策**：
+  - MinerU adapter 升级到 3.x 客户端和结构化输出。
+  - DocGraph 保留 PDF 编排、解析产物缓存和 `middle.json → ParsedDoc/L0` 归一化。
+  - `vlm-http-client` / `hybrid-http-client` 通过 `model_server_url` 连接 OpenAI-compatible 模型服务。
+  - `model_server_url` 明确表示模型推理地址，不与文档级 MinerU `api_url` 混用。
+  - 模型名、API key 和服务地址支持用户级配置及独立环境变量；凭证不进入子进程命令行和缓存键。
+  - 远程推理失败继续使用现有 parser fallback 和 manifest 审计链路，不写入不完整 L0/L1。
+- **影响范围**：MinerU Parser、依赖管理、Parser 配置、缓存、测试、README、Parser/配置文档。
+- **状态**：Implemented。
+
 ## 2026-07-14：小语料直接读取完整 L1
 
 - **需求**：文档较少、L2 实体和关系还不充分时，Agent 应能直接取得完整 L1，避免只靠实体图谱漏掉信息。

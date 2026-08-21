@@ -27,8 +27,9 @@ API key、base URL 和模型名建议直接写在 `~/.docgraph/config.yaml`。�
 普通项目可以不创建 `docgraph.yaml`。默认会扫描 `docs/**/*.pdf` 和
 `spec/**/*.pdf`，PDF 使用自动路由：PyMuPDF 先做轻量预检，born-digital /
 Word 导出 PDF 优先 Docling，扫描或图片密集 PDF 优先 MinerU，最后由
-PyMuPDF 兜底。MinerU 是可选重型依赖；只有安装 `mineru` extra 后才会实际
-使用，否则自动回退到 Docling/PyMuPDF。其他行为使用内置
+PyMuPDF 兜底。MinerU 是可选依赖；只有安装 `mineru` extra 后才会实际
+使用，否则自动回退到 Docling/PyMuPDF。远程模型模式不在本机保存 VLM 权重。
+其他行为使用内置
 parser/extractor/storage 默认值。
 
 Word、Excel 和 Markdown parser 由 `documents` extra 提供依赖，且需在
@@ -82,6 +83,12 @@ parsers:
     fallback: []
     quality: balanced               # fast | balanced | accurate
     per_page_timeout: 60
+    mineru:
+      backend: vlm-http-client
+      model_server_url_env: MINERU_MODEL_SERVER_URL
+      model_env: MINERU_VL_MODEL_NAME
+      api_key_env: MINERU_VL_API_KEY
+      timeout_seconds: 3600
   docx: { primary: docx }
   xlsx: { primary: xlsx }
   md:   { primary: markdown }
@@ -111,9 +118,10 @@ runtime:
   parser_failure: fallback
 ```
 
-模型权重不会在 `pip install` 阶段下载。Docling/MinerU adapter 首次实际运行时由
-上游组件下载并缓存；下载失败按 `runtime.parser_failure` 处理。MinerU 模型目录默认
-复用 `~/.docgraph/mineru-models/`，项目内 `.docgraph/cache/` 只保存解析中间产物。
+模型权重不会在 `pip install` 阶段下载。Docling 或 MinerU 本地 backend 首次实际
+运行时可能由上游组件下载并缓存；下载失败按 `runtime.parser_failure` 处理。
+MinerU http-client backend 的 VLM 权重位于模型服务器，项目内
+`.docgraph/cache/` 只保存解析中间产物。
 
 ## 用户级示例：`~/.docgraph/config.yaml`
 
@@ -141,6 +149,14 @@ embeddings:
   dim: 1024
   api_key: sk-...
   base_url: https://ark.cn-beijing.volces.com/api/v3
+
+parsers:
+  pdf:
+    mineru:
+      backend: vlm-http-client
+      model_server_url: http://gpu-server:30000
+      model: MinerU2.5-2509-1.2B
+      api_key_env: MINERU_VL_API_KEY
 
 cost:
   budget_per_build_usd: 5.0
@@ -178,6 +194,22 @@ PDF 支持 `quality` 档位：
 | `accurate` | 复杂版面复核 | 自动路由仍匹配文档类型；无法判断时偏向 MinerU 的高保真/OCR 路径 |
 
 日常只需要 `docgraph build`。需要显式覆盖时使用 `docgraph build --quality fast|balanced|accurate`；质量检查统一使用 `docgraph doctor`。
+
+`parsers.pdf.mineru` 控制 MinerU 3.x backend：
+
+| 字段 | 说明 |
+|---|---|
+| `backend` | `vlm-http-client`（默认）、`hybrid-http-client`，或 MinerU 本地 `pipeline` / `vlm-engine` / `hybrid-engine` |
+| `model_server_url` | OpenAI-compatible VLM 服务地址，对应 MinerU `--url`，不是文档级 `--api-url` |
+| `model_server_url_env` | 服务地址环境变量名，默认 `MINERU_MODEL_SERVER_URL` |
+| `model` / `model_env` | 远程服务中的模型名；环境变量默认 `MINERU_VL_MODEL_NAME` |
+| `api_key` / `api_key_env` | 模型服务凭证；环境变量默认 `MINERU_VL_API_KEY` |
+| `timeout_seconds` | 单文档等待上限，默认 3600 秒 |
+| `formula` / `table` / `image_analysis` | MinerU 公式、表格和图像分析开关 |
+
+服务地址、模型名和凭证建议放在用户级配置；项目级配置只声明是否选择 MinerU
+及 fallback 策略。`vlm-http-client` 让 DocGraph 本机保留 PDF 编排和 L0
+归一化，仅把 VLM 推理发往 vLLM/SGLang/MinerU OpenAI-compatible 服务。
 
 ### `extractors.enabled`
 

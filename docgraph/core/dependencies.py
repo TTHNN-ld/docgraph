@@ -45,10 +45,11 @@ PARSER_DEPENDENCIES: dict[str, ParserDependency] = {
     ),
     "mineru": ParserDependency(
         "mineru",
-        "magic_pdf",
         "mineru",
-        "MinerU (legacy magic-pdf adapter)",
-        "MinerU may download large model artifacts on first use.",
+        "mineru",
+        "MinerU 3.x client",
+        "MinerU local backends may download model artifacts on first use; "
+        "http-client backends keep VLM inference on the configured model server.",
     ),
     "marker": ParserDependency("marker", "marker", "marker", "Marker"),
     "docx": ParserDependency("docx", "docx", "documents", "python-docx"),

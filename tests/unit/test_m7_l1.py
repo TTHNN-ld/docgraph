@@ -212,18 +212,6 @@ def test_mineru_table_recognition_is_disabled_only_for_fast_quality():
     assert _table_enabled_for_quality("accurate") is True
 
 
-def test_mineru_models_dir_is_user_level(monkeypatch, tmp_path):
-    from docgraph.parsers.mineru_parser import _mineru_models_dir
-
-    custom = tmp_path / "shared-mineru-models"
-    monkeypatch.setenv("DOCGRAPH_MINERU_MODELS_DIR", str(custom))
-    assert _mineru_models_dir() == custom
-
-    monkeypatch.delenv("DOCGRAPH_MINERU_MODELS_DIR")
-    assert _mineru_models_dir().name == "mineru-models"
-    assert _mineru_models_dir().parent.name == ".docgraph"
-
-
 # ---------------------------------------------------------------------------
 # Chunker
 # ---------------------------------------------------------------------------

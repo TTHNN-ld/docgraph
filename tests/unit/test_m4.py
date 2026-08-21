@@ -955,8 +955,13 @@ def test_marker_parser_basics():
     assert not p.can_parse(Path("x.docx"))
 
 
-def test_mineru_parser_basics():
+def test_mineru_parser_basics(monkeypatch):
+    from docgraph.parsers import mineru_parser
     from docgraph.parsers.mineru_parser import MinerUParser
+
+    monkeypatch.setattr(mineru_parser, "find_spec", lambda name: object() if name == "mineru" else None)
+    monkeypatch.setattr(mineru_parser.shutil, "which", lambda name: "/bin/mineru" if name == "mineru" else None)
     p = MinerUParser()
     assert p.name == "mineru"
-    assert p.can_parse(Path("x.pdf")) is (find_spec("magic_pdf") is not None)
+    assert p.can_parse(Path("x.pdf"))
+    assert not p.can_parse(Path("x.docx"))

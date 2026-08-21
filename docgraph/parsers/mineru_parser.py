@@ -1,31 +1,22 @@
-"""MinerU PDF parser adapter.
+"""MinerU 3.x PDF parser adapter.
 
-MinerU (https://github.com/opendatalab/MinerU) 是上海 AI Lab 开源的高精度
-PDF parser，对中文混排、公式、复杂表格识别效果好。
-
-依赖更重（detectron2 / paddle / 模型 ~4GB），按需 import。
-
-安装：
-  pip install magic-pdf[full]
-  # 此 adapter 面向 magic-pdf 1.x；MinerU 2.x+ 使用了不同 API。
-
-使用：
-  config.yaml:
-    parsers:
-      pdf:
-        primary: mineru
-        fallback: [docling, pymupdf]
+The adapter runs MinerU's orchestration client and normalizes its ``middle.json``
+into DocGraph's L0 contract. MinerU may execute locally, or keep document
+orchestration local while sending VLM inference to an OpenAI-compatible model
+server through the official ``vlm-http-client``/``hybrid-http-client`` backend.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
-from docgraph.core.config import user_docgraph_dir
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import (
     BBox,
@@ -45,197 +36,179 @@ log = get_logger(__name__)
 
 
 class MinerUParser:
-    """基于 magic-pdf (MinerU) 的 PDF parser。
+    """Use MinerU 3.x and normalize its structured output to ``ParsedDoc``."""
 
-    通过 magic-pdf 1.x API 产出 middle JSON，再归一为 ParsedDoc。
-    """
     name = "mineru"
     supports = {".pdf"}
-    version = "0.1"
+    version = "3-cli-v1"
 
     def can_parse(self, path: Path) -> bool:
-        return path.suffix.lower() in self.supports and find_spec("magic_pdf") is not None
+        return (
+            path.suffix.lower() in self.supports
+            and find_spec("mineru") is not None
+            and shutil.which("mineru") is not None
+        )
 
     def parse(self, path: Path, ctx: ParseContext) -> ParsedDoc:
-        mid, image_dir = self._parse_with_current_api(path, ctx)
-        return _middle_json_to_parsed_doc(path, ctx, mid, image_dir=image_dir)
+        mid, image_dir, backend = self._run_cli(path, ctx)
+        parsed = _middle_json_to_parsed_doc(path, ctx, mid, image_dir=image_dir)
+        for page in parsed.pages:
+            for block in page.blocks:
+                block.attrs.setdefault("mineru_backend", backend)
+        return parsed
 
-    def _parse_with_current_api(self, path: Path, ctx: ParseContext) -> tuple[dict[str, Any], Path]:
-        cache_dir = Path(ctx.cache_dir) if ctx.cache_dir else path.parent / ".mineru_cache"
-        table_enable = _table_enabled_for_quality(ctx.options.get("quality"))
-        output_dir = cache_dir / ("mineru_table" if table_enable else "mineru_fast")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        models_dir = _mineru_models_dir()
-        models_dir.mkdir(parents=True, exist_ok=True)
-        config_path = cache_dir.parent.parent / "magic-pdf.json"
-        config = {
-            "models-dir": str(models_dir),
-            "device-mode": _resolve_device(ctx),
-            "layout-config": {"model": "doclayout_yolo"},
-            "formula-config": {"enable": False},
-            "table-config": {
-                "model": "rapid_table",
-                "enable": table_enable,
-                "max_time": 400,
-            },
-        }
-        if config_path.is_file():
-            try:
-                existing = json.loads(config_path.read_text(encoding="utf-8"))
-                existing.update(config)
-                config = existing
-            except Exception:
-                pass
-        config_path.write_text(
-            json.dumps(config, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+    def _run_cli(
+        self,
+        path: Path,
+        ctx: ParseContext,
+    ) -> tuple[dict[str, Any], Path, str]:
+        settings = dict((ctx.options or {}).get("mineru") or {})
+        backend = str(settings.get("backend") or "pipeline")
+        model_server_url = _configured_value(
+            settings,
+            "model_server_url",
+            "model_server_url_env",
+            "MINERU_MODEL_SERVER_URL",
         )
-        os.environ["MINERU_TOOLS_CONFIG_JSON"] = str(config_path.resolve())
-
-        try:
-            import magic_pdf.model as model_config  # type: ignore
-            import magic_pdf.pdf_parse_union_core_v2 as parse_core  # type: ignore
-            import magic_pdf.post_proc.para_split_v3 as para_split  # type: ignore
-            from magic_pdf.tools.common import do_parse  # type: ignore
-        except ImportError as e:  # pragma: no cover
+        if backend.endswith("-http-client") and not model_server_url:
             raise RuntimeError(
-                "magic-pdf not installed. Install: pip install 'magic-pdf[full]'\n"
-                "See https://github.com/opendatalab/MinerU for full setup."
-            ) from e
-
-        log.info(f"[mineru] processing {path.name} with magic-pdf current API ...")
-        _patch_rapid_table_ocr_result()
-        ocr_device = _resolve_ocr_device(ctx)
-        _patch_ocr_device(ocr_device)
-        if ocr_device and ocr_device != _resolve_device(ctx):
-            log.info(
-                f"[mineru] split device: layout={_resolve_device(ctx)} ocr={ocr_device}"
+                f"MinerU backend '{backend}' requires parsers.pdf.mineru.model_server_url "
+                "or MINERU_MODEL_SERVER_URL"
             )
 
-        # The pip package defaults to external model-list mode; use the bundled model pipeline.
-        model_config.__use_inside_model__ = True
-        model_config.__model_mode__ = "full"
-        # Avoid blocking on the optional hantian/layoutreader download. MinerU's
-        # downstream code falls back to coordinate/xy-cut ordering when this
-        # returns None, which is good enough for local parser evaluation.
-        parse_core.sort_lines_by_model = lambda *args, **kwargs: None
-        original_merge = getattr(para_split, "__merge_2_text_blocks")
-
-        def merge_nonempty_text_blocks(block1, block2):
-            if not block1.get("lines") or not block2.get("lines"):
-                return None
-            return original_merge(block1, block2)
-
-        setattr(para_split, "__merge_2_text_blocks", merge_nonempty_text_blocks)
-        pdf_name = path.stem
-        middle_path = output_dir / pdf_name / "txt" / f"{pdf_name}_middle.json"
-        if middle_path.is_file():
-            log.info(f"[mineru] reusing cached middle json: {middle_path}")
-            with middle_path.open("r", encoding="utf-8") as f:
-                return json.load(f), middle_path.parent
-
-        do_parse(
-            str(output_dir),
-            pdf_name,
-            path.read_bytes(),
-            [],
-            "txt",
-            debug_able=False,
-            f_draw_span_bbox=False,
-            f_draw_layout_bbox=False,
-            f_dump_md=True,
-            f_dump_middle_json=True,
-            f_dump_model_json=False,
-            f_dump_orig_pdf=False,
-            f_dump_content_list=True,
-            formula_enable=False,
-            table_enable=table_enable,
+        table_enabled = bool(settings.get("table", True)) and _table_enabled_for_quality(
+            (ctx.options or {}).get("quality")
         )
+        cache_dir = Path(ctx.cache_dir) if ctx.cache_dir else path.parent / ".mineru_cache"
+        output_dir = cache_dir / "mineru" / _cache_variant(
+            settings,
+            model_server_url,
+            table_enabled=table_enabled,
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        middle_path = _find_middle_json(output_dir, path.stem)
+        if middle_path is not None:
+            log.info(f"[mineru] reusing cached middle json: {middle_path}")
+            return _read_json_object(middle_path), middle_path.parent, backend
 
-        if not middle_path.is_file():
-            matches = list(output_dir.rglob(f"{pdf_name}_middle.json"))
-            if not matches:
-                raise RuntimeError(f"MinerU did not produce middle json under {output_dir}")
-            middle_path = matches[0]
+        command = [
+            _mineru_executable(),
+            "--path",
+            str(path),
+            "--output",
+            str(output_dir),
+            "--backend",
+            backend,
+            "--formula",
+            _cli_bool(settings.get("formula", True)),
+            "--table",
+            _cli_bool(table_enabled),
+            "--image-analysis",
+            _cli_bool(settings.get("image_analysis", True)),
+            "--client-side-output-generation",
+            "true",
+        ]
+        if model_server_url:
+            command.extend(["--url", model_server_url])
 
-        with middle_path.open("r", encoding="utf-8") as f:
-            mid = json.load(f)
-        return mid, middle_path.parent
+        env = os.environ.copy()
+        timeout_seconds = int(settings.get("timeout_seconds") or 3600)
+        env["MINERU_TASK_RESULT_TIMEOUT_SECONDS"] = str(timeout_seconds)
+        model = _configured_value(settings, "model", "model_env", "MINERU_VL_MODEL_NAME")
+        api_key = _configured_value(settings, "api_key", "api_key_env", "MINERU_VL_API_KEY")
+        if model:
+            env["MINERU_VL_MODEL_NAME"] = model
+        if api_key:
+            env["MINERU_VL_API_KEY"] = api_key
+
+        log.info(f"[mineru] processing {path.name} with backend={backend}")
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=timeout_seconds + 30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"MinerU timed out after {timeout_seconds} seconds using backend={backend}"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(f"Could not start MinerU CLI: {exc}") from exc
+
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "unknown error").strip()
+            raise RuntimeError(
+                f"MinerU CLI failed with exit code {completed.returncode}: {detail[-2000:]}"
+            )
+        middle_path = _find_middle_json(output_dir, path.stem)
+        if middle_path is None:
+            raise RuntimeError(f"MinerU did not produce {path.stem}_middle.json under {output_dir}")
+        return _read_json_object(middle_path), middle_path.parent, backend
+
+
+def _mineru_executable() -> str:
+    executable = shutil.which("mineru")
+    if executable is None:
+        raise RuntimeError("MinerU 3.x CLI is not installed; install the 'mineru' extra")
+    return executable
+
+
+def _configured_value(
+    settings: dict[str, Any],
+    value_key: str,
+    env_key: str,
+    default_env: str,
+) -> str | None:
+    direct = settings.get(value_key)
+    if direct is not None and str(direct).strip():
+        return str(direct).strip()
+    env_name = str(settings.get(env_key) or default_env).strip()
+    return os.environ.get(env_name) if env_name else None
+
+
+def _cache_variant(
+    settings: dict[str, Any],
+    model_server_url: str | None,
+    *,
+    table_enabled: bool,
+) -> str:
+    payload = {
+        "adapter_version": MinerUParser.version,
+        "backend": settings.get("backend") or "pipeline",
+        "model_server_url": model_server_url,
+        "model": _configured_value(settings, "model", "model_env", "MINERU_VL_MODEL_NAME"),
+        "formula": bool(settings.get("formula", True)),
+        "table": table_enabled,
+        "image_analysis": bool(settings.get("image_analysis", True)),
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{payload['backend']}-{digest}"
+
+
+def _find_middle_json(output_dir: Path, stem: str) -> Path | None:
+    matches = sorted(output_dir.rglob(f"{stem}_middle.json"))
+    return matches[0] if matches else None
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as stream:
+        value = json.load(stream)
+    if not isinstance(value, dict):
+        raise RuntimeError(f"MinerU middle JSON must be an object: {path}")
+    return value
+
+
+def _cli_bool(value: Any) -> str:
+    return "true" if bool(value) else "false"
 
 
 def _table_enabled_for_quality(quality: Any) -> bool:
     return str(quality or "balanced").strip().lower() != "fast"
-
-
-def _mineru_models_dir() -> Path:
-    """Return the user-level MinerU model directory.
-
-    Parser outputs and middle JSON stay under the project `.docgraph/cache`, but
-    model weights are large and should be reused across projects.
-    """
-    override = os.environ.get("DOCGRAPH_MINERU_MODELS_DIR")
-    if override:
-        return Path(override).expanduser()
-    return user_docgraph_dir() / "mineru-models"
-
-
-def _resolve_device(ctx: ParseContext) -> str:
-    """torch device for MinerU layout (doclayout_yolo) + the global default.
-
-    DOCGRAPH_MINERU_DEVICE overrides; else ctx.options['device'] from
-    parsers.pdf.device; else cpu. rapid_table (onnx) ignores this and always
-    runs on CPU. OCR can be split off via ocr_device (see _resolve_ocr_device).
-    """
-    forced = os.environ.get("DOCGRAPH_MINERU_DEVICE", "").strip().lower()
-    if forced in {"cpu", "cuda", "mps"}:
-        return forced
-    cfg_val = (ctx.options or {}).get("device") if ctx.options else None
-    if isinstance(cfg_val, str) and cfg_val.strip().lower() in {"cpu", "cuda", "mps"}:
-        return cfg_val.strip().lower()
-    return "cpu"
-
-
-def _resolve_ocr_device(ctx: ParseContext) -> str | None:
-    """MinerU OCR (paddleocr2pytorch) device override. Priority: env > config > None.
-
-    None -> OCR follows the layout device (device-mode). On Apple Silicon,
-    setting ocr_device=cpu while device=mps keeps layout on MPS (fast) and OCR
-    on CPU (paddleocr2pytorch is faster on CPU than MPS, and avoids the MPS
-    penalty). Side effect: cpu OCR auto-downgrades lang to ch_lite (magic-pdf
-    heuristic), which is the fast path.
-    """
-    forced = os.environ.get("DOCGRAPH_MINERU_OCR_DEVICE", "").strip().lower()
-    if forced in {"cpu", "cuda", "mps"}:
-        return forced
-    cfg_val = (ctx.options or {}).get("ocr_device") if ctx.options else None
-    if isinstance(cfg_val, str) and cfg_val.strip().lower() in {"cpu", "cuda", "mps"}:
-        return cfg_val.strip().lower()
-    return None
-
-
-def _patch_ocr_device(ocr_device: str | None) -> None:
-    """Pin paddleocr2pytorch to a specific device, independent of device-mode.
-
-    PytorchPaddleOCR calls get_device() at __init__; we rebind the module-level
-    name in pytorch_paddle so OCR sees our value while layout keeps using the
-    global device-mode. Idempotent.
-    """
-    if not ocr_device:
-        return
-    try:
-        from magic_pdf.model.sub_modules.ocr.paddleocr2pytorch import (  # type: ignore
-            pytorch_paddle as pp,
-        )
-    except Exception:
-        return
-    if getattr(pp.get_device, "_docgraph_pinned", False):
-        return
-
-    def _pinned() -> str:
-        return ocr_device
-
-    _pinned._docgraph_pinned = True  # type: ignore[attr-defined]
-    pp.get_device = _pinned
 
 
 def _middle_json_to_parsed_doc(
@@ -316,6 +289,38 @@ def _middle_json_to_parsed_doc(
                         bbox=bb,
                         text=text,
                         attrs={"parser": MinerUParser.name},
+                    ))
+                    order += 1
+            elif btype in {"equation", "interline_equation"}:
+                latex = _join_spans(blk)
+                blocks.append(Block(
+                    id=_block_id(ctx.doc_id, pno, order),
+                    doc_id=ctx.doc_id,
+                    page=pno,
+                    kind=BlockKind.FORMULA,
+                    reading_order=order,
+                    bbox=bb,
+                    text=latex or None,
+                    latex=latex or None,
+                    attrs={"parser": MinerUParser.name},
+                ))
+                order += 1
+            elif btype in {"code", "algorithm"}:
+                text = _join_spans(blk)
+                if text:
+                    blocks.append(Block(
+                        id=_block_id(ctx.doc_id, pno, order),
+                        doc_id=ctx.doc_id,
+                        page=pno,
+                        kind=BlockKind.CODE,
+                        reading_order=order,
+                        bbox=bb,
+                        text=text,
+                        attrs={
+                            "parser": MinerUParser.name,
+                            "mineru_type": btype,
+                            "sub_type": blk.get("sub_type"),
+                        },
                     ))
                     order += 1
             elif btype in {"table", "table_body"}:
@@ -568,7 +573,11 @@ def _join_spans(blk: dict) -> str:
         text = _span_text(span)
         if text:
             out.append(text)
-    return "".join(out).strip()
+    joined = "".join(out).strip()
+    if joined:
+        return joined
+    direct = blk.get("content") or blk.get("text") or blk.get("code_body")
+    return str(direct).strip() if isinstance(direct, (str, int, float)) else ""
 
 
 def _parse_table_html(html: str) -> tuple[list[str], list[list[str]]]:
@@ -728,54 +737,3 @@ def _is_decorative_table_image(
             dark += 1
 
     return (dark / len(pixels)) < 0.003
-
-
-def _patch_rapid_table_ocr_result() -> None:
-    """Patch magic-pdf 1.3.x RapidTable wrapper for rapid-table 2.x.
-
-    magic-pdf builds OCR rows as ``[[box, text, score], ...]`` and passes them
-    directly to rapid-table. rapid-table 2.x expects one OCR package per image:
-    ``[[boxes, texts, scores]]``. Without this compatibility shim, table
-    recognition fails with ``'numpy.float32' object is not iterable``.
-    """
-    try:
-        from magic_pdf.model.sub_modules.table.rapidtable import rapid_table as rt  # type: ignore
-    except Exception:
-        return
-    model_cls = getattr(rt, "RapidTableModel", None)
-    if model_cls is None or getattr(model_cls, "_docgraph_ocr_patch", False):
-        return
-
-    def predict(self, image):
-        import cv2
-        import numpy as np
-
-        bgr_image = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
-        ocr_rows = self.ocr_engine.ocr(bgr_image)[0]
-        if not ocr_rows:
-            return None, None, None, None
-
-        boxes, texts, scores = [], [], []
-        for item in ocr_rows:
-            if len(item) != 2 or not isinstance(item[1], tuple):
-                continue
-            boxes.append(item[0])
-            texts.append(item[1][0])
-            scores.append(float(item[1][1]))
-
-        if not boxes:
-            return None, None, None, None
-
-        ocr_result = [np.asarray(boxes), tuple(texts), tuple(scores)]
-        table_results = self.table_model(np.asarray(image), [ocr_result])
-        htmls = getattr(table_results, "pred_htmls", None)
-        html_code = htmls[0] if htmls else getattr(table_results, "pred_html", None)
-        cell_bboxes = getattr(table_results, "cell_bboxes", None)
-        table_cell_bboxes = cell_bboxes[0] if cell_bboxes else None
-        points = getattr(table_results, "logic_points", None)
-        logic_points = points[0] if points else None
-        elapse = table_results.elapse
-        return html_code, table_cell_bboxes, logic_points, elapse
-
-    model_cls.predict = predict
-    model_cls._docgraph_ocr_patch = True

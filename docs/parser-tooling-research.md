@@ -60,7 +60,7 @@ MinerU 主要面向 PDF 文档解析，尤其重视版面分析、公式、表�
 风险点：
 
 - 模型和运行依赖重，初始化和构建时间比 PyMuPDF 高。
-- 版本兼容性要控制，magic-pdf/MinerU API 变化可能影响集成。
+- 版本兼容性要控制；DocGraph adapter 以 MinerU 3.x CLI 与 `middle.json` 为稳定边界，升级时需回归结构化输出。
 - 不能把 MinerU 输出直接当最终语义结论，仍然要经过 DocGraph L0 归一化和质量检查。
 
 结论：**MinerU 适合保留为复杂 PDF 的高精度解析器**。默认策略不宜所有文档都强制 MinerU，否则构建时间会影响体验。
