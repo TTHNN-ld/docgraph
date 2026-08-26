@@ -4,6 +4,7 @@ This module is intentionally model-free: it never calls LLM/VLM. It answers
 whether L0/L1 contain extractable candidates and which registered schemas would
 be routed to those candidates before any paid enrichment happens.
 """
+
 from __future__ import annotations
 
 import json
@@ -108,7 +109,8 @@ def audit_l2_candidates(
         if chunk_type in {"table", "logical_table"}:
             doc["table_chunks"] += 1
             table_blocks = [
-                block for block in chunk_blocks
+                block
+                for block in chunk_blocks
                 if block.kind == BlockKind.TABLE and block.table is not None
             ]
             if not table_blocks:
@@ -162,50 +164,60 @@ def audit_l2_candidates(
 
     for row in nodes:
         attrs = json.loads(row["attrs"]) if row["attrs"] else {}
-        schema_name = attrs.get("schema_name")
-        if schema_name:
-            _schema_row(by_schema, schema_name)["l2_nodes"] += 1
-        if row["doc_id"] in by_doc and schema_name:
+        node_schema_name = attrs.get("schema_name")
+        if node_schema_name:
+            _schema_row(by_schema, str(node_schema_name))["l2_nodes"] += 1
+        if row["doc_id"] in by_doc and node_schema_name:
             by_doc[row["doc_id"]]["l2_nodes"] += 1
 
     for doc_id, doc in by_doc.items():
         if doc["candidates_total"] == 0:
-            issues.append(L2AuditIssue(
-                "warning",
-                "l2.no_candidates",
-                "document has no L2 candidates from persisted L0/L1",
-                doc_id,
-            ))
+            issues.append(
+                L2AuditIssue(
+                    "warning",
+                    "l2.no_candidates",
+                    "document has no L2 candidates from persisted L0/L1",
+                    doc_id,
+                )
+            )
         if doc["table_candidates"] and doc["table_schema_hits"] == 0:
-            issues.append(L2AuditIssue(
-                "warning",
-                "l2.table_no_schema_hits",
-                "table candidates exist but no enabled schema matched",
-                doc_id,
-                skipped_tables.get(doc_id, [])[:5],
-            ))
+            issues.append(
+                L2AuditIssue(
+                    "warning",
+                    "l2.table_no_schema_hits",
+                    "table candidates exist but no enabled schema matched",
+                    doc_id,
+                    skipped_tables.get(doc_id, [])[:5],
+                )
+            )
 
     for schema_name, row in by_schema.items():
         matched_candidates = row["table_candidates_matched"] + row["text_candidates_matched"]
         if matched_candidates == 0:
-            issues.append(L2AuditIssue(
-                "warning",
-                "l2.schema_no_candidates",
-                f"schema '{schema_name}' has no matched candidates",
-            ))
+            issues.append(
+                L2AuditIssue(
+                    "warning",
+                    "l2.schema_no_candidates",
+                    f"schema '{schema_name}' has no matched candidates",
+                )
+            )
         elif row["l2_nodes"] == 0:
-            issues.append(L2AuditIssue(
-                "warning",
-                "l2.matched_but_no_nodes",
-                f"schema '{schema_name}' has {matched_candidates} matched candidates but no materialized L2 nodes",
-                sample_ids=row["sample_candidate_ids"][:5],
-            ))
+            issues.append(
+                L2AuditIssue(
+                    "warning",
+                    "l2.matched_but_no_nodes",
+                    f"schema '{schema_name}' has {matched_candidates} matched candidates but no materialized L2 nodes",
+                    sample_ids=row["sample_candidate_ids"][:5],
+                )
+            )
 
     by_doc_rows = [_freeze_doc_row(doc) for doc in by_doc.values()]
     by_schema_rows = [_freeze_schema_row(row) for row in by_schema.values()]
     totals = _totals(by_doc_rows, by_schema_rows)
     ok = not any(issue.severity == "error" for issue in issues)
-    return L2AuditReport(ok=ok, totals=totals, by_doc=by_doc_rows, by_schema=by_schema_rows, issues=issues)
+    return L2AuditReport(
+        ok=ok, totals=totals, by_doc=by_doc_rows, by_schema=by_schema_rows, issues=issues
+    )
 
 
 def _schemas_for_doc(
@@ -337,24 +349,33 @@ def _freeze_schema_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _totals(doc_rows: list[dict[str, Any]], schema_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    total = Counter()
+    total: Counter[str] = Counter()
     schemas_hit: Counter[str] = Counter()
     for row in doc_rows:
         for key in (
-            "chunks", "table_chunks", "text_chunks", "figure_chunks",
-            "candidates_total", "table_candidates", "text_candidates",
-            "figure_candidates", "table_schema_hits", "text_schema_hits",
+            "chunks",
+            "table_chunks",
+            "text_chunks",
+            "figure_chunks",
+            "candidates_total",
+            "table_candidates",
+            "text_candidates",
+            "figure_candidates",
+            "table_schema_hits",
+            "text_schema_hits",
             "l2_nodes",
         ):
             total[key] += int(row.get(key) or 0)
         schemas_hit.update(row.get("schemas_hit") or {})
-    total["docs"] = len(doc_rows)
-    total["schemas_with_candidates"] = sum(
-        1 for row in schema_rows
+    result: dict[str, Any] = dict(total)
+    result["docs"] = len(doc_rows)
+    result["schemas_with_candidates"] = sum(
+        1
+        for row in schema_rows
         if row["table_candidates_matched"] + row["text_candidates_matched"] > 0
     )
-    total["schemas_hit"] = dict(sorted(schemas_hit.items()))
-    return dict(total)
+    result["schemas_hit"] = dict(sorted(schemas_hit.items()))
+    return result
 
 
 def _safe_div(num: int | float, den: int | float) -> float:

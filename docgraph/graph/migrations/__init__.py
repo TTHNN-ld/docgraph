@@ -9,6 +9,7 @@
 
 M3 阶段：v1 (M1/M2 当前 schema) 作为 baseline；预留 v2 升级钩子。
 """
+
 from __future__ import annotations
 
 import shutil
@@ -26,10 +27,11 @@ log = get_logger(__name__)
 @dataclass
 class Migration:
     """单次 schema 升级。"""
-    version: int                       # target version (1, 2, 3, ...)
+
+    version: int  # target version (1, 2, 3, ...)
     description: str
     upgrade: Callable[[sqlite3.Connection], None]
-    component: str = "global"          # 默认 global；将来可分组件
+    component: str = "global"  # 默认 global；将来可分组件
 
 
 # ---------------------------------------------------------------------------

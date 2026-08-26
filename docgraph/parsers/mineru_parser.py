@@ -5,6 +5,7 @@ into DocGraph's L0 contract. MinerU may execute locally, or keep document
 orchestration local while sending VLM inference to an OpenAI-compatible model
 server through the official ``vlm-http-client``/``hybrid-http-client`` backend.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -80,10 +81,14 @@ class MinerUParser:
             (ctx.options or {}).get("quality")
         )
         cache_dir = Path(ctx.cache_dir) if ctx.cache_dir else path.parent / ".mineru_cache"
-        output_dir = cache_dir / "mineru" / _cache_variant(
-            settings,
-            model_server_url,
-            table_enabled=table_enabled,
+        output_dir = (
+            cache_dir
+            / "mineru"
+            / _cache_variant(
+                settings,
+                model_server_url,
+                table_enabled=table_enabled,
+            )
         )
         output_dir.mkdir(parents=True, exist_ok=True)
         middle_path = _find_middle_json(output_dir, path.stem)
@@ -253,75 +258,90 @@ def _middle_json_to_parsed_doc(
                     counter[j] = 0
                 path_str = explicit_path or ".".join(str(c) for c in counter[:level] if c > 0)
                 if use_mineru_title_toc and explicit_path:
-                    toc.append(TocEntry(
-                        level=level,
-                        title=title_without_num or title,
+                    toc.append(
+                        TocEntry(
+                            level=level,
+                            title=title_without_num or title,
+                            page=pno,
+                            section_path=path_str or None,
+                        )
+                    )
+                text_blocks.append(
+                    TextBlock(
+                        text=title,
+                        bbox=bb,
+                        reading_order=order,
+                        is_heading=True,
+                        heading_level=level,
+                    )
+                )
+                blocks.append(
+                    Block(
+                        id=_block_id(ctx.doc_id, pno, order),
+                        doc_id=ctx.doc_id,
                         page=pno,
+                        kind=BlockKind.HEADING,
+                        reading_order=order,
+                        bbox=bb,
+                        text=title,
                         section_path=path_str or None,
-                    ))
-                text_blocks.append(TextBlock(
-                    text=title, bbox=bb, reading_order=order,
-                    is_heading=True, heading_level=level,
-                ))
-                blocks.append(Block(
-                    id=_block_id(ctx.doc_id, pno, order),
-                    doc_id=ctx.doc_id,
-                    page=pno,
-                    kind=BlockKind.HEADING,
-                    reading_order=order,
-                    bbox=bb,
-                    text=title,
-                    section_path=path_str or None,
-                    heading_level=level,
-                    attrs={"parser": MinerUParser.name},
-                ))
+                        heading_level=level,
+                        attrs={"parser": MinerUParser.name},
+                    )
+                )
                 order += 1
             elif btype in {"text", "list", "index"}:
                 text = _join_spans(blk)
                 if text:
                     text_blocks.append(TextBlock(text=text, bbox=bb, reading_order=order))
-                    blocks.append(Block(
-                        id=_block_id(ctx.doc_id, pno, order),
-                        doc_id=ctx.doc_id,
-                        page=pno,
-                        kind=BlockKind.LIST if btype == "list" else BlockKind.PARAGRAPH,
-                        reading_order=order,
-                        bbox=bb,
-                        text=text,
-                        attrs={"parser": MinerUParser.name},
-                    ))
+                    blocks.append(
+                        Block(
+                            id=_block_id(ctx.doc_id, pno, order),
+                            doc_id=ctx.doc_id,
+                            page=pno,
+                            kind=BlockKind.LIST if btype == "list" else BlockKind.PARAGRAPH,
+                            reading_order=order,
+                            bbox=bb,
+                            text=text,
+                            attrs={"parser": MinerUParser.name},
+                        )
+                    )
                     order += 1
             elif btype in {"equation", "interline_equation"}:
                 latex = _join_spans(blk)
-                blocks.append(Block(
-                    id=_block_id(ctx.doc_id, pno, order),
-                    doc_id=ctx.doc_id,
-                    page=pno,
-                    kind=BlockKind.FORMULA,
-                    reading_order=order,
-                    bbox=bb,
-                    text=latex or None,
-                    latex=latex or None,
-                    attrs={"parser": MinerUParser.name},
-                ))
+                blocks.append(
+                    Block(
+                        id=_block_id(ctx.doc_id, pno, order),
+                        doc_id=ctx.doc_id,
+                        page=pno,
+                        kind=BlockKind.FORMULA,
+                        reading_order=order,
+                        bbox=bb,
+                        text=latex or None,
+                        latex=latex or None,
+                        attrs={"parser": MinerUParser.name},
+                    )
+                )
                 order += 1
             elif btype in {"code", "algorithm"}:
                 text = _join_spans(blk)
                 if text:
-                    blocks.append(Block(
-                        id=_block_id(ctx.doc_id, pno, order),
-                        doc_id=ctx.doc_id,
-                        page=pno,
-                        kind=BlockKind.CODE,
-                        reading_order=order,
-                        bbox=bb,
-                        text=text,
-                        attrs={
-                            "parser": MinerUParser.name,
-                            "mineru_type": btype,
-                            "sub_type": blk.get("sub_type"),
-                        },
-                    ))
+                    blocks.append(
+                        Block(
+                            id=_block_id(ctx.doc_id, pno, order),
+                            doc_id=ctx.doc_id,
+                            page=pno,
+                            kind=BlockKind.CODE,
+                            reading_order=order,
+                            bbox=bb,
+                            text=text,
+                            attrs={
+                                "parser": MinerUParser.name,
+                                "mineru_type": btype,
+                                "sub_type": blk.get("sub_type"),
+                            },
+                        )
+                    )
                     order += 1
             elif btype in {"table", "table_body"}:
                 md_fallback = None
@@ -340,10 +360,80 @@ def _middle_json_to_parsed_doc(
                     html=html,
                     raw_text=raw_table_text,
                 ):
-                    figures.append(ParsedFigure(
-                        image_path=image_path, bbox=bb, caption=caption,
-                    ))
-                    blocks.append(Block(
+                    figures.append(
+                        ParsedFigure(
+                            image_path=image_path,
+                            bbox=bb,
+                            caption=caption,
+                        )
+                    )
+                    blocks.append(
+                        Block(
+                            id=_block_id(ctx.doc_id, pno, order),
+                            doc_id=ctx.doc_id,
+                            page=pno,
+                            kind=BlockKind.FIGURE,
+                            reading_order=order,
+                            bbox=bb,
+                            image_path=image_path,
+                            text=caption,
+                            attrs={
+                                "parser": MinerUParser.name,
+                                "mineru_type": btype,
+                                "semantic_role": "decoration",
+                            },
+                        )
+                    )
+                    order += 1
+                    continue
+
+                tables.append(
+                    ParsedTable(
+                        html=html,
+                        headers=headers,
+                        rows=rows,
+                        bbox=bb,
+                        caption=caption,
+                    )
+                )
+                blocks.append(
+                    Block(
+                        id=_block_id(ctx.doc_id, pno, order),
+                        doc_id=ctx.doc_id,
+                        page=pno,
+                        kind=BlockKind.TABLE,
+                        reading_order=order,
+                        bbox=bb,
+                        table=TableData(
+                            headers=headers,
+                            rows=rows,
+                            n_rows=len(rows),
+                            n_cols=max([len(headers), *(len(r) for r in rows)] or [0]),
+                            caption=caption,
+                            html=html,
+                        ),
+                        image_path=image_path,
+                        attrs={
+                            "parser": MinerUParser.name,
+                            "table_source": "html"
+                            if html
+                            else ("cells" if headers or rows else "image"),
+                        },
+                    )
+                )
+                order += 1
+            elif btype in {"image", "figure", "image_body"}:
+                caption = _caption_from_nested_blocks(blk, {"image_caption"})
+                image_path = _image_path_from_nested_blocks(blk, image_dir)
+                figures.append(
+                    ParsedFigure(
+                        image_path=image_path,
+                        bbox=bb,
+                        caption=caption,
+                    )
+                )
+                blocks.append(
+                    Block(
                         id=_block_id(ctx.doc_id, pno, order),
                         doc_id=ctx.doc_id,
                         page=pno,
@@ -352,64 +442,20 @@ def _middle_json_to_parsed_doc(
                         bbox=bb,
                         image_path=image_path,
                         text=caption,
-                        attrs={
-                            "parser": MinerUParser.name,
-                            "mineru_type": btype,
-                            "semantic_role": "decoration",
-                        },
-                    ))
-                    order += 1
-                    continue
-
-                tables.append(ParsedTable(
-                    html=html, headers=headers, rows=rows, bbox=bb,
-                    caption=caption,
-                ))
-                blocks.append(Block(
-                    id=_block_id(ctx.doc_id, pno, order),
-                    doc_id=ctx.doc_id,
-                    page=pno,
-                    kind=BlockKind.TABLE,
-                    reading_order=order,
-                    bbox=bb,
-                    table=TableData(
-                        headers=headers,
-                        rows=rows,
-                        n_rows=len(rows),
-                        n_cols=max([len(headers), *(len(r) for r in rows)] or [0]),
-                        caption=caption,
-                        html=html,
-                    ),
-                    image_path=image_path,
-                    attrs={
-                        "parser": MinerUParser.name,
-                        "table_source": "html" if html else ("cells" if headers or rows else "image"),
-                    },
-                ))
-                order += 1
-            elif btype in {"image", "figure", "image_body"}:
-                caption = _caption_from_nested_blocks(blk, {"image_caption"})
-                image_path = _image_path_from_nested_blocks(blk, image_dir)
-                figures.append(ParsedFigure(
-                    image_path=image_path, bbox=bb, caption=caption,
-                ))
-                blocks.append(Block(
-                    id=_block_id(ctx.doc_id, pno, order),
-                    doc_id=ctx.doc_id,
-                    page=pno,
-                    kind=BlockKind.FIGURE,
-                    reading_order=order,
-                    bbox=bb,
-                    image_path=image_path,
-                    text=caption,
-                    attrs={"parser": MinerUParser.name},
-                ))
+                        attrs={"parser": MinerUParser.name},
+                    )
+                )
                 order += 1
 
-        pages.append(ParsedPage(
-            page_no=pno, blocks=blocks, text_blocks=text_blocks,
-            tables=tables, figures=figures,
-        ))
+        pages.append(
+            ParsedPage(
+                page_no=pno,
+                blocks=blocks,
+                text_blocks=text_blocks,
+                tables=tables,
+                figures=figures,
+            )
+        )
 
     return ParsedDoc(
         doc_id=ctx.doc_id,
@@ -459,12 +505,14 @@ def _parse_pdf_outline(path: Path) -> list[TocEntry]:
         if key in seen:
             continue
         seen.add(key)
-        out.append(TocEntry(
-            level=int(level),
-            title=clean_title or title,
-            page=int(page) if page else None,
-            section_path=section_path,
-        ))
+        out.append(
+            TocEntry(
+                level=int(level),
+                title=clean_title or title,
+                page=int(page) if page else None,
+                section_path=section_path,
+            )
+        )
     return out
 
 
@@ -483,7 +531,8 @@ def _outline_path_from_level(index: int, level: int, entries: list[TocEntry]) ->
     if level <= 0:
         return None
     siblings = [
-        e for e in entries
+        e
+        for e in entries
         if e.level == level and e.section_path and e.section_path.count(".") + 1 == level
     ]
     if not siblings and level == 1:
@@ -499,8 +548,10 @@ def _bbox(bbox: list[Any], page_no: int) -> BBox | None:
     if len(bbox) < 4:
         return None
     return BBox(
-        x0=float(bbox[0]), y0=float(bbox[1]),
-        x1=float(bbox[2]), y1=float(bbox[3]),
+        x0=float(bbox[0]),
+        y0=float(bbox[1]),
+        x1=float(bbox[2]),
+        y1=float(bbox[3]),
         page=page_no,
     )
 
@@ -558,12 +609,7 @@ def _span_text(span: dict[str, Any]) -> str:
 
 
 def _span_table_html(span: dict[str, Any]) -> str:
-    return str(
-        span.get("html")
-        or span.get("table_html")
-        or span.get("latex")
-        or ""
-    )
+    return str(span.get("html") or span.get("table_html") or span.get("latex") or "")
 
 
 def _join_spans(blk: dict) -> str:
@@ -643,9 +689,7 @@ def _parse_table_html(html: str) -> tuple[list[str], list[list[str]]]:
                         pending[ci + k] = (text, rowspan - 1)
             ci += colspan
 
-    result_rows: list[list[str]] = [
-        [("" if v is None else v) for v in row] for row in grid
-    ]
+    result_rows: list[list[str]] = [[("" if v is None else v) for v in row] for row in grid]
     headers = result_rows[0]
     body = result_rows[1:]
     return headers, body

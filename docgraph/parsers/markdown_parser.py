@@ -9,6 +9,7 @@
 
 把 markdown 整体当作单页；多文件不在 parser 这层处理（pipeline 层按文件粒度）。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -38,8 +39,8 @@ class MarkdownParser:
             from markdown_it import MarkdownIt  # type: ignore
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
-                "markdown-it-py not installed. Install with: "
-                "pip install 'docgraph-core[documents]'"
+                "markdown-it-py is a required DocGraph dependency; "
+                "reinstall or repair the docgraph-core installation"
             ) from e
 
         text = path.read_text("utf-8")
@@ -65,12 +66,8 @@ class MarkdownParser:
                 heading_counter[level - 1] += 1
                 for k in range(level, 6):
                     heading_counter[k] = 0
-                path_str = ".".join(
-                    str(c) for c in heading_counter[:level] if c > 0
-                )
-                toc.append(
-                    TocEntry(level=level, title=title, section_path=path_str or None)
-                )
+                path_str = ".".join(str(c) for c in heading_counter[:level] if c > 0)
+                toc.append(TocEntry(level=level, title=title, section_path=path_str or None))
                 text_blocks.append(
                     TextBlock(
                         text=title,
@@ -87,9 +84,7 @@ class MarkdownParser:
                 inline = tokens[i + 1] if i + 1 < n else None
                 content = inline.content if inline else ""
                 if content:
-                    text_blocks.append(
-                        TextBlock(text=content, reading_order=order)
-                    )
+                    text_blocks.append(TextBlock(text=content, reading_order=order))
                     order += 1
                     # 抽 inline 内的图片
                     if inline and inline.children:

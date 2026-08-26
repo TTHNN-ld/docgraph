@@ -6,6 +6,7 @@ OpenAI SDK client 线程安全，因此并发是安全的。
 
 并发度由 DOCGRAPH_LLM_CONCURRENCY 环境变量控制（默认 4），受 provider 限速约束。
 """
+
 from __future__ import annotations
 
 import os
@@ -26,9 +27,7 @@ def llm_concurrency() -> int:
     return max(1, v)
 
 
-def map_concurrent(
-    fn: Callable[[T], R], items: list[T], max_workers: int | None = None
-) -> list[R]:
+def map_concurrent(fn: Callable[[T], R], items: list[T], max_workers: int | None = None) -> list[R]:
     """并发执行 fn(item)，结果按输入顺序返回。max_workers<=1 或单元素时顺序执行。
 
     任何 item 抛异常会向上抛出（ThreadPoolExecutor.map 语义）。调用方如需容错，

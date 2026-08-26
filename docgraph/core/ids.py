@@ -8,11 +8,13 @@ DocGraph 的节点 ID 全局形式：
     stm32f407::reg:TIM1.CR1
     stm32f407::reg:TIM1.CR1#errata@rev3
 """
+
 from __future__ import annotations
 
 import hashlib
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 from docgraph.graph.schema import NodeKind
 
@@ -62,10 +64,32 @@ def make_node_id(
     return base
 
 
-def make_doc_id(family: str, doc_type: str, version: str | None = None) -> str:
-    if version:
-        return f"{family}::{doc_type}@{version}"
-    return f"{family}::{doc_type}"
+def make_doc_id(
+    family: str,
+    doc_type: str,
+    version: str | None = None,
+    *,
+    source_path: str | Path | None = None,
+) -> str:
+    """Build a document ID, optionally anchored to its project-relative source path.
+
+    ``family + type + version`` describes document identity but is not unique: two
+    formats can share a stem, and several sources can share the same type/version.
+    The pipeline therefore always passes ``source_path``. Keeping the argument
+    optional preserves callers that only need the metadata namespace.
+    """
+    base = f"{family}::{doc_type}@{version}" if version else f"{family}::{doc_type}"
+    if source_path is None:
+        return base
+    return f"{base}::{source_path_token(source_path)}"
+
+
+def source_path_token(source_path: str | Path) -> str:
+    """Encode one project-relative source path for use inside stable IDs."""
+    source = Path(source_path).as_posix()
+    while source.startswith("./"):
+        source = source[2:]
+    return quote(source, safe="/._-")
 
 
 def file_hash(path: Path, algo: str = "sha256") -> str:
@@ -115,8 +139,8 @@ def infer_chip_model(stem: str) -> str | None:
 def doc_name_from_doc_id(doc_id: str) -> str:
     """从 doc_id 提取文档名段。
 
-    doc_id 形如 ``family::type::Doc Name`` 或 ``family::type@version``；
-    返回最后一个 ``::`` 之后的部分（文档名）。
+    构建链生成的 doc_id 形如 ``family::type[@version]::source/path``；
+    返回最后一个 ``::`` 之后的源路径部分。
     """
     if not doc_id:
         return ""

@@ -9,6 +9,7 @@ VLM 整页兜底也集成在此（M6 能力迁移至此）。
 - 所有产出节点带 evidence（源页/extractor/confidence）
 - L2 抽取失败不影响 L0/L1 完整性
 """
+
 from __future__ import annotations
 
 import os
@@ -16,12 +17,15 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 try:
     from tqdm.auto import tqdm as _tqdm
 except ImportError:  # pragma: no cover
+
     def _tqdm(iterable, *a, **kw):  # type: ignore[no-redef]
         return iterable
+
 
 from docgraph.core.ids import make_node_id
 from docgraph.core.logger import get_logger
@@ -75,8 +79,9 @@ class TableEntityExtractor:
     2. 文本候选：对 L0 未覆盖的页，用 LLM 从文本窗口抽取
     3. VLM 整页兜底：page.quality 命中 + 上述两轮都未抽出 → VLM 看图抽取
     """
+
     name = "table_entity"
-    kinds = set()  # 动态（由 schema 决定）
+    kinds: set[NodeKind] = set()  # 动态（由 schema 决定）
     requires = {"section"}
     version = "0.2"
 
@@ -144,14 +149,8 @@ class TableEntityExtractor:
             )
 
         candidates = build_entity_candidates(doc)
-        table_candidates = [
-            c for c in candidates
-            if c.kind == "table" and c.table is not None
-        ]
-        table_image_candidates = [
-            c for c in candidates
-            if c.kind == "table_image" and c.image_path
-        ]
+        table_candidates = [c for c in candidates if c.kind == "table" and c.table is not None]
+        table_image_candidates = [c for c in candidates if c.kind == "table_image" and c.image_path]
         text_candidates = [c for c in candidates if c.kind == "text"]
         page_image_candidates = [c for c in candidates if c.kind == "page_image" and c.image_path]
         pages_by_no = {p.page_no: p for p in doc.pages}
@@ -162,9 +161,12 @@ class TableEntityExtractor:
 
         # ---- Phase 1: 主表格抽取（表做外层，单次遍历）----
         schema_calls_by_sn: dict[str, int] = {sn: 0 for sn, _ in schemas}
-        log.info(f"[table_entity] scanning {len(table_candidates)} tables across {len(schemas)} schemas")
+        log.info(
+            f"[table_entity] scanning {len(table_candidates)} tables across {len(schemas)} schemas"
+        )
         for candidate in _tqdm(
-            table_candidates, desc="table_entity",
+            table_candidates,
+            desc="table_entity",
             disable=not sys.stderr.isatty(),
         ):
             if llm_calls >= self.MAX_LLM_TOTAL:
@@ -174,14 +176,16 @@ class TableEntityExtractor:
                     continue
                 if not self._table_has_cells(candidate.table):
                     continue
-                result = None
+                result: list[Any] | None = None
                 derivation_method = DerivationMethod.DETERMINISTIC
                 table_for_extract = candidate.table
                 context_name = None
                 if sn == "register" and candidate.table is not None:
                     context_name = self._next_register_context(candidate.table, register_context)
                     if context_name:
-                        table_for_extract = candidate.table.model_copy(update={"caption": context_name})
+                        table_for_extract = candidate.table.model_copy(
+                            update={"caption": context_name}
+                        )
                 # ---- deterministic extraction (always attempted, no LLM cost) ----
                 if sn == "register":
                     result = self._extract_registers_from_table(table_for_extract)
@@ -203,7 +207,10 @@ class TableEntityExtractor:
                     result = self._extract_physical_constraints_from_table(candidate.table)
                 # ---- LLM fallback (budget-gated) ----
                 if result is None and ctx.has_llm:
-                    if llm_calls < self.MAX_LLM_TOTAL and schema_calls_by_sn[sn] < self.MAX_LLM_PER_SCHEMA:
+                    if (
+                        llm_calls < self.MAX_LLM_TOTAL
+                        and schema_calls_by_sn[sn] < self.MAX_LLM_PER_SCHEMA
+                    ):
                         result = self._llm_extract(candidate.table, schema, sn, ctx)
                         derivation_method = DerivationMethod.LLM_INFERRED
                         llm_calls += 1
@@ -212,13 +219,23 @@ class TableEntityExtractor:
                     continue
                 if sn == "register":
                     if self._is_register_summary_result(result):
-                        register_context.extend(getattr(item, "name", "") for item in result if getattr(item, "name", ""))
+                        register_context.extend(
+                            getattr(item, "name", "")
+                            for item in result
+                            if getattr(item, "name", "")
+                        )
                     elif context_name:
                         self._consume_register_context(register_context, context_name)
                 seen.setdefault(sn, set())
                 n = self._materialize(
-                    result, sn, schema, candidate.page, ctx, doc.doc_id,
-                    seen[sn], hits_per_page,
+                    result,
+                    sn,
+                    schema,
+                    candidate.page,
+                    ctx,
+                    doc.doc_id,
+                    seen[sn],
+                    hits_per_page,
                     source_block_ids=candidate.block_ids,
                     source_chunk_ids=candidate.source_chunk_ids,
                     candidate_id=candidate.id,
@@ -237,7 +254,9 @@ class TableEntityExtractor:
                 for candidate in table_image_candidates:
                     if vlm_calls >= vlm_max or _sc >= self.MAX_LLM_PER_SCHEMA:
                         break
-                    if candidate.table is not None and not self._table_matches(candidate.table, schema):
+                    if candidate.table is not None and not self._table_matches(
+                        candidate.table, schema
+                    ):
                         continue
                     result = self._vlm_extract_table_image(candidate, sn, schema, vlm_client)
                     vlm_calls += 1
@@ -246,8 +265,14 @@ class TableEntityExtractor:
                         continue
                     seen.setdefault(sn, set())
                     n = self._materialize(
-                        result, sn, schema, candidate.page, ctx, doc.doc_id,
-                        seen[sn], hits_per_page,
+                        result,
+                        sn,
+                        schema,
+                        candidate.page,
+                        ctx,
+                        doc.doc_id,
+                        seen[sn],
+                        hits_per_page,
                         source_block_ids=candidate.block_ids,
                         source_chunk_ids=candidate.source_chunk_ids,
                         candidate_id=candidate.id,
@@ -279,8 +304,14 @@ class TableEntityExtractor:
                 if result is None:
                     continue
                 n = self._materialize(
-                    result, sn, schema, candidate.page, ctx,
-                    doc.doc_id, seen[sn], hits_per_page,
+                    result,
+                    sn,
+                    schema,
+                    candidate.page,
+                    ctx,
+                    doc.doc_id,
+                    seen[sn],
+                    hits_per_page,
                     source_block_ids=candidate.block_ids,
                     source_chunk_ids=candidate.source_chunk_ids,
                     candidate_id=candidate.id,
@@ -293,8 +324,8 @@ class TableEntityExtractor:
         if vlm_client is not None and vlm_max > 0:
             vlm_reasons_per_entity: dict[str, set[str]] = {
                 "register": {"register_with_table", "scan_like_no_text"},
-                "pin":      {"pin_with_table", "scan_like_no_text"},
-                "timing":   {"timing_with_table", "scan_like_no_text"},
+                "pin": {"pin_with_table", "scan_like_no_text"},
+                "timing": {"timing_with_table", "scan_like_no_text"},
             }
             for sn, schema in schemas:
                 if vlm_calls >= vlm_max:
@@ -319,12 +350,18 @@ class TableEntityExtractor:
                         name = getattr(item, "name", "") or getattr(item, "symbol", "")
                         if name and name not in seen[sn]:
                             seen[sn].add(name)
-                            n = self._node_from_model(item, sn, schema, page.page_no,
-                                                       ctx, doc.doc_id,
-                                                       source_block_ids=candidate.block_ids,
-                                                       source_chunk_ids=candidate.source_chunk_ids,
-                                                       candidate_id=candidate.id,
-                                                       derivation_method=DerivationMethod.VLM_INFERRED)
+                            n = self._node_from_model(
+                                item,
+                                sn,
+                                schema,
+                                page.page_no,
+                                ctx,
+                                doc.doc_id,
+                                source_block_ids=candidate.block_ids,
+                                source_chunk_ids=candidate.source_chunk_ids,
+                                candidate_id=candidate.id,
+                                derivation_method=DerivationMethod.VLM_INFERRED,
+                            )
                             nodes.append(n["node"])
                             edges.extend(n["edges"])
                             if sn == "register" and hasattr(item, "bitfields"):
@@ -332,7 +369,8 @@ class TableEntityExtractor:
                                 edges.extend(n["bitfield_edges"])
 
         return ExtractResult(
-            nodes=nodes, edges=edges,
+            nodes=nodes,
+            edges=edges,
             stats=ExtractStats(
                 nodes_emitted=len(nodes),
                 edges_emitted=len(edges),
@@ -347,7 +385,7 @@ class TableEntityExtractor:
     def _page_text(page) -> str:
         """收集该页全部 paragraph/heading 文本。"""
         texts = []
-        for b in (page.blocks or []):
+        for b in page.blocks or []:
             if b.kind in (BlockKind.PARAGRAPH, BlockKind.HEADING) and b.text:
                 texts.append(b.text)
         return "\n".join(texts)
@@ -374,8 +412,9 @@ class TableEntityExtractor:
             return False
         return hits >= 3
 
-    def _llm_extract_text(self, text: str, schema: EntitySchema,
-                          schema_name: str, ctx: ExtractContext) -> list | None:
+    def _llm_extract_text(
+        self, text: str, schema: EntitySchema, schema_name: str, ctx: ExtractContext
+    ) -> list | None:
         """把文本段落直接送 LLM 按 schema 抽取（不构造 TableData）。"""
         # 截取文本（最长 6000 字符避免成本过大）
         snippet = text[:6000]
@@ -387,8 +426,10 @@ class TableEntityExtractor:
         )
         try:
             result = ctx.llm_client.json(
-                prompt, schema=schema.list_wrapper,
-                tier="balanced", max_tokens=4096,
+                prompt,
+                schema=schema.list_wrapper,
+                tier="balanced",
+                max_tokens=4096,
                 extractor=f"table_entity_text:{schema_name}",
                 extra_body={"enable_thinking": False},
             )
@@ -404,15 +445,16 @@ class TableEntityExtractor:
 
     # ------- LLM 抽取 -------
 
-    def _llm_extract(self, table: TableData, schema: EntitySchema,
-                     schema_name: str, ctx: ExtractContext) -> list | None:
-        prompt = schema.prompt_template.format(
-            table_text=self._table_text(table)
-        )
+    def _llm_extract(
+        self, table: TableData, schema: EntitySchema, schema_name: str, ctx: ExtractContext
+    ) -> list | None:
+        prompt = schema.prompt_template.format(table_text=self._table_text(table))
         try:
             result = ctx.llm_client.json(
-                prompt, schema=schema.list_wrapper,
-                tier="balanced", max_tokens=4096,
+                prompt,
+                schema=schema.list_wrapper,
+                tier="balanced",
+                max_tokens=4096,
                 extractor=f"table_entity:{schema_name}",
                 extra_body={"enable_thinking": False},
             )
@@ -428,8 +470,7 @@ class TableEntityExtractor:
 
     # ------- VLM 兜底 -------
 
-    def _vlm_extract_page(self, page, schema_name: str, schema: EntitySchema,
-                          vlm_client) -> list:
+    def _vlm_extract_page(self, page, schema_name: str, schema: EntitySchema, vlm_client) -> list:
         prompt = (
             f"你看到的是芯片 spec 文档的一页（已渲染为图像）。\n"
             f"请把这一页包含的**所有{schema.description}**完整抽成 JSON。\n"
@@ -451,8 +492,9 @@ class TableEntityExtractor:
             return []
         return [item for item in items if isinstance(item, schema.target_model)]
 
-    def _vlm_extract_table_image(self, candidate: EntityCandidate, schema_name: str, schema: EntitySchema,
-                                 vlm_client) -> list:
+    def _vlm_extract_table_image(
+        self, candidate: EntityCandidate, schema_name: str, schema: EntitySchema, vlm_client
+    ) -> list:
         if not candidate.image_path or not Path(candidate.image_path).is_file():
             return []
         caption = candidate.table.caption if candidate.table else None
@@ -482,13 +524,21 @@ class TableEntityExtractor:
 
     # ------- 物化 -------
 
-    def _materialize(self, items: list, schema_name: str, schema: EntitySchema,
-                     page: int, ctx: ExtractContext, doc_id: str,
-                     seen: set[str], hits_per_page: dict,
-                     source_block_ids: list[str] | None = None,
-                     source_chunk_ids: list[str] | None = None,
-                     candidate_id: str | None = None,
-                     derivation_method: DerivationMethod = DerivationMethod.DETERMINISTIC) -> dict:
+    def _materialize(
+        self,
+        items: list,
+        schema_name: str,
+        schema: EntitySchema,
+        page: int,
+        ctx: ExtractContext,
+        doc_id: str,
+        seen: set[str],
+        hits_per_page: dict,
+        source_block_ids: list[str] | None = None,
+        source_chunk_ids: list[str] | None = None,
+        candidate_id: str | None = None,
+        derivation_method: DerivationMethod = DerivationMethod.DETERMINISTIC,
+    ) -> dict:
         nodes: list[Node] = []
         edges: list[Edge] = []
         calls = 0
@@ -499,7 +549,12 @@ class TableEntityExtractor:
             if name in seen:
                 if schema_name == "register" and getattr(item, "bitfields", None):
                     result = self._node_from_model(
-                        item, schema_name, schema, page, ctx, doc_id,
+                        item,
+                        schema_name,
+                        schema,
+                        page,
+                        ctx,
+                        doc_id,
                         source_block_ids=source_block_ids or [],
                         source_chunk_ids=source_chunk_ids or [],
                         candidate_id=candidate_id,
@@ -511,7 +566,12 @@ class TableEntityExtractor:
                 continue
             seen.add(name)
             result = self._node_from_model(
-                item, schema_name, schema, page, ctx, doc_id,
+                item,
+                schema_name,
+                schema,
+                page,
+                ctx,
+                doc_id,
                 source_block_ids=source_block_ids or [],
                 source_chunk_ids=source_chunk_ids or [],
                 candidate_id=candidate_id,
@@ -524,12 +584,19 @@ class TableEntityExtractor:
             hits_per_page[page] = hits_per_page.get(page, 0) + 1
         return {"nodes": nodes, "edges": edges, "calls": calls}
 
-    def _node_from_model(self, item, schema_name: str, schema: EntitySchema,
-                         page: int, ctx: ExtractContext, doc_id: str,
-                         source_block_ids: list[str] | None = None,
-                         source_chunk_ids: list[str] | None = None,
-                         candidate_id: str | None = None,
-                         derivation_method: DerivationMethod = DerivationMethod.DETERMINISTIC) -> dict:
+    def _node_from_model(
+        self,
+        item,
+        schema_name: str,
+        schema: EntitySchema,
+        page: int,
+        ctx: ExtractContext,
+        doc_id: str,
+        source_block_ids: list[str] | None = None,
+        source_chunk_ids: list[str] | None = None,
+        candidate_id: str | None = None,
+        derivation_method: DerivationMethod = DerivationMethod.DETERMINISTIC,
+    ) -> dict:
         name = getattr(item, "name", "") or getattr(item, "symbol", "")
         attrs = self._dump_attrs(item)
         if schema.kind in (NodeKind.SIGNAL, NodeKind.INTERFACE):
@@ -544,8 +611,11 @@ class TableEntityExtractor:
         attrs["schema_name"] = schema_name
         node = Node(
             id=make_node_id(ctx.family, schema.kind, name, doc_id=doc_id),
-            kind=schema.kind, name=name, qualified_name=name,
-            doc_id=doc_id, location=Location(page=page),
+            kind=schema.kind,
+            name=name,
+            qualified_name=name,
+            doc_id=doc_id,
+            location=Location(page=page),
             evidence=Evidence(
                 chunk_ids=source_chunk_ids or [],
                 pages=[page],
@@ -561,7 +631,9 @@ class TableEntityExtractor:
         bf_nodes: list[Node] = []
         bf_edges: list[Edge] = []
         if schema_name == "register" and hasattr(item, "bitfields"):
-            selected_bitfields, dropped_bitfields = self._select_non_overlapping_bitfields(item.bitfields or [])
+            selected_bitfields, dropped_bitfields = self._select_non_overlapping_bitfields(
+                item.bitfields or []
+            )
             if dropped_bitfields:
                 node.attrs["dropped_bitfields"] = dropped_bitfields
             for bf in selected_bitfields:
@@ -569,11 +641,14 @@ class TableEntityExtractor:
                 if not bf_name:
                     continue
                 bf_n = Node(
-                    id=make_node_id(ctx.family, NodeKind.BITFIELD,
-                                    f"{name}.{bf_name}", doc_id=doc_id),
-                    kind=NodeKind.BITFIELD, name=bf_name,
+                    id=make_node_id(
+                        ctx.family, NodeKind.BITFIELD, f"{name}.{bf_name}", doc_id=doc_id
+                    ),
+                    kind=NodeKind.BITFIELD,
+                    name=bf_name,
                     qualified_name=f"{name}.{bf_name}",
-                    doc_id=doc_id, location=Location(page=page),
+                    doc_id=doc_id,
+                    location=Location(page=page),
                     evidence=Evidence(
                         chunk_ids=source_chunk_ids or [],
                         pages=[page],
@@ -597,7 +672,9 @@ class TableEntityExtractor:
                 bf_nodes.append(bf_n)
                 classify_extracted_node(bf_n, method=derivation_method, extractor=extractor)
                 bf_edge = Edge(
-                    src=node.id, dst=bf_n.id, kind=EdgeKind.HAS_BITFIELD,
+                    src=node.id,
+                    dst=bf_n.id,
+                    kind=EdgeKind.HAS_BITFIELD,
                     confidence=schema.min_confidence,
                     evidence=Evidence(
                         pages=[page],
@@ -609,13 +686,17 @@ class TableEntityExtractor:
                     method=derivation_method,
                     extractor=extractor,
                     verified=(
-                        node.attrs["l2_status"] == "fact"
-                        and bf_n.attrs["l2_status"] == "fact"
+                        node.attrs["l2_status"] == "fact" and bf_n.attrs["l2_status"] == "fact"
                     ),
                 )
                 bf_edges.append(bf_edge)
             node.attrs["bitfield_ids"] = [n.id for n in bf_nodes]
-        return {"node": node, "edges": edges, "bitfield_nodes": bf_nodes, "bitfield_edges": bf_edges}
+        return {
+            "node": node,
+            "edges": edges,
+            "bitfield_nodes": bf_nodes,
+            "bitfield_edges": bf_edges,
+        }
 
     # ------- helpers -------
 
@@ -633,17 +714,43 @@ class TableEntityExtractor:
         pool = hdr_lower + " " + caption_lower
         if schema.target_model is RegisterDef:
             negative = (
-                "address map", "memory map", "base address", "地址映射",
-                "基地址", "中断", "interrupt", "irq", "signal list",
-                "pin list", "管脚表",
+                "address map",
+                "memory map",
+                "base address",
+                "地址映射",
+                "基地址",
+                "中断",
+                "interrupt",
+                "irq",
+                "signal list",
+                "pin list",
+                "管脚表",
             )
             if any(x in pool for x in negative):
                 return False
             strong = (
-                "reg name", "register", "field", "bit", "bits", "msb", "lsb",
-                "swaccess", "hwaccess", "access", "reset", "default", "offset",
-                "register number", "type", "description",
-                "寄存器", "字段", "位域", "复位", "访问", "偏移",
+                "reg name",
+                "register",
+                "field",
+                "bit",
+                "bits",
+                "msb",
+                "lsb",
+                "swaccess",
+                "hwaccess",
+                "access",
+                "reset",
+                "default",
+                "offset",
+                "register number",
+                "type",
+                "description",
+                "寄存器",
+                "字段",
+                "位域",
+                "复位",
+                "访问",
+                "偏移",
             )
             return sum(1 for x in strong if x in pool) >= 2
         # 非 register schema：先过 negative 排除，再按 hint 计数
@@ -651,7 +758,9 @@ class TableEntityExtractor:
             if any(x in pool for x in schema.negative_hints):
                 return False
         if schema.kind == NodeKind.SIGNAL:
-            has_interface_group = "interface group" in pool or "接口组" in pool or "外围接口" in pool
+            has_interface_group = (
+                "interface group" in pool or "接口组" in pool or "外围接口" in pool
+            )
             has_direction = "direction" in pool or "方向" in pool
             if has_interface_group and has_direction:
                 return True
@@ -672,30 +781,57 @@ class TableEntityExtractor:
         headers = [TableEntityExtractor._norm_header(h) for h in table.headers]
         caption = TableEntityExtractor._norm_header(table.caption or "")
         pool = " ".join([*headers, caption])
-        if not any(token in pool for token in ("interface", "bus", "protocol", "接口", "总线", "协议")):
+        if not any(
+            token in pool for token in ("interface", "bus", "protocol", "接口", "总线", "协议")
+        ):
             return False
 
         address_map_tokens = (
-            "address", "base", "offset", "size", "range", "memory map",
-            "address map", "noc master", "noc slave", "地址", "基地址",
-            "偏移", "大小", "范围", "地址映射",
+            "address",
+            "base",
+            "offset",
+            "size",
+            "range",
+            "memory map",
+            "address map",
+            "noc master",
+            "noc slave",
+            "地址",
+            "基地址",
+            "偏移",
+            "大小",
+            "范围",
+            "地址映射",
         )
         if any(token in pool for token in address_map_tokens):
             return False
 
         has_group_header = any(h in {"interface group", "接口组", "外围接口"} for h in headers)
         has_direction_only = any(h in {"direction", "dir", "方向"} for h in headers)
-        has_description = any(h in {"description", "desc", "function", "说明", "描述", "功能"} for h in headers)
+        has_description = any(
+            h in {"description", "desc", "function", "说明", "描述", "功能"} for h in headers
+        )
         has_protocol_col = any(h in {"protocol", "bus", "协议", "总线"} for h in headers)
         has_width_col = any("width" in h or "位宽" in h or "宽度" in h for h in headers)
         has_role_col = any(h in {"role", "master", "slave", "角色", "主", "从"} for h in headers)
-        has_name_col = any(h in {"name", "interface name", "interface", "接口名", "接口"} for h in headers)
+        has_name_col = any(
+            h in {"name", "interface name", "interface", "接口名", "接口"} for h in headers
+        )
 
         if has_group_header and not has_protocol_col and not has_width_col and not has_role_col:
             return False
-        if has_direction_only and has_description and not has_protocol_col and not has_width_col and not has_name_col:
+        if (
+            has_direction_only
+            and has_description
+            and not has_protocol_col
+            and not has_width_col
+            and not has_name_col
+        ):
             return False
-        return bool((has_name_col or has_protocol_col) and (has_protocol_col or has_width_col or has_role_col))
+        return bool(
+            (has_name_col or has_protocol_col)
+            and (has_protocol_col or has_width_col or has_role_col)
+        )
 
     @staticmethod
     def _has_interrupt_definition_columns(table: TableData | None) -> bool:
@@ -712,26 +848,62 @@ class TableEntityExtractor:
         headers = [TableEntityExtractor._norm_header(h) for h in table.headers]
         caption = TableEntityExtractor._norm_header(table.caption or "")
         pool = " ".join(headers + [caption])
-        if not any(token in pool for token in ("interrupt", "irq", "msi", "vector", "中断", "向量")):
+        if not any(
+            token in pool for token in ("interrupt", "irq", "msi", "vector", "中断", "向量")
+        ):
             return False
 
         strong_columns = (
-            "irq src", "irq_src", "summary_irq", "interrupt source",
-            "interrupt name", "irq name", "irq number", "vector number",
-            "msi vector", "msi-x vector", "source signal", "irq signal",
-            "中断源", "中断号", "中断信号", "向量号",
+            "irq src",
+            "irq_src",
+            "summary_irq",
+            "interrupt source",
+            "interrupt name",
+            "irq name",
+            "irq number",
+            "vector number",
+            "msi vector",
+            "msi-x vector",
+            "source signal",
+            "irq signal",
+            "中断源",
+            "中断号",
+            "中断信号",
+            "向量号",
         )
         if any(any(token in h for token in strong_columns) for h in headers):
             return True
 
-        has_sourceish = any(h in {"interrupt", "irq", "msi", "vector", "signal", "name", "中断", "信号"} for h in headers)
+        has_sourceish = any(
+            h in {"interrupt", "irq", "msi", "vector", "signal", "name", "中断", "信号"}
+            for h in headers
+        )
         has_structural = any(
-            any(token in h for token in ("number", "priority", "type", "description", "desc", "位宽", "类型", "描述"))
+            any(
+                token in h
+                for token in (
+                    "number",
+                    "priority",
+                    "type",
+                    "description",
+                    "desc",
+                    "位宽",
+                    "类型",
+                    "描述",
+                )
+            )
             for h in headers
         )
         caption_declares_list = any(
             token in caption
-            for token in ("interrupt source", "interrupt list", "irq list", "msi", "中断源", "中断列表")
+            for token in (
+                "interrupt source",
+                "interrupt list",
+                "irq list",
+                "msi",
+                "中断源",
+                "中断列表",
+            )
         )
         return bool((caption_declares_list or has_structural) and has_sourceish)
 
@@ -742,8 +914,7 @@ class TableEntityExtractor:
     @staticmethod
     def _is_register_summary_result(items: list) -> bool:
         return bool(items) and all(
-            isinstance(item, RegisterDef) and not (item.bitfields or [])
-            for item in items
+            isinstance(item, RegisterDef) and not (item.bitfields or []) for item in items
         )
 
     @classmethod
@@ -771,8 +942,13 @@ class TableEntityExtractor:
         headers = [cls._norm_header(h) for h in (table.headers or [])]
         if not headers:
             return False
-        has_bit = any(h in {"bit", "bits", "bit number", "bit range"} or "bit" in h for h in headers)
-        has_fieldish = any(h in {"name", "field", "bit field", "bitfield", "description", "function", "type"} for h in headers)
+        has_bit = any(
+            h in {"bit", "bits", "bit number", "bit range"} or "bit" in h for h in headers
+        )
+        has_fieldish = any(
+            h in {"name", "field", "bit field", "bitfield", "description", "function", "type"}
+            for h in headers
+        )
         has_register_number = cls._find_register_number_col(headers) is not None
         return has_bit and has_fieldish and not has_register_number
 
@@ -820,14 +996,37 @@ class TableEntityExtractor:
             return None
 
         reg_col = cls._find_register_name_col(headers)
-        field_col = cls._find_col(headers, ("field", "bit field", "bitfield", "name", "字段", "位域"))
+        field_col = cls._find_col(
+            headers, ("field", "bit field", "bitfield", "name", "字段", "位域")
+        )
         msb_col = cls._find_col(headers, ("msb", "bit high", "high", "bit_high"))
         lsb_col = cls._find_col(headers, ("lsb", "bit low", "low", "bit_low"))
-        bits_col = cls._find_col(headers, ("bits", "bit", "bit number", "bit no", "bit range", "位", "位段", "位号"))
-        access_col = cls._find_col(headers, ("swaccess", "sw access", "software access", "access", "memory access", "type", "访问", "类型"))
-        reset_col = cls._find_col(headers, ("default", "reset", "reset value", "value", "复位", "默认", "值"))
-        desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
-        offset_col = cls._find_col(headers, ("offset", "address offset", "addr offset", "address", "base address", "偏移", "地址"))
+        bits_col = cls._find_col(
+            headers, ("bits", "bit", "bit number", "bit no", "bit range", "位", "位段", "位号")
+        )
+        access_col = cls._find_col(
+            headers,
+            (
+                "swaccess",
+                "sw access",
+                "software access",
+                "access",
+                "memory access",
+                "type",
+                "访问",
+                "类型",
+            ),
+        )
+        reset_col = cls._find_col(
+            headers, ("default", "reset", "reset value", "value", "复位", "默认", "值")
+        )
+        desc_col = cls._find_col(
+            headers, ("description", "desc", "function", "说明", "描述", "功能")
+        )
+        offset_col = cls._find_col(
+            headers,
+            ("offset", "address offset", "addr offset", "address", "base address", "偏移", "地址"),
+        )
         width_col = cls._find_col(headers, ("width", "reg width", "位宽"))
 
         caption_reg = cls._register_name_from_caption(table.caption or "")
@@ -875,7 +1074,9 @@ class TableEntityExtractor:
 
             bit_range = None
             if msb_col is not None and lsb_col is not None:
-                bit_range = cls._parse_bit_pair(cls._cell(cells, msb_col), cls._cell(cells, lsb_col))
+                bit_range = cls._parse_bit_pair(
+                    cls._cell(cells, msb_col), cls._cell(cells, lsb_col)
+                )
             if bit_range is None and bits_col is not None:
                 bit_range = cls._bit_range_from_text(cls._cell(cells, bits_col))
             if bit_range is None:
@@ -889,16 +1090,19 @@ class TableEntityExtractor:
             if suffix is not None:
                 known_bit_ranges[suffix] = bit_range
 
-            entry = grouped.setdefault(reg_name, {
-                "name": reg_name,
-                "address": None,
-                "offset": None,
-                "width": 32,
-                "access": None,
-                "reset_value": None,
-                "description": "",
-                "bitfields": [],
-            })
+            entry = grouped.setdefault(
+                reg_name,
+                {
+                    "name": reg_name,
+                    "address": None,
+                    "offset": None,
+                    "width": 32,
+                    "access": None,
+                    "reset_value": None,
+                    "description": "",
+                    "bitfields": [],
+                },
+            )
             offset = cls._cell(cells, offset_col)
             if offset and entry["offset"] is None:
                 if re.search(r"0x[0-9a-fA-F]+|\b\d+\s*[KMGTP]?B?\b", offset):
@@ -909,14 +1113,16 @@ class TableEntityExtractor:
 
             access = cls._normalize_access(cls._cell(cells, access_col))
             reset = cls._cell(cells, reset_col) or None
-            entry["bitfields"].append(BitFieldDef(
-                name=field_name,
-                bit_high=bit_high,
-                bit_low=bit_low,
-                access=access,
-                reset=reset,
-                description=desc,
-            ))
+            entry["bitfields"].append(
+                BitFieldDef(
+                    name=field_name,
+                    bit_high=bit_high,
+                    bit_low=bit_low,
+                    access=access,
+                    reset=reset,
+                    description=desc,
+                )
+            )
 
         registers: list[RegisterDef] = []
         for item in grouped.values():
@@ -927,16 +1133,18 @@ class TableEntityExtractor:
             width = int(item["width"] or 32)
             while max_bit >= width:
                 width *= 2
-            registers.append(RegisterDef(
-                name=item["name"],
-                address=item["address"],
-                offset=item["offset"],
-                width=width,
-                access=item["access"],
-                reset_value=item["reset_value"],
-                description=item["description"],
-                bitfields=selected,
-            ))
+            registers.append(
+                RegisterDef(
+                    name=item["name"],
+                    address=item["address"],
+                    offset=item["offset"],
+                    width=width,
+                    access=item["access"],
+                    reset_value=item["reset_value"],
+                    description=item["description"],
+                    bitfields=selected,
+                )
+            )
         return registers or None
 
     @classmethod
@@ -947,10 +1155,14 @@ class TableEntityExtractor:
     ) -> list[RegisterDef] | None:
         """Parse register index/summary tables without bitfield rows."""
         reg_col = cls._find_register_name_col(headers)
-        desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
+        desc_col = cls._find_col(
+            headers, ("description", "desc", "function", "说明", "描述", "功能")
+        )
         number_col = cls._find_register_number_col(headers)
         type_col = cls._find_col(headers, ("type", "access", "memory access", "访问", "类型"))
-        location_col = cls._find_col(headers, ("location", "address", "offset", "addr offset", "地址", "偏移", "位置"))
+        location_col = cls._find_col(
+            headers, ("location", "address", "offset", "addr offset", "地址", "偏移", "位置")
+        )
         pool = " ".join(headers + [cls._norm_header(table.caption or "")])
         if not any(token in pool for token in ("register", "寄存器")):
             return None
@@ -972,13 +1184,15 @@ class TableEntityExtractor:
             offset = cls._offset_from_text(location)
             if offset is None:
                 offset = cls._offset_from_register_number(cls._cell(cells, number_col))
-            out.append(RegisterDef(
-                name=cls._clean_entity_name(name),
-                offset=offset,
-                access=cls._normalize_access(cls._cell(cells, type_col)),
-                description=cls._cell(cells, desc_col) or raw_name,
-                bitfields=[],
-            ))
+            out.append(
+                RegisterDef(
+                    name=cls._clean_entity_name(name),
+                    offset=offset,
+                    access=cls._normalize_access(cls._cell(cells, type_col)),
+                    description=cls._cell(cells, desc_col) or raw_name,
+                    bitfields=[],
+                )
+            )
         return out or None
 
     @classmethod
@@ -995,13 +1209,35 @@ class TableEntityExtractor:
         headers = [cls._norm_header(h) for h in (table.headers or [])]
         if not headers:
             return None
-        name_col = cls._find_col(headers, (
-            "name", "region", "target", "slave", "noc slave", "interface",
-            "访问区域", "区域", "目标", "从设备", "接口",
-        ))
-        address_col = cls._find_col(headers, (
-            "base address", "address", "offset", "addr", "访问地址", "基地址", "地址", "偏移",
-        ))
+        name_col = cls._find_col(
+            headers,
+            (
+                "name",
+                "region",
+                "target",
+                "slave",
+                "noc slave",
+                "interface",
+                "访问区域",
+                "区域",
+                "目标",
+                "从设备",
+                "接口",
+            ),
+        )
+        address_col = cls._find_col(
+            headers,
+            (
+                "base address",
+                "address",
+                "offset",
+                "addr",
+                "访问地址",
+                "基地址",
+                "地址",
+                "偏移",
+            ),
+        )
         size_col = cls._find_col(headers, ("size", "range", "大小", "范围"))
         desc_col = cls._find_col(headers, ("description", "desc", "说明", "描述", "功能"))
         if address_col is None:
@@ -1015,15 +1251,19 @@ class TableEntityExtractor:
             address = cls._cell(cells, address_col)
             if not cls._looks_like_address_locator(address):
                 continue
-            name = cls._clean_display_name(cls._cell(cells, name_col)) or cls._clean_display_name(address)
+            name = cls._clean_display_name(cls._cell(cells, name_col)) or cls._clean_display_name(
+                address
+            )
             if not name or cls._is_header_echo(name, headers):
                 continue
-            entries.append(MemoryMapDef(
-                name=name,
-                address=address,
-                size=cls._cell(cells, size_col) or None,
-                description=cls._cell(cells, desc_col),
-            ))
+            entries.append(
+                MemoryMapDef(
+                    name=name,
+                    address=address,
+                    size=cls._cell(cells, size_col) or None,
+                    description=cls._cell(cells, desc_col),
+                )
+            )
         return entries or None
 
     @classmethod
@@ -1034,12 +1274,27 @@ class TableEntityExtractor:
         headers = [cls._norm_header(h) for h in (table.headers or [])]
         if not cls._has_interrupt_definition_columns(table):
             return None
-        name_col = cls._find_col(headers, (
-            "irq src signal", "irq src", "irq_src信号", "irq_src 信号",
-            "summary_irq 信号", "interrupt", "irq", "vector", "signal", "name", "中断", "信号",
-        ))
+        name_col = cls._find_col(
+            headers,
+            (
+                "irq src signal",
+                "irq src",
+                "irq_src信号",
+                "irq_src 信号",
+                "summary_irq 信号",
+                "interrupt",
+                "irq",
+                "vector",
+                "signal",
+                "name",
+                "中断",
+                "信号",
+            ),
+        )
         type_col = cls._find_col(headers, ("type", "category", "类型"))
-        number_col = cls._find_col(headers, ("number", "irq number", "vector number", "中断号", "编号"))
+        number_col = cls._find_col(
+            headers, ("number", "irq number", "vector number", "中断号", "编号")
+        )
         desc_col = cls._find_col(headers, ("description", "desc", "说明", "描述", "功能"))
         if name_col is None:
             return None
@@ -1049,12 +1304,14 @@ class TableEntityExtractor:
             name = cls._clean_display_name(cls._cell(cells, name_col))
             if not name or cls._is_header_echo(name, headers):
                 continue
-            out.append(InterruptDef(
-                name=name,
-                number=cls._cell(cells, number_col) or None,
-                type=cls._cell(cells, type_col) or None,
-                description=cls._cell(cells, desc_col),
-            ))
+            out.append(
+                InterruptDef(
+                    name=name,
+                    number=cls._cell(cells, number_col) or None,
+                    type=cls._cell(cells, type_col) or None,
+                    description=cls._cell(cells, desc_col),
+                )
+            )
         return out or None
 
     @classmethod
@@ -1069,9 +1326,13 @@ class TableEntityExtractor:
         name_col = cls._find_col(headers, ("signal", "port", "pin name", "name", "信号", "端口"))
         width_col = cls._find_col(headers, ("width", "bit width", "bits", "位宽", "宽度"))
         direction_col = cls._find_col(headers, ("direction", "dir", "i/o", "io", "方向"))
-        desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
+        desc_col = cls._find_col(
+            headers, ("description", "desc", "function", "说明", "描述", "功能")
+        )
         if name_col is None:
-            name_col = cls._infer_signal_name_col(table, headers, direction_col, width_col, desc_col)
+            name_col = cls._infer_signal_name_col(
+                table, headers, direction_col, width_col, desc_col
+            )
         if name_col is None:
             return None
         out: list[SignalDef] = []
@@ -1084,12 +1345,14 @@ class TableEntityExtractor:
                 or not cls._looks_like_signal_name(name)
             ):
                 continue
-            out.append(SignalDef(
-                name=name,
-                direction=cls._normalize_direction(cls._cell(cells, direction_col)),
-                width=cls._normalize_width(cls._cell(cells, width_col)),
-                description=cls._cell(cells, desc_col),
-            ))
+            out.append(
+                SignalDef(
+                    name=name,
+                    direction=cls._normalize_direction(cls._cell(cells, direction_col)),
+                    width=cls._normalize_width(cls._cell(cells, width_col)),
+                    description=cls._cell(cells, desc_col),
+                )
+            )
         return out or None
 
     @classmethod
@@ -1108,11 +1371,19 @@ class TableEntityExtractor:
             return None
         if "pin list" in pool or "管脚表" in pool:
             return None
-        name_col = cls._find_col(headers, ("pin name", "pin", "ball name", "name", "管脚名", "引脚名"))
-        no_col = cls._find_col(headers, ("pin no", "pin number", "ball no", "no", "number", "编号", "管脚号"))
-        direction_col = cls._find_col(headers, ("direction", "dir", "type", "i/o", "io", "方向", "类型"))
+        name_col = cls._find_col(
+            headers, ("pin name", "pin", "ball name", "name", "管脚名", "引脚名")
+        )
+        no_col = cls._find_col(
+            headers, ("pin no", "pin number", "ball no", "no", "number", "编号", "管脚号")
+        )
+        direction_col = cls._find_col(
+            headers, ("direction", "dir", "type", "i/o", "io", "方向", "类型")
+        )
         voltage_col = cls._find_col(headers, ("voltage", "power", "电压", "电源"))
-        desc_col = cls._find_col(headers, ("description", "desc", "function", "功能", "描述", "说明"))
+        desc_col = cls._find_col(
+            headers, ("description", "desc", "function", "功能", "描述", "说明")
+        )
         if name_col is None and no_col is None:
             return None
         if name_col is None:
@@ -1125,13 +1396,15 @@ class TableEntityExtractor:
                 continue
             if name_col == no_col and not any(c.isalpha() for c in name):
                 continue
-            out.append(PinDef(
-                name=name,
-                direction=cls._normalize_direction(cls._cell(cells, direction_col)),
-                pin_no=cls._cell(cells, no_col) if no_col != name_col else None,
-                voltage=cls._cell(cells, voltage_col) or None,
-                description=cls._cell(cells, desc_col),
-            ))
+            out.append(
+                PinDef(
+                    name=name,
+                    direction=cls._normalize_direction(cls._cell(cells, direction_col)),
+                    pin_no=cls._cell(cells, no_col) if no_col != name_col else None,
+                    voltage=cls._cell(cells, voltage_col) or None,
+                    description=cls._cell(cells, desc_col),
+                )
+            )
         return out or None
 
     @classmethod
@@ -1144,12 +1417,16 @@ class TableEntityExtractor:
         if table is None or not table.rows:
             return None
         headers = [cls._norm_header(h) for h in (table.headers or [])]
-        symbol_col = cls._find_col(headers, ("symbol", "parameter", "name", "param", "参数", "符号"))
+        symbol_col = cls._find_col(
+            headers, ("symbol", "parameter", "name", "param", "参数", "符号")
+        )
         min_col = cls._find_col(headers, ("min", "minimum", "最小"))
         typ_col = cls._find_col(headers, ("typ", "typical", "典型"))
         max_col = cls._find_col(headers, ("max", "maximum", "最大"))
         unit_col = cls._find_col(headers, ("unit", "units", "单位"))
-        cond_col = cls._find_col(headers, ("condition", "test condition", "note", "条件", "测试条件"))
+        cond_col = cls._find_col(
+            headers, ("condition", "test condition", "note", "条件", "测试条件")
+        )
         if symbol_col is None:
             return None
         if min_col is None and typ_col is None and max_col is None:
@@ -1162,14 +1439,16 @@ class TableEntityExtractor:
                 continue
             if symbol.replace(".", "").replace("/", "").isdigit():
                 continue
-            out.append(TimingParam(
-                symbol=symbol,
-                min=cls._cell(cells, min_col) or None,
-                typ=cls._cell(cells, typ_col) or None,
-                max=cls._cell(cells, max_col) or None,
-                unit=cls._cell(cells, unit_col) or None,
-                condition=cls._cell(cells, cond_col),
-            ))
+            out.append(
+                TimingParam(
+                    symbol=symbol,
+                    min=cls._cell(cells, min_col) or None,
+                    typ=cls._cell(cells, typ_col) or None,
+                    max=cls._cell(cells, max_col) or None,
+                    unit=cls._cell(cells, unit_col) or None,
+                    condition=cls._cell(cells, cond_col),
+                )
+            )
         return out or None
 
     @classmethod
@@ -1190,7 +1469,10 @@ class TableEntityExtractor:
         pool = " ".join(headers + [cls._norm_header(table.caption or "")])
         if direction_col is None and width_col is None:
             return None
-        if not any(token in pool for token in ("interface", "port", "signal", "接口", "端口", "信号", "方向")):
+        if not any(
+            token in pool
+            for token in ("interface", "port", "signal", "接口", "端口", "信号", "方向")
+        ):
             return None
         excluded = {idx for idx in (direction_col, width_col, desc_col) if idx is not None}
         col_count = table.n_cols or max((len(r) for r in table.rows), default=0)
@@ -1220,9 +1502,13 @@ class TableEntityExtractor:
             return None
         name_col = cls._find_col(headers, ("name", "interface name", "interface", "接口名", "接口"))
         protocol_col = cls._find_col(headers, ("protocol", "bus", "协议", "总线"))
-        direction_col = cls._find_col(headers, ("direction", "role", "master", "slave", "方向", "角色"))
+        direction_col = cls._find_col(
+            headers, ("direction", "role", "master", "slave", "方向", "角色")
+        )
         width_col = cls._find_col(headers, ("width", "data width", "位宽", "宽度"))
-        desc_col = cls._find_col(headers, ("description", "desc", "function", "说明", "描述", "功能"))
+        desc_col = cls._find_col(
+            headers, ("description", "desc", "function", "说明", "描述", "功能")
+        )
         if name_col is None:
             name_col = protocol_col
         if name_col is None:
@@ -1233,13 +1519,15 @@ class TableEntityExtractor:
             name = cls._clean_display_name(cls._cell(cells, name_col))
             if not name or cls._is_header_echo(name, headers):
                 continue
-            out.append(InterfaceDef(
-                name=name,
-                protocol=cls._cell(cells, protocol_col) if protocol_col != name_col else None,
-                direction=cls._normalize_direction(cls._cell(cells, direction_col)),
-                width=cls._normalize_width(cls._cell(cells, width_col)),
-                description=cls._cell(cells, desc_col),
-            ))
+            out.append(
+                InterfaceDef(
+                    name=name,
+                    protocol=cls._cell(cells, protocol_col) if protocol_col != name_col else None,
+                    direction=cls._normalize_direction(cls._cell(cells, direction_col)),
+                    width=cls._normalize_width(cls._cell(cells, width_col)),
+                    description=cls._cell(cells, desc_col),
+                )
+            )
         return out or None
 
     @classmethod
@@ -1249,17 +1537,53 @@ class TableEntityExtractor:
             return None
         headers = [cls._norm_header(h) for h in (table.headers or [])]
         pool = " ".join(headers + [cls._norm_header(table.caption or "")])
-        if not any(token in pool for token in (
-            "constraint", "sdc", "sta", "setup", "hold", "uncertainty",
-            "transition", "fanout", "false path", "multicycle", "约束", "时序",
-        )):
+        if not any(
+            token in pool
+            for token in (
+                "constraint",
+                "sdc",
+                "sta",
+                "setup",
+                "hold",
+                "uncertainty",
+                "transition",
+                "fanout",
+                "false path",
+                "multicycle",
+                "约束",
+                "时序",
+            )
+        ):
             return None
-        name_col = cls._find_col(headers, ("name", "id", "constraint", "constraint name", "约束", "名称", "编号"))
-        target_col = cls._find_col(headers, ("target", "object", "path", "clock", "net", "pin", "目标", "对象", "路径", "时钟", "网络"))
-        type_col = cls._find_col(headers, ("type", "constraint type", "kind", "category", "类型", "类别"))
-        value_col = cls._find_col(headers, ("value", "limit", "max", "min", "取值", "值", "限制", "最大", "最小"))
+        name_col = cls._find_col(
+            headers, ("name", "id", "constraint", "constraint name", "约束", "名称", "编号")
+        )
+        target_col = cls._find_col(
+            headers,
+            (
+                "target",
+                "object",
+                "path",
+                "clock",
+                "net",
+                "pin",
+                "目标",
+                "对象",
+                "路径",
+                "时钟",
+                "网络",
+            ),
+        )
+        type_col = cls._find_col(
+            headers, ("type", "constraint type", "kind", "category", "类型", "类别")
+        )
+        value_col = cls._find_col(
+            headers, ("value", "limit", "max", "min", "取值", "值", "限制", "最大", "最小")
+        )
         unit_col = cls._find_col(headers, ("unit", "单位"))
-        condition_col = cls._find_col(headers, ("condition", "corner", "mode", "scenario", "条件", "工况", "模式"))
+        condition_col = cls._find_col(
+            headers, ("condition", "corner", "mode", "scenario", "条件", "工况", "模式")
+        )
         desc_col = cls._find_col(headers, ("description", "desc", "notes", "说明", "描述", "备注"))
         if name_col is None and type_col is None:
             return None
@@ -1274,36 +1598,85 @@ class TableEntityExtractor:
             if cls._is_header_echo(raw_name, headers):
                 continue
             name = raw_name or " ".join(x for x in [constraint_type, target] if x).strip()
-            out.append(ConstraintDef(
-                name=name,
-                target=target or None,
-                constraint_type=constraint_type or None,
-                value=cls._cell(cells, value_col) or None,
-                unit=cls._cell(cells, unit_col) or None,
-                condition=cls._cell(cells, condition_col),
-                description=cls._cell(cells, desc_col),
-            ))
+            out.append(
+                ConstraintDef(
+                    name=name,
+                    target=target or None,
+                    constraint_type=constraint_type or None,
+                    value=cls._cell(cells, value_col) or None,
+                    unit=cls._cell(cells, unit_col) or None,
+                    condition=cls._cell(cells, condition_col),
+                    description=cls._cell(cells, desc_col),
+                )
+            )
         return out or None
 
     @classmethod
-    def _extract_physical_constraints_from_table(cls, table: TableData | None) -> list[PhysicalConstraintDef] | None:
+    def _extract_physical_constraints_from_table(
+        cls, table: TableData | None
+    ) -> list[PhysicalConstraintDef] | None:
         """Deterministically parse backend floorplan/placement/routing constraint tables."""
         if table is None or not table.rows:
             return None
         headers = [cls._norm_header(h) for h in (table.headers or [])]
         pool = " ".join(headers + [cls._norm_header(table.caption or "")])
-        if not any(token in pool for token in (
-            "floorplan", "placement", "route", "routing", "layer", "region",
-            "macro", "keepout", "blockage", "spacing", "density",
-            "布局", "摆放", "布线", "区域", "宏", "禁布", "阻塞", "间距", "密度",
-        )):
+        if not any(
+            token in pool
+            for token in (
+                "floorplan",
+                "placement",
+                "route",
+                "routing",
+                "layer",
+                "region",
+                "macro",
+                "keepout",
+                "blockage",
+                "spacing",
+                "density",
+                "布局",
+                "摆放",
+                "布线",
+                "区域",
+                "宏",
+                "禁布",
+                "阻塞",
+                "间距",
+                "密度",
+            )
+        ):
             return None
-        name_col = cls._find_col(headers, ("name", "id", "constraint", "rule", "名称", "编号", "规则"))
-        object_col = cls._find_col(headers, ("object", "target", "macro", "net", "cell", "对象", "目标", "宏", "网络", "单元"))
-        type_col = cls._find_col(headers, ("type", "constraint type", "category", "kind", "类型", "类别"))
-        value_col = cls._find_col(headers, ("value", "limit", "width", "spacing", "density", "utilization", "取值", "值", "线宽", "间距", "密度", "利用率"))
+        name_col = cls._find_col(
+            headers, ("name", "id", "constraint", "rule", "名称", "编号", "规则")
+        )
+        object_col = cls._find_col(
+            headers,
+            ("object", "target", "macro", "net", "cell", "对象", "目标", "宏", "网络", "单元"),
+        )
+        type_col = cls._find_col(
+            headers, ("type", "constraint type", "category", "kind", "类型", "类别")
+        )
+        value_col = cls._find_col(
+            headers,
+            (
+                "value",
+                "limit",
+                "width",
+                "spacing",
+                "density",
+                "utilization",
+                "取值",
+                "值",
+                "线宽",
+                "间距",
+                "密度",
+                "利用率",
+            ),
+        )
         layer_col = cls._find_col(headers, ("layer", "metal", "层", "金属层"))
-        region_col = cls._find_col(headers, ("region", "area", "voltage area", "domain", "区域", "电压区域", "域"))
+        region_col = cls._find_col(
+            headers, ("region", "area", "voltage area", "domain", "区域", "电压区域", "域")
+        )
         desc_col = cls._find_col(headers, ("description", "desc", "notes", "说明", "描述", "备注"))
         if name_col is None and type_col is None:
             return None
@@ -1318,15 +1691,17 @@ class TableEntityExtractor:
             if cls._is_header_echo(raw_name, headers):
                 continue
             name = raw_name or " ".join(x for x in [constraint_type, obj] if x).strip()
-            out.append(PhysicalConstraintDef(
-                name=name,
-                object=obj or None,
-                constraint_type=constraint_type or None,
-                value=cls._cell(cells, value_col) or None,
-                layer=cls._cell(cells, layer_col) or None,
-                region=cls._cell(cells, region_col) or None,
-                description=cls._cell(cells, desc_col),
-            ))
+            out.append(
+                PhysicalConstraintDef(
+                    name=name,
+                    object=obj or None,
+                    constraint_type=constraint_type or None,
+                    value=cls._cell(cells, value_col) or None,
+                    layer=cls._cell(cells, layer_col) or None,
+                    region=cls._cell(cells, region_col) or None,
+                    description=cls._cell(cells, desc_col),
+                )
+            )
         return out or None
 
     @staticmethod
@@ -1349,8 +1724,14 @@ class TableEntityExtractor:
     @staticmethod
     def _find_register_number_col(headers: list[str]) -> int | None:
         exact = {
-            "register number", "reg number", "register no", "reg no",
-            "decimal", "binary", "寄存器号", "寄存器编号",
+            "register number",
+            "reg number",
+            "register no",
+            "reg no",
+            "decimal",
+            "binary",
+            "寄存器号",
+            "寄存器编号",
         }
         for idx, header in enumerate(headers):
             if header in exact:
@@ -1367,7 +1748,9 @@ class TableEntityExtractor:
             if header in exact:
                 return idx
         for idx, header in enumerate(headers):
-            if "register" in header and not any(token in header for token in ("number", "no", "index")):
+            if "register" in header and not any(
+                token in header for token in ("number", "no", "index")
+            ):
                 return idx
         return None
 
@@ -1402,7 +1785,9 @@ class TableEntityExtractor:
             return True
         if re.search(r"\b[A-Z0-9_]*BAR\d*\b", text, re.I):
             return True
-        if re.search(r"\b(BDF|offset|base|host|local|memory|register|寄存器|空间|偏移)\b", text, re.I):
+        if re.search(
+            r"\b(BDF|offset|base|host|local|memory|register|寄存器|空间|偏移)\b", text, re.I
+        ):
             return True
         if any(ch in text for ch in "+:/"):
             return True
@@ -1415,8 +1800,15 @@ class TableEntityExtractor:
             return False
         lowered = text.lower()
         if lowered in {
-            "reserved", "reserve", "description", "clock/reset", "interface group",
-            "interrupt", "interrupts", "irq", "irqs",
+            "reserved",
+            "reserve",
+            "description",
+            "clock/reset",
+            "interface group",
+            "interrupt",
+            "interrupts",
+            "irq",
+            "irqs",
         }:
             return False
         if any(ch in text for ch in " /，,;；"):
@@ -1520,7 +1912,11 @@ class TableEntityExtractor:
             text = str(cell or "").strip()
             if not text:
                 continue
-            m = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*?(?:reg|ctrl|cfg|stat|state|sel)[A-Za-z0-9_]*)\b", text, re.I)
+            m = re.search(
+                r"\b([A-Za-z_][A-Za-z0-9_]*?(?:reg|ctrl|cfg|stat|state|sel)[A-Za-z0-9_]*)\b",
+                text,
+                re.I,
+            )
             if m:
                 return m.group(1)
         return ""
@@ -1573,7 +1969,11 @@ class TableEntityExtractor:
     def _is_reserved_field_name(name: str, description: str = "") -> bool:
         norm = TableEntityExtractor._norm_header(name).strip("_- ")
         desc = TableEntityExtractor._norm_header(description)
-        return norm in {"", "-", "reserved", "reserve"} or desc in {"reserved", "reserve", "reserved."}
+        return norm in {"", "-", "reserved", "reserve"} or desc in {
+            "reserved",
+            "reserve",
+            "reserved.",
+        }
 
     @staticmethod
     def _offset_from_text(text: str) -> str | None:
@@ -1674,14 +2074,28 @@ class TableEntityExtractor:
             name = getattr(bf, "name", "") or f"bitfield_{idx}"
             high = getattr(bf, "bit_high", None)
             low = getattr(bf, "bit_low", None)
+            if high is None or low is None:
+                dropped.append(
+                    {
+                        "name": name,
+                        "bit_high": high,
+                        "bit_low": low,
+                        "reason": "invalid_range",
+                    }
+                )
+                continue
             try:
                 high_i = int(high)
                 low_i = int(low)
             except Exception:
-                dropped.append({"name": name, "bit_high": high, "bit_low": low, "reason": "invalid_range"})
+                dropped.append(
+                    {"name": name, "bit_high": high, "bit_low": low, "reason": "invalid_range"}
+                )
                 continue
             if high_i < low_i:
-                dropped.append({"name": name, "bit_high": high_i, "bit_low": low_i, "reason": "invalid_range"})
+                dropped.append(
+                    {"name": name, "bit_high": high_i, "bit_low": low_i, "reason": "invalid_range"}
+                )
                 continue
             candidates.append((low_i, high_i, idx, bf))
         if len(candidates) <= 1:
@@ -1705,14 +2119,18 @@ class TableEntityExtractor:
             best.append(max(skip, take))
 
         selected_indexes = set(best[-1][2])
-        selected = [ordered[i][3] for i in sorted(selected_indexes, key=lambda idx: ordered[idx][2])]
+        selected = [
+            ordered[i][3] for i in sorted(selected_indexes, key=lambda idx: ordered[idx][2])
+        ]
         for i, (low, high, _idx, bf) in enumerate(ordered):
             if i in selected_indexes:
                 continue
-            dropped.append({
-                "name": getattr(bf, "name", ""),
-                "bit_high": high,
-                "bit_low": low,
-                "reason": "overlap",
-            })
+            dropped.append(
+                {
+                    "name": getattr(bf, "name", ""),
+                    "bit_high": high,
+                    "bit_low": low,
+                    "reason": "overlap",
+                }
+            )
         return selected, dropped

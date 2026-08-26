@@ -14,6 +14,7 @@
 - 失败不影响已有图谱；evidence 非空（ADR-008）。
 - 幂等：upsert_edge 对 (src, dst, kind) 去重。
 """
+
 from __future__ import annotations
 
 import time
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 
 from docgraph.core.ids import normalize_name
 from docgraph.core.logger import get_logger
-from docgraph.graph.schema import Edge, EdgeKind, Evidence, NodeKind
+from docgraph.graph.schema import Edge, EdgeKind, Evidence, Node, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.graph.store import NodeQuery
 
@@ -63,7 +64,7 @@ class RelationInferLinker:
 
         # 1. 建 section 索引：(doc_id, section_path) -> section_node
         sections = store.search_nodes(NodeQuery(kind=NodeKind.SECTION, limit=100000))
-        section_by_key: dict[tuple[str, str], object] = {}
+        section_by_key: dict[tuple[str, str], Node] = {}
         section_name_by_key: dict[tuple[str, str], str] = {}
         for s in sections:
             sp = _section_path_of(s)
@@ -75,7 +76,7 @@ class RelationInferLinker:
 
         # 2. 建 module 索引（来自 figure VLM）：(doc_id, normalize(name)) -> module_node
         modules = store.search_nodes(NodeQuery(kind=NodeKind.MODULE, limit=100000))
-        module_by_doc_name: dict[tuple[str, str], object] = {}
+        module_by_doc_name: dict[tuple[str, str], Node] = {}
         for m in modules:
             nm = normalize_name(m.qualified_name or m.name or "")
             if nm:
@@ -95,24 +96,28 @@ class RelationInferLinker:
                     rep.skipped_no_section += 1
                     continue
                 # 优先连同名 module 节点（更语义），否则连 section
-                target = self._match_module(module_by_doc_name, ent.doc_id, section_name_by_key.get(key, ""))
+                target = self._match_module(
+                    module_by_doc_name, ent.doc_id, section_name_by_key.get(key, "")
+                )
                 if target is None:
                     target = section
-                store.upsert_edge(Edge(
-                    src=ent.id,
-                    dst=target.id,
-                    kind=EdgeKind.BELONGS_TO,
-                    confidence=0.85 if target.kind == NodeKind.SECTION else 0.9,
-                    evidence=Evidence(
-                        pages=[ent.location.page] if ent.location and ent.location.page else [],
-                        extractor=f"{self.name}@{self.version}",
-                        raw_snippet=f"{ent.kind.value} in section {sp}",
-                    ),
-                    attrs={
-                        "source": f"{self.name}@{self.version}",
-                        "inferred_from": "section_context",
-                    },
-                ))
+                store.upsert_edge(
+                    Edge(
+                        src=ent.id,
+                        dst=target.id,
+                        kind=EdgeKind.BELONGS_TO,
+                        confidence=0.85 if target.kind == NodeKind.SECTION else 0.9,
+                        evidence=Evidence(
+                            pages=[ent.location.page] if ent.location and ent.location.page else [],
+                            extractor=f"{self.name}@{self.version}",
+                            raw_snippet=f"{ent.kind.value} in section {sp}",
+                        ),
+                        attrs={
+                            "source": f"{self.name}@{self.version}",
+                            "inferred_from": "section_context",
+                        },
+                    )
+                )
                 rep.belongs_to_edges += 1
 
         # 4. contained_in：memory_map → register（地址前缀匹配）
@@ -129,10 +134,10 @@ class RelationInferLinker:
 
     @staticmethod
     def _match_module(
-        module_by_doc_name: dict[tuple[str, str], object],
+        module_by_doc_name: dict[tuple[str, str], Node],
         doc_id: str,
         section_name: str,
-    ) -> object | None:
+    ) -> Node | None:
         """若 section 标题恰好匹配一个 module 节点名，返回该 module。保守精确匹配。"""
         if not section_name:
             return None
@@ -146,7 +151,7 @@ class RelationInferLinker:
         maps = store.search_nodes(NodeQuery(kind=NodeKind.MEMORY_MAP, limit=100000))
         regs = store.search_nodes(NodeQuery(kind=NodeKind.REGISTER, limit=100000))
         # 按文档分组 register 地址，避免 O(n*m)
-        reg_addr_by_doc: dict[str, list[tuple[object, str]]] = {}
+        reg_addr_by_doc: dict[str, list[tuple[Node, str]]] = {}
         for r in regs:
             addr = _addr_of(r)
             if addr:
@@ -158,21 +163,23 @@ class RelationInferLinker:
                 continue
             for r, addr in reg_addr_by_doc.get(m.doc_id, []):
                 if _addr_prefix(base, addr):
-                    store.upsert_edge(Edge(
-                        src=m.id,
-                        dst=r.id,
-                        kind=EdgeKind.CONTAINED_IN,
-                        confidence=0.95,
-                        evidence=Evidence(
-                            pages=[m.location.page] if m.location and m.location.page else [],
-                            extractor=f"{self.name}@{self.version}",
-                            raw_snippet=f"{m.name} base {base} covers {r.name} @ {addr}",
-                        ),
-                        attrs={
-                            "source": f"{self.name}@{self.version}",
-                            "inferred_from": "address_join",
-                        },
-                    ))
+                    store.upsert_edge(
+                        Edge(
+                            src=m.id,
+                            dst=r.id,
+                            kind=EdgeKind.CONTAINED_IN,
+                            confidence=0.95,
+                            evidence=Evidence(
+                                pages=[m.location.page] if m.location and m.location.page else [],
+                                extractor=f"{self.name}@{self.version}",
+                                raw_snippet=f"{m.name} base {base} covers {r.name} @ {addr}",
+                            ),
+                            attrs={
+                                "source": f"{self.name}@{self.version}",
+                                "inferred_from": "address_join",
+                            },
+                        )
+                    )
                     n += 1
         return n
 
@@ -214,8 +221,9 @@ def _recover_section_path(store: SQLiteGraphStore, node) -> str | None:
     try:
         blocks = store.get_blocks(list(block_ids))
     except Exception as e:
-        log.warning(f"[relation_infer] get_blocks failed for {node.id}: {e}; "
-        "section recovery skipped")
+        log.warning(
+            f"[relation_infer] get_blocks failed for {node.id}: {e}; section recovery skipped"
+        )
         return None
     for b in blocks:
         sp = getattr(b, "section_path", None)

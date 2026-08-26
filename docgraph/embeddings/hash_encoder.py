@@ -9,6 +9,7 @@
 - L2 normalize
 - **不是真正的语义嵌入**——只能粗略匹配相同/相似词，但能验证 store + retrieval 联通。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -66,6 +67,7 @@ class HashEncoder:
 
 class BgeM3Encoder:
     """bge-m3 适配（按需 import sentence-transformers）。"""
+
     name = "bge_m3"
 
     def __init__(self, model_name: str = "BAAI/bge-m3", dim: int = 1024) -> None:
@@ -80,8 +82,7 @@ class BgeM3Encoder:
             from sentence_transformers import SentenceTransformer  # type: ignore
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
-                "sentence-transformers required. "
-                "Install with: pip install 'docgraph-core[embeddings]'"
+                "sentence-transformers required. Install with: uv sync --extra embeddings"
             ) from e
         self._model = SentenceTransformer(self.model, device=_pick_device())
 

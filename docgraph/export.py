@@ -6,6 +6,7 @@ M4 实现简化版：
 
 目的是与下游 EDA / 寄存器生成工具对接，让 spec 抽取的成果可直接喂给芯片设计流程。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -45,18 +46,18 @@ def export_ipxact(
     lines: list[str] = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<ipxact:component xmlns:ipxact="http://www.accellera.org/XMLSchema/IPXACT/1685-2014">',
-        '  <ipxact:vendor>docgraph</ipxact:vendor>',
-        f'  <ipxact:library>{escape(family)}</ipxact:library>',
-        f'  <ipxact:name>{escape(component)}</ipxact:name>',
-        '  <ipxact:version>0.1</ipxact:version>',
-        '  <ipxact:memoryMaps>',
-        '    <ipxact:memoryMap>',
-        f'      <ipxact:name>{escape(component)}_regs</ipxact:name>',
-        '      <ipxact:addressBlock>',
-        f'        <ipxact:name>{escape(component)}_block</ipxact:name>',
-        '        <ipxact:baseAddress>0x0</ipxact:baseAddress>',
-        '        <ipxact:range>0x1000</ipxact:range>',
-        '        <ipxact:width>32</ipxact:width>',
+        "  <ipxact:vendor>docgraph</ipxact:vendor>",
+        f"  <ipxact:library>{escape(family)}</ipxact:library>",
+        f"  <ipxact:name>{escape(component)}</ipxact:name>",
+        "  <ipxact:version>0.1</ipxact:version>",
+        "  <ipxact:memoryMaps>",
+        "    <ipxact:memoryMap>",
+        f"      <ipxact:name>{escape(component)}_regs</ipxact:name>",
+        "      <ipxact:addressBlock>",
+        f"        <ipxact:name>{escape(component)}_block</ipxact:name>",
+        "        <ipxact:baseAddress>0x0</ipxact:baseAddress>",
+        "        <ipxact:range>0x1000</ipxact:range>",
+        "        <ipxact:width>32</ipxact:width>",
     ]
 
     total_bf = 0
@@ -67,11 +68,15 @@ def export_ipxact(
         access = attrs.get("access") or ""
         lines.append("        <ipxact:register>")
         lines.append(f"          <ipxact:name>{escape(reg.name)}</ipxact:name>")
-        lines.append(f"          <ipxact:description>{escape(reg.summary or '')}</ipxact:description>")
+        lines.append(
+            f"          <ipxact:description>{escape(reg.summary or '')}</ipxact:description>"
+        )
         lines.append(f"          <ipxact:addressOffset>{escape(str(addr))}</ipxact:addressOffset>")
         lines.append(f"          <ipxact:size>{int(width)}</ipxact:size>")
         if access:
-            lines.append(f"          <ipxact:access>{escape(_map_access_ipxact(access))}</ipxact:access>")
+            lines.append(
+                f"          <ipxact:access>{escape(_map_access_ipxact(access))}</ipxact:access>"
+            )
 
         bfs = _bitfields_of(store, reg)
         for bf in bfs:
@@ -79,27 +84,35 @@ def export_ipxact(
             hi, lo = int(ba.get("bit_high", 0)), int(ba.get("bit_low", 0))
             lines.append("          <ipxact:field>")
             lines.append(f"            <ipxact:name>{escape(bf.name)}</ipxact:name>")
-            lines.append(f"            <ipxact:description>{escape(ba.get('description') or '')}</ipxact:description>")
+            lines.append(
+                f"            <ipxact:description>{escape(ba.get('description') or '')}</ipxact:description>"
+            )
             lines.append(f"            <ipxact:bitOffset>{lo}</ipxact:bitOffset>")
             lines.append(f"            <ipxact:bitWidth>{hi - lo + 1}</ipxact:bitWidth>")
             if ba.get("access"):
-                lines.append(f"            <ipxact:access>{escape(_map_access_ipxact(ba['access']))}</ipxact:access>")
+                lines.append(
+                    f"            <ipxact:access>{escape(_map_access_ipxact(ba['access']))}</ipxact:access>"
+                )
             if ba.get("reset"):
-                lines.append("            <ipxact:resets><ipxact:reset>"
-                             f"<ipxact:value>{escape(str(ba['reset']))}</ipxact:value>"
-                             "</ipxact:reset></ipxact:resets>")
+                lines.append(
+                    "            <ipxact:resets><ipxact:reset>"
+                    f"<ipxact:value>{escape(str(ba['reset']))}</ipxact:value>"
+                    "</ipxact:reset></ipxact:resets>"
+                )
             lines.append("          </ipxact:field>")
             total_bf += 1
         lines.append("        </ipxact:register>")
 
     lines += [
-        '      </ipxact:addressBlock>',
-        '    </ipxact:memoryMap>',
-        '  </ipxact:memoryMaps>',
-        '</ipxact:component>',
+        "      </ipxact:addressBlock>",
+        "    </ipxact:memoryMap>",
+        "  </ipxact:memoryMaps>",
+        "</ipxact:component>",
     ]
     out_path.write_text("\n".join(lines), encoding="utf-8")
-    return ExportResult(format="ipxact", output_path=out_path, registers=len(nodes), bitfields=total_bf)
+    return ExportResult(
+        format="ipxact", output_path=out_path, registers=len(nodes), bitfields=total_bf
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +164,9 @@ def export_systemrdl(
         lines.append(f"  }} {_id(reg.name)}{suffix};")
     lines.append("};")
     out_path.write_text("\n".join(lines), encoding="utf-8")
-    return ExportResult(format="systemrdl", output_path=out_path, registers=len(nodes), bitfields=total_bf)
+    return ExportResult(
+        format="systemrdl", output_path=out_path, registers=len(nodes), bitfields=total_bf
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +190,11 @@ def _bitfields_of(store: SQLiteGraphStore, reg: Node) -> list[Node]:
 def _map_access_ipxact(s: str) -> str:
     s = (s or "").upper()
     return {
-        "RW": "read-write", "RO": "read-only", "WO": "write-only",
-        "W1C": "read-write", "RZ": "read-only",
+        "RW": "read-write",
+        "RO": "read-only",
+        "WO": "write-only",
+        "W1C": "read-write",
+        "RZ": "read-only",
     }.get(s, "read-write")
 
 
@@ -187,6 +205,7 @@ def _map_access_rdl(s: str) -> str:
 
 def _id(name: str) -> str:
     import re
+
     return re.sub(r"\W", "_", name)
 
 

@@ -8,6 +8,7 @@
 
 不依赖文档类型，完全通用。
 """
+
 from __future__ import annotations
 
 import re
@@ -43,9 +44,7 @@ def chunk_doc(doc: ParsedDoc) -> list[Chunk]:
     """
     section_index = _section_index(doc)
     chunks: list[Chunk] = []
-    blocks = [
-        b for page in doc.pages for b in page.blocks
-    ]
+    blocks = [b for page in doc.pages for b in page.blocks]
     chunks.extend(_chunk_blocks(doc.doc_id, blocks, section_index))
     chunks = _merge_logical_tables(chunks)
     return _split_oversized_chunks(chunks)
@@ -75,26 +74,30 @@ def _chunk_blocks(
         page_end = max(b.page for b in buf_blocks)
         block_ids = [b.id for b in buf_blocks]
         chunk_idx = len(out)
-        out.append(Chunk(
-            id=_chunk_id(doc_id, kind, section_path, page_start, chunk_idx),
-            doc_id=doc_id, page=page_start,
-            page_start=page_start, page_end=page_end,
-            section_id=section_path,
-            section_node_id=section_node_id,
-            text=text,
-            hash=content_hash(text),
-            source_hash=content_hash("|".join(block_ids)),
-            block_ids=block_ids,
-            kind=kind,
-            chunk_type=kind,
-            attrs={
-                **({"section_path": section_path} if section_path else {}),
-                **({"section_node_id": section_node_id} if section_node_id else {}),
-                "page_start": page_start,
-                "page_end": page_end,
-                "chunk_type": kind,
-            },
-        ))
+        out.append(
+            Chunk(
+                id=_chunk_id(doc_id, kind, section_path, page_start, chunk_idx),
+                doc_id=doc_id,
+                page=page_start,
+                page_start=page_start,
+                page_end=page_end,
+                section_id=section_path,
+                section_node_id=section_node_id,
+                text=text,
+                hash=content_hash(text),
+                source_hash=content_hash("|".join(block_ids)),
+                block_ids=block_ids,
+                kind=kind,
+                chunk_type=kind,
+                attrs={
+                    **({"section_path": section_path} if section_path else {}),
+                    **({"section_node_id": section_node_id} if section_node_id else {}),
+                    "page_start": page_start,
+                    "page_end": page_end,
+                    "chunk_type": kind,
+                },
+            )
+        )
         buf_blocks = []
         buf_text = []
 
@@ -112,15 +115,29 @@ def _chunk_blocks(
         # table / figure 独立成 chunk（先 flush 累积的 section 文本）
         if b.kind == BlockKind.TABLE:
             flush()
-            out.append(_block_to_chunk(
-                doc_id, b, len(out), "table", section_path, section_node_id,
-            ))
+            out.append(
+                _block_to_chunk(
+                    doc_id,
+                    b,
+                    len(out),
+                    "table",
+                    section_path,
+                    section_node_id,
+                )
+            )
             continue
         if b.kind == BlockKind.FIGURE:
             flush()
-            out.append(_block_to_chunk(
-                doc_id, b, len(out), "figure", section_path, section_node_id,
-            ))
+            out.append(
+                _block_to_chunk(
+                    doc_id,
+                    b,
+                    len(out),
+                    "figure",
+                    section_path,
+                    section_node_id,
+                )
+            )
             continue
 
         buf_blocks.append(b)
@@ -166,7 +183,8 @@ def _block_to_chunk(
         text = "\n".join(lines)
     return Chunk(
         id=_chunk_id(doc_id, kind, section_path or b.section_path, b.page, idx),
-        doc_id=doc_id, page=b.page,
+        doc_id=doc_id,
+        page=b.page,
         page_start=b.page,
         page_end=b.page,
         section_id=section_path or b.section_path,
@@ -178,13 +196,19 @@ def _block_to_chunk(
         kind=kind,
         chunk_type=kind,
         attrs={
-            **({"section_path": section_path or b.section_path} if (section_path or b.section_path) else {}),
+            **(
+                {"section_path": section_path or b.section_path}
+                if (section_path or b.section_path)
+                else {}
+            ),
             **({"section_node_id": section_node_id} if section_node_id else {}),
             "page_start": b.page,
             "page_end": b.page,
             "chunk_type": kind,
             **({"image_path": b.image_path} if b.image_path else {}),
-            **({"table_source": b.attrs.get("table_source")} if b.attrs.get("table_source") else {}),
+            **(
+                {"table_source": b.attrs.get("table_source")} if b.attrs.get("table_source") else {}
+            ),
             **({"table_profile": table_profile} if table_profile else {}),
         },
     )
@@ -207,7 +231,11 @@ def _merge_logical_tables(chunks: list[Chunk]) -> list[Chunk]:
 
         group = [cur]
         j = i + 1
-        while j < len(chunks) and chunks[j].kind == "table" and _same_logical_table(group[-1], chunks[j]):
+        while (
+            j < len(chunks)
+            and chunks[j].kind == "table"
+            and _same_logical_table(group[-1], chunks[j])
+        ):
             group.append(chunks[j])
             j += 1
 
@@ -230,7 +258,9 @@ def _same_logical_table(left: Chunk, right: Chunk) -> bool:
         return False
     if right.page_start and left.page_end and right.page_start - left.page_end > 1:
         return False
-    return bool(lp.get("continued") or rp.get("continued") or lp.get("caption") or rp.get("caption"))
+    return bool(
+        lp.get("continued") or rp.get("continued") or lp.get("caption") or rp.get("caption")
+    )
 
 
 def _merge_table_group(group: list[Chunk]) -> Chunk:
@@ -252,7 +282,8 @@ def _merge_table_group(group: list[Chunk]) -> Chunk:
 
     return Chunk(
         id=_chunk_id(first.doc_id, "table", first.section_id, page_start or first.page or 0, 0)
-        + "_logical_" + content_hash("|".join(block_ids)).split(":", 1)[1][:10],
+        + "_logical_"
+        + content_hash("|".join(block_ids)).split(":", 1)[1][:10],
         doc_id=first.doc_id,
         page=page_start,
         page_start=page_start,
@@ -338,9 +369,7 @@ def _split_sentences(text: str) -> list[str]:
     return out
 
 
-def _pack_sentences(
-    sentences: list[str], max_chars: int, overlap_chars: int
-) -> list[str]:
+def _pack_sentences(sentences: list[str], max_chars: int, overlap_chars: int) -> list[str]:
     """Greedily pack sentences into parts of at most max_chars with overlap."""
     parts: list[str] = []
     cur: list[str] = []
@@ -394,15 +423,21 @@ def _split_prose_chunk(chunk: Chunk) -> list[Chunk]:
     out: list[Chunk] = []
     offset = 0
     for i, part_text in enumerate(parts):
-        out.append(_make_subchunk(
-            chunk, part_text, i, total,
-            extra_attrs={"char_offset": offset},
-        ))
+        out.append(
+            _make_subchunk(
+                chunk,
+                part_text,
+                i,
+                total,
+                extra_attrs={"char_offset": offset},
+            )
+        )
         offset += len(part_text)
     return out
 
 
 # --- table splitting (header-preserving row batches) ---
+
 
 def _split_table_chunk(chunk: Chunk) -> list[Chunk]:
     text = chunk.text
@@ -433,15 +468,20 @@ def _split_table_chunk(chunk: Chunk) -> list[Chunk]:
         for row in batch_rows:
             lines.append("| " + " | ".join(str(c) for c in row) + " |")
         part_text = "\n".join(lines)
-        out.append(_make_subchunk(
-            chunk, part_text, i, total,
-            extra_attrs={
-                "row_batch": True,
-                "row_start": row_cursor,
-                "row_end": row_cursor + len(batch_rows) - 1,
-                "row_total": len(rows),
-            },
-        ))
+        out.append(
+            _make_subchunk(
+                chunk,
+                part_text,
+                i,
+                total,
+                extra_attrs={
+                    "row_batch": True,
+                    "row_start": row_cursor,
+                    "row_end": row_cursor + len(batch_rows) - 1,
+                    "row_total": len(rows),
+                },
+            )
+        )
         row_cursor += len(batch_rows)
     return out
 
@@ -500,7 +540,7 @@ def _parse_single_table(part: str) -> tuple[list[str], list[str], list[list[str]
     headers = _split_table_row(lines[header_idx])
     rows: list[list[str]] = []
     past_separator = False
-    for ln in lines[header_idx + 1:]:
+    for ln in lines[header_idx + 1 :]:
         if not ln.lstrip().startswith("|"):
             continue
         cells = _split_table_row(ln)
@@ -532,11 +572,31 @@ def _table_profile(block: Block) -> dict:
     pool = f"{caption_text} {header_text}"
 
     kind = "generic_table"
-    if "fields for register" in caption_text or _hits(pool, [
-        "reg name", "register", "field", "msb", "lsb", "swaccess", "hwaccess", "reset",
-    ]) >= 3:
+    if (
+        "fields for register" in caption_text
+        or _hits(
+            pool,
+            [
+                "reg name",
+                "register",
+                "field",
+                "msb",
+                "lsb",
+                "swaccess",
+                "hwaccess",
+                "reset",
+            ],
+        )
+        >= 3
+    ):
         kind = "register_table"
-    elif _hits(pool, ["base address", "address map", "memory map", "offset", "size", "地址映射", "基地址"]) >= 2:
+    elif (
+        _hits(
+            pool,
+            ["base address", "address map", "memory map", "offset", "size", "地址映射", "基地址"],
+        )
+        >= 2
+    ):
         kind = "memory_map"
     elif _hits(pool, ["signal", "direction", "width", "interface group", "位宽", "信号"]) >= 2:
         kind = "signal_table"
@@ -620,6 +680,7 @@ def _infer_toc_path(entry: TocEntry) -> str | None:
 
 def _heading_path(text: str | None) -> str | None:
     import re
+
     s = text or ""
     m = re.match(r"^\s*(\d+(?:\.\d+){0,5})(?:\.(?=\s)|(?=[^\d.]|$))", s)
     if m:

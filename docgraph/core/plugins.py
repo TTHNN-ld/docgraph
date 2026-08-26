@@ -8,6 +8,7 @@
 
 加载顺序：先内置，再 entry_points 覆盖/补充。
 """
+
 from __future__ import annotations
 
 import importlib.metadata as md
@@ -21,9 +22,10 @@ log = get_logger(__name__)
 @dataclass
 class PluginInfo:
     """单个插件的元信息（用于 docgraph plugins ls）。"""
-    group: str             # "docgraph.parsers" 等
-    name: str              # entry_point name
-    target: str            # "my_pkg.module:Class"
+
+    group: str  # "docgraph.parsers" 等
+    name: str  # entry_point name
+    target: str  # "my_pkg.module:Class"
     dist: str | None = None
     version: str | None = None
     builtin: bool = False
@@ -35,11 +37,11 @@ _DISCOVERED: dict[str, list[PluginInfo]] = {}
 
 # entry_point group → registry 模块路径
 _GROUP_TO_REGISTRY = {
-    "docgraph.parsers":    "docgraph.parsers.base",
+    "docgraph.parsers": "docgraph.parsers.base",
     "docgraph.extractors": "docgraph.extractors.base",
     "docgraph.embeddings": "docgraph.embeddings.base",
-    "docgraph.stores":     None,  # 无统一 registry，按 name 字符串走 config
-    "docgraph.llm":        None,
+    "docgraph.stores": None,  # 无统一 registry，按 name 字符串走 config
+    "docgraph.llm": None,
 }
 
 
@@ -49,6 +51,7 @@ def _registry_for(group: str):
         return None
     try:
         import importlib
+
         mod = importlib.import_module(mod_path)
         return getattr(mod, "registry", None)
     except Exception:
@@ -120,8 +123,12 @@ def mark_builtin(group: str, name: str, target: str) -> None:
         return
     lst.append(
         PluginInfo(
-            group=group, name=name, target=target,
-            dist="docgraph", builtin=True, enabled=True,
+            group=group,
+            name=name,
+            target=target,
+            dist="docgraph",
+            builtin=True,
+            enabled=True,
         )
     )
 

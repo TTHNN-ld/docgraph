@@ -7,6 +7,7 @@ by document/figure context:
 - chip-like specs use a chip semantics prompt and can emit MODULE/SIGNAL/etc.
 - non-chip documents use a generic figure prompt and only enrich the FIGURE node.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,7 @@ import re
 import time
 from functools import partial
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -118,8 +119,17 @@ def _normalize_interface_semantic(item: FigureInterfaceDef) -> FigureInterfaceDe
     if not name:
         return None
     pure_protocols = {
-        "axi", "axi4", "axi-lite", "axilite", "apb", "ahb", "atb",
-        "pcie", "pipe", "dbi", "dti",
+        "axi",
+        "axi4",
+        "axi-lite",
+        "axilite",
+        "apb",
+        "ahb",
+        "atb",
+        "pcie",
+        "pipe",
+        "dbi",
+        "dti",
     }
     norm_name = re.sub(r"[\s_-]+", "", name).lower()
     norm_protocol = re.sub(r"[\s_-]+", "", protocol).lower()
@@ -281,8 +291,16 @@ class FigureAddressRegionDef(BaseModel):
 class ChipFigureSemantic(BaseModel):
     domain: Literal["chip"] = "chip"
     figure_type: Literal[
-        "timing", "waveform", "fsm", "block", "data_path", "address_map",
-        "clock_reset", "flow", "schematic", "other",
+        "timing",
+        "waveform",
+        "fsm",
+        "block",
+        "data_path",
+        "address_map",
+        "clock_reset",
+        "flow",
+        "schematic",
+        "other",
     ] = "other"
     summary: str = Field(default="", description="Concise chip-relevant summary.")
     modules: list[FigureModuleDef] = Field(default_factory=list)
@@ -306,8 +324,15 @@ class GeneralFigureEntity(BaseModel):
 class GeneralFigureSemantic(BaseModel):
     domain: Literal["general"] = "general"
     figure_type: Literal[
-        "chart", "diagram", "flow", "table_image", "photo", "screenshot",
-        "timeline", "map", "other",
+        "chart",
+        "diagram",
+        "flow",
+        "table_image",
+        "photo",
+        "screenshot",
+        "timeline",
+        "map",
+        "other",
     ] = "other"
     summary: str = Field(default="", description="Concise factual summary.")
     entities: list[GeneralFigureEntity] = Field(default_factory=list)
@@ -345,9 +370,7 @@ class FigureExtractor:
             if block.kind == BlockKind.FIGURE
         }
         pages_with_caption = {
-            block.page
-            for block in block_by_id.values()
-            if (block.text or "").strip()
+            block.page for block in block_by_id.values() if (block.text or "").strip()
         }
 
         # Phase 1: 顺序建 fig_node，收集可并发的 VLM 任务
@@ -373,7 +396,11 @@ class FigureExtractor:
                 caption = block.text or ""
                 fig_type = self._infer_type(" ".join([caption, page_context]))
                 fig_node = self._make_node(
-                    block, candidate.page, fig_type, ctx, doc.doc_id,
+                    block,
+                    candidate.page,
+                    fig_type,
+                    ctx,
+                    doc.doc_id,
                     domain=domain,
                     source_block_ids=source_block_ids,
                     source_chunk_ids=source_chunk_ids,
@@ -381,36 +408,38 @@ class FigureExtractor:
                 )
                 fig_nodes.append(fig_node)
 
+                image_ref = block.image_path
                 can_call_vlm = (
                     vlm_client
                     and vlm_attempts < vlm_limit
                     and not getattr(vlm_client, "disabled", False)
-                    and block.image_path
+                    and image_ref
                 )
-                if can_call_vlm:
-                    image_path = self._resolve_image_path(block.image_path, ctx)
+                if can_call_vlm and image_ref is not None:
+                    image_path = self._resolve_image_path(image_ref, ctx)
                     if image_path is not None:
                         vlm_attempts += 1
-                        vlm_tasks.append({
-                            "image_path": image_path, "domain": domain,
-                            "fig_type": fig_type, "caption": caption,
-                            "page_context": page_context, "fig_node": fig_node,
-                            "page": candidate.page, "source_block_ids": source_block_ids,
-                            "source_chunk_ids": source_chunk_ids,
-                            "block_image_path": block.image_path,
-                        })
+                        vlm_tasks.append(
+                            {
+                                "image_path": image_path,
+                                "domain": domain,
+                                "fig_type": fig_type,
+                                "caption": caption,
+                                "page_context": page_context,
+                                "fig_node": fig_node,
+                                "page": candidate.page,
+                                "source_block_ids": source_block_ids,
+                                "source_chunk_ids": source_chunk_ids,
+                                "block_image_path": image_ref,
+                            }
+                        )
             if count >= self.MAX_FIGURES_PER_DOC:
                 break
 
         # Phase 2: 并发调 VLM（不同图互相独立）
         if vlm_tasks:
-            log.info(
-                f"[figure] {len(vlm_tasks)} figures -> VLM "
-                f"(concurrency={llm_concurrency()})"
-            )
-            results = map_concurrent(
-                partial(self._run_vlm_task, vlm_client=vlm_client), vlm_tasks
-            )
+            log.info(f"[figure] {len(vlm_tasks)} figures -> VLM (concurrency={llm_concurrency()})")
+            results = map_concurrent(partial(self._run_vlm_task, vlm_client=vlm_client), vlm_tasks)
         else:
             results = []
 
@@ -425,9 +454,7 @@ class FigureExtractor:
                     )
                 continue
             vlm_calls += 1
-            log.info(
-                f"[figure] VLM done page={task['page']} type={semantic.figure_type}"
-            )
+            log.info(f"[figure] VLM done page={task['page']} type={semantic.figure_type}")
             fig_node = task["fig_node"]
             self._apply_semantic_to_figure(fig_node, semantic)
             if isinstance(semantic, ChipFigureSemantic) and not self._is_weak_chip_semantic(
@@ -598,9 +625,7 @@ class FigureExtractor:
             try:
                 return max(0, int(env_val))
             except (TypeError, ValueError):
-                log.warning(
-                    f"[figure] ignoring non-integer DOCGRAPH_VLM_FIGURE_LIMIT={env_val!r}"
-                )
+                log.warning(f"[figure] ignoring non-integer DOCGRAPH_VLM_FIGURE_LIMIT={env_val!r}")
         cfg_val = ctx.options.get("vlm_figure_limit") if ctx.options else None
         if cfg_val is not None:
             try:
@@ -623,11 +648,9 @@ class FigureExtractor:
     ) -> ChipFigureSemantic | GeneralFigureSemantic:
         if domain == "chip":
             prompt = self._chip_prompt(fig_type, caption, page_context)
-            schema = ChipFigureSemantic
             cache_key = f"figure-v{self.version}-chip-{fig_type}"
         else:
             prompt = self._general_prompt(fig_type, caption, page_context)
-            schema = GeneralFigureSemantic
             cache_key = f"figure-v{self.version}-general-{fig_type}"
 
         resp = vlm_client.describe(
@@ -641,7 +664,9 @@ class FigureExtractor:
 
         try:
             data = _extract_json(resp.text)
-            return schema.model_validate(data)
+            if domain == "chip":
+                return ChipFigureSemantic.model_validate(data)
+            return GeneralFigureSemantic.model_validate(data)
         except Exception as e:
             text = (resp.text or "").strip()
             if text:
@@ -650,20 +675,18 @@ class FigureExtractor:
                     "using summary fallback"
                 )
                 if domain == "chip":
-                    return ChipFigureSemantic(
-                        figure_type=fig_type if fig_type in get_args(
-                            ChipFigureSemantic.model_fields["figure_type"].annotation,
-                        ) else "other",
-                        summary=text[:500],
-                        confidence=0.65,
+                    return ChipFigureSemantic.model_validate(
+                        {
+                            "figure_type": fig_type,
+                            "summary": text[:500],
+                            "confidence": 0.65,
+                        }
                     )
                 return GeneralFigureSemantic(
                     summary=text[:500],
                     confidence=0.65,
                 )
-            raise RuntimeError(
-                f"invalid VLM JSON for {domain} figure: {str(e)[:160]}"
-            ) from e
+            raise RuntimeError(f"invalid VLM JSON for {domain} figure: {str(e)[:160]}") from e
 
     @staticmethod
     def _chip_prompt(fig_type: str, caption: str, page_context: str) -> str:
@@ -785,18 +808,20 @@ class FigureExtractor:
                 f"{','.join(dropped)} (figure_type={data.get('figure_type')})"
             )
 
-        fig_node.attrs.update({
-            "domain": semantic.domain,
-            "figure_type": data.get("figure_type") or fig_node.attrs.get("figure_type"),
-            "semantic_summary": summary or None,
-            "vlm_desc": summary[:240] or None,
-            "semantic_entities": data,
-            "mermaid": validated["mermaid"][0],
-            "wavejson": validated["wavejson"][0],
-            "plantuml": validated["plantuml"][0],
-            "confidence": data.get("confidence"),
-            "quality_flags": quality_flags,
-        })
+        fig_node.attrs.update(
+            {
+                "domain": semantic.domain,
+                "figure_type": data.get("figure_type") or fig_node.attrs.get("figure_type"),
+                "semantic_summary": summary or None,
+                "vlm_desc": summary[:240] or None,
+                "semantic_entities": data,
+                "mermaid": validated["mermaid"][0],
+                "wavejson": validated["wavejson"][0],
+                "plantuml": validated["plantuml"][0],
+                "confidence": data.get("confidence"),
+                "quality_flags": quality_flags,
+            }
+        )
         if summary:
             fig_node.summary = summary[:120]
 
@@ -851,56 +876,57 @@ class FigureExtractor:
             )
             nodes.append(node)
             name_to_id[name] = node_id
-            edges.append(self._edge(
-                src=node_id,
-                dst=fig_node.id,
-                kind=EdgeKind.ILLUSTRATED_BY,
-                page_no=page_no,
-                source_block_ids=source_block_ids,
-                source_chunk_ids=source_chunk_ids,
-                confidence=semantic_confidence,
-                raw_snippet=fig_node.attrs.get("caption"),
-            ))
+            edges.append(
+                self._edge(
+                    src=node_id,
+                    dst=fig_node.id,
+                    kind=EdgeKind.ILLUSTRATED_BY,
+                    page_no=page_no,
+                    source_block_ids=source_block_ids,
+                    source_chunk_ids=source_chunk_ids,
+                    confidence=semantic_confidence,
+                    raw_snippet=fig_node.attrs.get("caption"),
+                )
+            )
             return node_id
 
-        for item in semantic.modules:
+        for module in semantic.modules:
             emit_node(
                 NodeKind.MODULE,
-                item.name,
-                {"entity_type": "module", **item.model_dump()},
-                item.description or item.role or "",
+                module.name,
+                {"entity_type": "module", **module.model_dump()},
+                module.description or module.role or "",
             )
-        for item in semantic.signals:
+        for signal in semantic.signals:
             emit_node(
                 NodeKind.SIGNAL,
-                item.name,
-                {"entity_type": "signal", **item.model_dump()},
-                item.description,
+                signal.name,
+                {"entity_type": "signal", **signal.model_dump()},
+                signal.description,
             )
-        for item in semantic.interfaces:
-            normalized = _normalize_interface_semantic(item)
+        for interface in semantic.interfaces:
+            normalized = _normalize_interface_semantic(interface)
             if normalized is None:
                 continue
-            item = normalized
             emit_node(
                 NodeKind.INTERFACE,
-                item.name,
-                {"entity_type": "interface", **item.model_dump()},
-                item.description or item.protocol or "",
+                normalized.name,
+                {"entity_type": "interface", **normalized.model_dump()},
+                normalized.description or normalized.protocol or "",
             )
-        for item in semantic.clocks_resets:
+        for clock_reset in semantic.clocks_resets:
             emit_node(
                 NodeKind.CLOCK,
-                item.name,
-                {"entity_type": "clock_reset", **item.model_dump()},
-                item.description,
+                clock_reset.name,
+                {"entity_type": "clock_reset", **clock_reset.model_dump()},
+                clock_reset.description,
             )
-        for item in semantic.address_regions:
+        for region in semantic.address_regions:
             emit_node(
                 NodeKind.MEMORY_MAP,
-                item.name,
-                {"entity_type": "memory_map", **item.model_dump()},
-                item.description or item.address or "",
+                region.name,
+                {"entity_type": "memory_map", **region.model_dump()},
+                region.description or region.address or "",
             )
 
         for conn in semantic.connections:
@@ -908,17 +934,19 @@ class FigureExtractor:
             dst_id = name_to_id.get(conn.target)
             if not src_id or not dst_id or src_id == dst_id:
                 continue
-            edges.append(self._edge(
-                src=src_id,
-                dst=dst_id,
-                kind=self._edge_kind(conn.kind),
-                page_no=page_no,
-                source_block_ids=source_block_ids,
-                source_chunk_ids=source_chunk_ids,
-                confidence=semantic_confidence,
-                raw_snippet=conn.description or conn.label or fig_node.attrs.get("caption"),
-                attrs={"label": conn.label, "description": conn.description},
-            ))
+            edges.append(
+                self._edge(
+                    src=src_id,
+                    dst=dst_id,
+                    kind=self._edge_kind(conn.kind),
+                    page_no=page_no,
+                    source_block_ids=source_block_ids,
+                    source_chunk_ids=source_chunk_ids,
+                    confidence=semantic_confidence,
+                    raw_snippet=conn.description or conn.label or fig_node.attrs.get("caption"),
+                    attrs={"label": conn.label, "description": conn.description},
+                )
+            )
 
         fig_node.attrs["semantic_node_ids"] = [n.id for n in nodes]
         return {"nodes": nodes, "edges": edges}

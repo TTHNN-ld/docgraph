@@ -1,4 +1,5 @@
-"""轻量日志包装。M1 阶段不上 structlog，用 rich 直接输出即可。"""
+"""轻量 Rich 日志包装。"""
+
 from __future__ import annotations
 
 import logging

@@ -10,6 +10,7 @@ drives / clocks / resets / implements 等）。GraphRAG 式但**约束在本体�
 - **成本控制**：只对提到 ≥2 个已知实体名的文本 chunk 调 LLM；每文档调用上限。
 - 受 llm.enabled 控制；缓存 + 成本追踪 + 失败优雅降级（ADR-007）。
 """
+
 from __future__ import annotations
 
 import os
@@ -48,26 +49,49 @@ _RELATION_TO_EDGEKIND: dict[str, EdgeKind] = {
 # 参与 name 索引的实体类型。不含 SECTION（section 归属由 B 层 belongs_to 处理，
 # LLM IE 把 section 当端点会产出 "controls → About this document" 这种噪声）。
 _ENTITY_KINDS = (
-    NodeKind.REGISTER, NodeKind.BITFIELD, NodeKind.SIGNAL, NodeKind.INTERRUPT,
-    NodeKind.INTERFACE, NodeKind.MEMORY_MAP, NodeKind.CLOCK, NodeKind.PIN,
-    NodeKind.PARAMETER, NodeKind.MODULE,
+    NodeKind.REGISTER,
+    NodeKind.BITFIELD,
+    NodeKind.SIGNAL,
+    NodeKind.INTERRUPT,
+    NodeKind.INTERFACE,
+    NodeKind.MEMORY_MAP,
+    NodeKind.CLOCK,
+    NodeKind.PIN,
+    NodeKind.PARAMETER,
+    NodeKind.MODULE,
 )
 
 # LLM 输出的 src_type/dst_type 字符串 → NodeKind
 _KIND_MAP: dict[str, NodeKind] = {
-    "register": NodeKind.REGISTER, "bitfield": NodeKind.BITFIELD,
-    "signal": NodeKind.SIGNAL,     "interrupt": NodeKind.INTERRUPT,
-    "interface": NodeKind.INTERFACE, "memory_map": NodeKind.MEMORY_MAP,
-    "clock": NodeKind.CLOCK,       "pin": NodeKind.PIN,
-    "parameter": NodeKind.PARAMETER, "module": NodeKind.MODULE,
+    "register": NodeKind.REGISTER,
+    "bitfield": NodeKind.BITFIELD,
+    "signal": NodeKind.SIGNAL,
+    "interrupt": NodeKind.INTERRUPT,
+    "interface": NodeKind.INTERFACE,
+    "memory_map": NodeKind.MEMORY_MAP,
+    "clock": NodeKind.CLOCK,
+    "pin": NodeKind.PIN,
+    "parameter": NodeKind.PARAMETER,
+    "module": NodeKind.MODULE,
 }
 
 # 样板章节/通用标题，不该作为语义关系端点。
 _BOILERPLATE = {
-    "about this document", "introduction", "overview", "preface",
-    "contents", "table of contents", "revision history", "references",
-    "figures", "tables", "abbreviations", "glossary", "appendix",
-    "related documentation", "conventions",
+    "about this document",
+    "introduction",
+    "overview",
+    "preface",
+    "contents",
+    "table of contents",
+    "revision history",
+    "references",
+    "figures",
+    "tables",
+    "abbreviations",
+    "glossary",
+    "appendix",
+    "related documentation",
+    "conventions",
 }
 
 _CJK_RE = re.compile(r"[一-鿿]")
@@ -91,6 +115,7 @@ def _is_matchable_name(name: str) -> bool:
     if n.lower() in _BOILERPLATE:
         return False
     return True
+
 
 _RELATION_NAMES = ", ".join(sorted(_RELATION_TO_EDGEKIND))
 
@@ -122,12 +147,17 @@ def _tokens(name: str) -> set[str]:
 
 _ENTITY_TYPE_NAMES = ", ".join(sorted(_KIND_MAP))
 
+
 class LLMIERelation(BaseModel):
     src: str = Field(description="源实体名（原文）")
-    src_type: str | None = Field(default=None, description=f"源实体类型，只取: {_ENTITY_TYPE_NAMES}")
+    src_type: str | None = Field(
+        default=None, description=f"源实体类型，只取: {_ENTITY_TYPE_NAMES}"
+    )
     relation: str = Field(description=f"关系类型，取值: {_RELATION_NAMES}")
     dst: str = Field(description="目标实体名（原文）")
-    dst_type: str | None = Field(default=None, description=f"目标实体类型，只取: {_ENTITY_TYPE_NAMES}")
+    dst_type: str | None = Field(
+        default=None, description=f"目标实体类型，只取: {_ENTITY_TYPE_NAMES}"
+    )
     confidence: float = 0.7
 
 
@@ -156,7 +186,10 @@ def _make_ie_node(
     if pending:
         attrs["status"] = "pending"
     node_id = make_node_id(
-        "ie", kind, normalize_name(name), doc_id=doc_id,
+        "ie",
+        kind,
+        normalize_name(name),
+        doc_id=doc_id,
     )
     return Node(
         id=node_id,
@@ -164,7 +197,6 @@ def _make_ie_node(
         name=name,
         qualified_name=name,
         doc_id=doc_id,
-        page=chunk.page,
         location=Location(page=chunk.page),
         evidence=Evidence(
             chunk_ids=[chunk.id],
@@ -220,7 +252,8 @@ class LLMIELinker:
 
         for doc_id in store.list_docs():
             doc_chunks = [
-                c for c in all_chunks
+                c
+                for c in all_chunks
                 if c.doc_id == doc_id
                 and (c.kind == "section")
                 and len(c.text or "") >= self.MIN_CHUNK_CHARS
@@ -253,9 +286,7 @@ class LLMIELinker:
                 f"(concurrency={llm_concurrency()})"
             )
             # Phase 2: 并发调 LLM（不同 chunk 互相独立，不碰 store）
-            results = map_concurrent(
-                partial(self._run_extract, llm_client=llm_client), tasks
-            )
+            results = map_concurrent(partial(self._run_extract, llm_client=llm_client), tasks)
             # Phase 3: 顺序建边/建实体（store 写入不并发，避免 sqlite 锁冲突）
             for (chunk, _names), res in zip(tasks, results, strict=True):
                 result, err = res
@@ -267,7 +298,11 @@ class LLMIELinker:
                 rep.fallback_calls += getattr(result, "_fallback_calls", 0)
                 for rel in result.relations:
                     ok, created, pending = self._create_edge(
-                        store, rel, chunk, idx, doc_id,
+                        store,
+                        rel,
+                        chunk,
+                        idx,
+                        doc_id,
                     )
                     if ok:
                         rep.edges_created += 1
@@ -401,8 +436,9 @@ class LLMIELinker:
         entity_text = "\n".join(f"- {name}" for name in entity_names) or "- (none)"
         fallback_note = (
             "This is a retry after an invalid/empty response. Return the smallest valid JSON object; "
-            "use {\"relations\": []} if no relation is explicit.\n"
-            if fallback else ""
+            'use {"relations": []} if no relation is explicit.\n'
+            if fallback
+            else ""
         )
         prompt = (
             f"{fallback_note}"
@@ -418,8 +454,11 @@ class LLMIELinker:
             f"文本：\n{chunk.text[:3000]}"
         )
         return llm_client.json(
-            prompt, schema=LLMIEResult, extractor=self.name,
-            max_tokens=max_tokens, temperature=0.0,
+            prompt,
+            schema=LLMIEResult,
+            extractor=self.name,
+            max_tokens=max_tokens,
+            temperature=0.0,
             # DeepSeek V4 等推理模型：关掉 thinking，避免推理吃光 max_tokens 导致 content 空
             extra_body={"enable_thinking": False},
         )
@@ -455,8 +494,12 @@ class LLMIELinker:
         return best
 
     def _create_edge(
-        self, store: SQLiteGraphStore, rel: LLMIERelation,
-        chunk, idx: dict[str, list], doc_id: str,
+        self,
+        store: SQLiteGraphStore,
+        rel: LLMIERelation,
+        chunk,
+        idx: dict[str, list],
+        doc_id: str,
     ) -> tuple[bool, int, int]:
         """建语义边。src/dst 匹配不到时尝试创建新实体。
 
@@ -468,35 +511,55 @@ class LLMIELinker:
         if rel.confidence < self.CONFIDENCE_THRESHOLD:
             return False, 0, 0
         src, sc, sp = self._get_or_create_node(
-            store, rel.src, rel.src_type, rel.confidence, chunk, doc_id, idx,
+            store,
+            rel.src,
+            rel.src_type,
+            rel.confidence,
+            chunk,
+            doc_id,
+            idx,
         )
         dst, dc, dp = self._get_or_create_node(
-            store, rel.dst, rel.dst_type, rel.confidence, chunk, doc_id, idx,
+            store,
+            rel.dst,
+            rel.dst_type,
+            rel.confidence,
+            chunk,
+            doc_id,
+            idx,
         )
         if src is None or dst is None or src.id == dst.id:
             return False, sc + dc, sp + dp
-        store.upsert_edge(Edge(
-            src=src.id,
-            dst=dst.id,
-            kind=rel_kind,
-            confidence=max(0.0, min(rel.confidence, 1.0)),
-            evidence=Evidence(
-                chunk_ids=[chunk.id],
-                pages=[chunk.page] if chunk.page else [],
-                extractor=f"{self.name}@{self.version}",
-                raw_snippet=f"{rel.src} {rel.relation} {rel.dst}",
-            ),
-            attrs={
-                "source": f"{self.name}@{self.version}",
-                "inferred_from": "llm_ie",
-                "llm_confidence": rel.confidence,
-            },
-        ))
+        store.upsert_edge(
+            Edge(
+                src=src.id,
+                dst=dst.id,
+                kind=rel_kind,
+                confidence=max(0.0, min(rel.confidence, 1.0)),
+                evidence=Evidence(
+                    chunk_ids=[chunk.id],
+                    pages=[chunk.page] if chunk.page else [],
+                    extractor=f"{self.name}@{self.version}",
+                    raw_snippet=f"{rel.src} {rel.relation} {rel.dst}",
+                ),
+                attrs={
+                    "source": f"{self.name}@{self.version}",
+                    "inferred_from": "llm_ie",
+                    "llm_confidence": rel.confidence,
+                },
+            )
+        )
         return True, sc + dc, sp + dp
 
     def _get_or_create_node(
-        self, store: SQLiteGraphStore, name: str, type_str: str | None,
-        confidence: float, chunk, doc_id: str, idx: dict[str, list],
+        self,
+        store: SQLiteGraphStore,
+        name: str,
+        type_str: str | None,
+        confidence: float,
+        chunk,
+        doc_id: str,
+        idx: dict[str, list],
     ) -> tuple[Node | None, int, int]:
         """匹配已有实体，或按 confidence 创建新实体。
 

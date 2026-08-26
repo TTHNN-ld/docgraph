@@ -3,6 +3,7 @@
 L2 extractors should consume these candidates instead of independently walking
 raw pages. This keeps source provenance explicit and auditable.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -39,14 +40,9 @@ class EntityCandidate:
 
 
 def build_entity_candidates(doc: ParsedDoc) -> list[EntityCandidate]:
-    blocks_by_id = {
-        block.id: block
-        for page in doc.pages
-        for block in page.blocks
-    }
+    blocks_by_id = {block.id: block for page in doc.pages for block in page.blocks}
     blocks_by_page: dict[int, list[Block]] = {
-        page.page_no: sorted(page.blocks, key=lambda b: b.reading_order)
-        for page in doc.pages
+        page.page_no: sorted(page.blocks, key=lambda b: b.reading_order) for page in doc.pages
     }
     candidates: list[EntityCandidate] = []
 
@@ -66,20 +62,22 @@ def build_entity_candidates(doc: ParsedDoc) -> list[EntityCandidate]:
     for page in doc.pages:
         if not page.rendered_image_path:
             continue
-        candidates.append(EntityCandidate(
-            id=f"{doc.doc_id}#candidate_page_image_p{page.page_no}",
-            kind="page_image",
-            doc_id=doc.doc_id,
-            page=page.page_no,
-            page_start=page.page_no,
-            page_end=page.page_no,
-            section_id=None,
-            chunk_id=None,
-            chunk_ids=chunk_ids_by_page.get(page.page_no, []),
-            block_ids=[b.id for b in page.blocks],
-            text="\n".join(b.text or "" for b in page.blocks if b.text),
-            image_path=page.rendered_image_path,
-        ))
+        candidates.append(
+            EntityCandidate(
+                id=f"{doc.doc_id}#candidate_page_image_p{page.page_no}",
+                kind="page_image",
+                doc_id=doc.doc_id,
+                page=page.page_no,
+                page_start=page.page_no,
+                page_end=page.page_no,
+                section_id=None,
+                chunk_id=None,
+                chunk_ids=chunk_ids_by_page.get(page.page_no, []),
+                block_ids=[b.id for b in page.blocks],
+                text="\n".join(b.text or "" for b in page.blocks if b.text),
+                image_path=page.rendered_image_path,
+            )
+        )
 
     return candidates
 
@@ -98,7 +96,9 @@ def _table_candidates(
         if caption:
             table = table.model_copy(update={"caption": caption})
     image_path = next((b.image_path for b in table_blocks if b.image_path), None)
-    table_source = next((b.attrs.get("table_source") for b in table_blocks if b.attrs.get("table_source")), None)
+    table_source = next(
+        (b.attrs.get("table_source") for b in table_blocks if b.attrs.get("table_source")), None
+    )
     base = EntityCandidate(
         id=f"{chunk.id}#candidate_table",
         kind="table",
@@ -117,9 +117,15 @@ def _table_candidates(
     )
     out = [base]
     if image_path and not (table.headers or table.rows or table.html):
-        out.append(EntityCandidate(
-            **{**base.__dict__, "id": f"{chunk.id}#candidate_table_image", "kind": "table_image"}
-        ))
+        out.append(
+            EntityCandidate(
+                **{
+                    **base.__dict__,
+                    "id": f"{chunk.id}#candidate_table_image",
+                    "kind": "table_image",
+                }
+            )
+        )
     return out
 
 
@@ -133,7 +139,8 @@ def _nearest_table_heading(
     first = sorted(table_blocks, key=lambda b: (b.page, b.reading_order))[0]
     page_blocks = blocks_by_page.get(first.page, [])
     before = [
-        b for b in page_blocks
+        b
+        for b in page_blocks
         if b.reading_order < first.reading_order
         and b.kind in {BlockKind.HEADING, BlockKind.CAPTION, BlockKind.PARAGRAPH}
         and (b.text or "").strip()
@@ -156,11 +163,27 @@ def _looks_like_table_context(text: str) -> bool:
     low = text.lower()
     if not low or len(low) > 240:
         return False
-    return any(token in low for token in (
-        "register", "bit", "field", "address", "offset", "pin", "signal",
-        "interface", "interrupt", "memory map", "寄存器", "位域", "地址",
-        "信号", "接口", "中断",
-    ))
+    return any(
+        token in low
+        for token in (
+            "register",
+            "bit",
+            "field",
+            "address",
+            "offset",
+            "pin",
+            "signal",
+            "interface",
+            "interrupt",
+            "memory map",
+            "寄存器",
+            "位域",
+            "地址",
+            "信号",
+            "接口",
+            "中断",
+        )
+    )
 
 
 def _figure_candidates(chunk: Chunk, blocks: list[Block]) -> list[EntityCandidate]:
@@ -168,20 +191,22 @@ def _figure_candidates(chunk: Chunk, blocks: list[Block]) -> list[EntityCandidat
     for block in blocks:
         if block.kind != BlockKind.FIGURE:
             continue
-        out.append(EntityCandidate(
-            id=f"{chunk.id}#candidate_figure",
-            kind="figure",
-            doc_id=chunk.doc_id,
-            page=block.page,
-            page_start=chunk.page_start,
-            page_end=chunk.page_end,
-            section_id=chunk.section_id,
-            chunk_id=chunk.id,
-            chunk_ids=[chunk.id],
-            block_ids=[block.id],
-            text=block.text or chunk.text,
-            image_path=block.image_path,
-        ))
+        out.append(
+            EntityCandidate(
+                id=f"{chunk.id}#candidate_figure",
+                kind="figure",
+                doc_id=chunk.doc_id,
+                page=block.page,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                section_id=chunk.section_id,
+                chunk_id=chunk.id,
+                chunk_ids=[chunk.id],
+                block_ids=[block.id],
+                text=block.text or chunk.text,
+                image_path=block.image_path,
+            )
+        )
     return out
 
 

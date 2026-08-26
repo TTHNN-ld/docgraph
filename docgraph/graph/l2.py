@@ -5,6 +5,7 @@ separate decision of whether an extracted node is safe to expose as a fact.
 Metadata stays in ``attrs`` so existing SQLite databases and plugin contracts
 remain compatible.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -89,12 +90,16 @@ def fact_eligibility_issues(
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     if method not in {DerivationMethod.DETERMINISTIC, DerivationMethod.MANUAL}:
-        issues.append(_error(
-            "l2.fact.nondeterministic_source",
-            "LLM/VLM inferred output must remain a candidate until independently verified.",
-        ))
+        issues.append(
+            _error(
+                "l2.fact.nondeterministic_source",
+                "LLM/VLM inferred output must remain a candidate until independently verified.",
+            )
+        )
     if not node.evidence.extractor or node.evidence.extractor == "unknown":
-        issues.append(_error("l2.fact.missing_evidence", "Fact requires a real evidence extractor."))
+        issues.append(
+            _error("l2.fact.missing_evidence", "Fact requires a real evidence extractor.")
+        )
     if not node.attrs.get("source_block_ids"):
         issues.append(_error("l2.fact.missing_source_blocks", "Fact requires source_block_ids."))
     if not (node.attrs.get("source_chunk_ids") or node.evidence.chunk_ids):
@@ -104,16 +109,24 @@ def fact_eligibility_issues(
         high = _as_int(node.attrs.get("bit_high"))
         low = _as_int(node.attrs.get("bit_low"))
         if not node.attrs.get("register_id"):
-            issues.append(_error("l2.fact.missing_register_ref", "Bitfield requires register_id.", "register_id"))
+            issues.append(
+                _error(
+                    "l2.fact.missing_register_ref", "Bitfield requires register_id.", "register_id"
+                )
+            )
         if high is None or low is None or low < 0 or high < low:
-            issues.append(_error("l2.fact.invalid_bit_range", "Bitfield range is invalid.", "bit_high"))
+            issues.append(
+                _error("l2.fact.invalid_bit_range", "Bitfield range is invalid.", "bit_high")
+            )
     elif node.kind == NodeKind.MEMORY_MAP:
         if not any(node.attrs.get(key) not in (None, "") for key in ("address", "target", "size")):
-            issues.append(_error(
-                "l2.fact.missing_address_locator",
-                "Memory-map fact requires address, target, or size.",
-                "address",
-            ))
+            issues.append(
+                _error(
+                    "l2.fact.missing_address_locator",
+                    "Memory-map fact requires address, target, or size.",
+                    "address",
+                )
+            )
     return issues
 
 

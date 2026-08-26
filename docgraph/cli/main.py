@@ -1,4 +1,5 @@
 """Typer CLI —— docgraph init / build / status / query / register / watch / serve ..."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -55,7 +56,8 @@ console = Console()
 log = get_logger("docgraph.cli")
 
 _SETUP_PARSERS = ["pymupdf", "docling", "docx", "xlsx", "markdown", "mineru", "marker"]
-_RECOMMENDED_PARSERS = {"docling", "docx", "xlsx", "markdown"}
+_CORE_PARSERS = {"pymupdf", "docx", "xlsx", "markdown"}
+_RECOMMENDED_PARSERS = {"docling"}
 
 
 def _print_json(data: object) -> None:
@@ -81,6 +83,7 @@ def _open_project() -> tuple[Path, SQLiteGraphStore, QueryEngine]:
         vstore.init_schema()
         # 与 pipeline 一致：从 config 解析 encoder
         from docgraph.embeddings.factory import build_encoder
+
         encoder = build_encoder(cfg.embeddings)
     qe = QueryEngine(store, vstore=vstore, encoder=encoder)
     return root, store, qe
@@ -229,7 +232,7 @@ def setup_parsers(
     ),
 ) -> None:
     """Install optional parser extras ahead of a build."""
-    requested = parser or ["docling", "docx", "xlsx", "markdown"]
+    requested = parser or ["docling"]
     failures = 0
     for name in requested:
         dependency = parser_dependency(name)
@@ -263,7 +266,7 @@ def _setup_report(root: Path, cfg) -> dict:
         if dependency is None:
             continue
         result = ensure_parser_dependency(name, "fallback")
-        if name == "pymupdf":
+        if name in _CORE_PARSERS:
             role = "required"
         elif name in _RECOMMENDED_PARSERS:
             role = "recommended"
@@ -306,7 +309,9 @@ def _setup_report(root: Path, cfg) -> dict:
         status = "READY"
         summary = "Runtime is ready for the default build path."
 
-    next_steps = [{"message": "Continue with the current environment.", "commands": ["docgraph build"]}]
+    next_steps = [
+        {"message": "Continue with the current environment.", "commands": ["docgraph build"]}
+    ]
     if not project_initialized:
         next_steps.insert(
             0,
@@ -319,7 +324,7 @@ def _setup_report(root: Path, cfg) -> dict:
         parser_extras = _parser_extra_install_hints(missing_recommended)
         next_steps.append(
             {
-                "message": "Install recommended parser extras for better PDF/Office/Markdown parsing.",
+                "message": "Install recommended parser extras for better PDF parsing.",
                 "commands": [parser_extras] if parser_extras else ["docgraph setup parsers"],
             }
         )
@@ -412,9 +417,7 @@ def _vlm_setup_status(cfg) -> dict:
         provider = cfg.llm.providers.get(provider_name)
         has_key = bool(provider and (provider.api_key or os.environ.get(provider.api_key_env)))
         missing_reason = (
-            f"{vlm_cfg.api_key_env} and fallback provider key are not set"
-            if not has_key
-            else None
+            f"{vlm_cfg.api_key_env} and fallback provider key are not set" if not has_key else None
         )
     return {
         "enabled": True,
@@ -493,11 +496,12 @@ def _extra_install_hint(extra: str) -> str:
 
 def _extras_install_hint(extras: list[str]) -> str:
     normalized = [extra for extra in dict.fromkeys(extras) if extra]
-    extra_spec = ",".join(normalized)
     source_root = Path(__file__).resolve().parents[2]
     if (source_root / "pyproject.toml").is_file():
-        return f'python -m pip install -e ".[{extra_spec}]"'
-    return f'python -m pip install "docgraph-core[{extra_spec}]"'
+        flags = " ".join(f"--extra {extra}" for extra in normalized)
+        return f"uv sync {flags}"
+    extra_spec = ",".join(normalized)
+    return f'uv tool install "docgraph-core[{extra_spec}]" --force'
 
 
 def _parser_extra_install_hints(parser_names: list[str]) -> str | None:
@@ -621,21 +625,42 @@ def l2_audit(
         _print_json(report.as_dict())
     else:
         totals = report.totals
-        console.print("[bold]L2 candidate audit[/bold] " + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]"))
+        console.print(
+            "[bold]L2 candidate audit[/bold] "
+            + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]")
+        )
         table = Table(show_header=True, header_style="bold")
         table.add_column("metric")
         table.add_column("value", justify="right")
         for key in (
-            "docs", "chunks", "table_chunks", "text_chunks", "figure_chunks",
-            "candidates_total", "table_candidates", "text_candidates",
-            "figure_candidates", "table_schema_hits", "text_schema_hits",
-            "schemas_with_candidates", "l2_nodes",
+            "docs",
+            "chunks",
+            "table_chunks",
+            "text_chunks",
+            "figure_chunks",
+            "candidates_total",
+            "table_candidates",
+            "text_candidates",
+            "figure_candidates",
+            "table_schema_hits",
+            "text_schema_hits",
+            "schemas_with_candidates",
+            "l2_nodes",
         ):
             table.add_row(key, str(totals.get(key, 0)))
         console.print(table)
 
         schema_table = Table(title="Schema candidates", show_header=True, header_style="bold")
-        for col in ("schema", "table_seen", "table_hit", "text_seen", "text_hit", "docs", "l2_nodes", "mat_rate"):
+        for col in (
+            "schema",
+            "table_seen",
+            "table_hit",
+            "text_seen",
+            "text_hit",
+            "docs",
+            "l2_nodes",
+            "mat_rate",
+        ):
             schema_table.add_column(col)
         for row in report.by_schema:
             schema_table.add_row(
@@ -691,11 +716,23 @@ def l2_eval(
         _print_json(report.as_dict())
     else:
         totals = report.totals
-        console.print("[bold]L2 golden eval[/bold] " + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]"))
+        console.print(
+            "[bold]L2 golden eval[/bold] "
+            + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]")
+        )
         table = Table(show_header=True, header_style="bold")
         table.add_column("metric")
         table.add_column("value", justify="right")
-        for key in ("expected", "actual", "true_positive", "false_positive", "false_negative", "precision", "recall", "f1"):
+        for key in (
+            "expected",
+            "actual",
+            "true_positive",
+            "false_positive",
+            "false_negative",
+            "precision",
+            "recall",
+            "f1",
+        ):
             table.add_row(key, str(totals.get(key, 0)))
         console.print(table)
 
@@ -730,18 +767,32 @@ def _run_layer_doctor(*, json_output: bool, strict: bool) -> None:
         _print_json(report.as_dict())
     else:
         totals = report.totals
-        console.print("[bold]Layer quality[/bold] " + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]"))
+        console.print(
+            "[bold]Layer quality[/bold] "
+            + ("[green]OK[/green]" if report.ok else "[red]FAILED[/red]")
+        )
         table = Table(show_header=True, header_style="bold")
         table.add_column("metric")
         table.add_column("value", justify="right")
         for key in (
-            "docs", "blocks", "chunks", "chunks_fts", "tables",
-            "tables_with_cells", "tables_with_evidence",
-            "figures", "figures_with_image", "figures_with_evidence",
-            "chunks_with_block_ids", "chunks_with_section_id",
-            "chunks_with_section_node_id", "multi_page_chunks",
-            "l2_nodes", "l2_nodes_with_source_blocks",
-            "l2_nodes_with_source_chunks", "l2_nodes_with_evidence",
+            "docs",
+            "blocks",
+            "chunks",
+            "chunks_fts",
+            "tables",
+            "tables_with_cells",
+            "tables_with_evidence",
+            "figures",
+            "figures_with_image",
+            "figures_with_evidence",
+            "chunks_with_block_ids",
+            "chunks_with_section_id",
+            "chunks_with_section_node_id",
+            "multi_page_chunks",
+            "l2_nodes",
+            "l2_nodes_with_source_blocks",
+            "l2_nodes_with_source_chunks",
+            "l2_nodes_with_evidence",
             "l2_nodes_structurally_valid",
         ):
             table.add_row(key, str(totals.get(key, 0)))
@@ -812,9 +863,11 @@ def register(name: str) -> None:
     n = d.node
     console.print(f"[bold green]{n.name}[/bold green]  [dim]({n.id})[/dim]")
     a = n.attrs
-    console.print(f"  address={a.get('address')}  offset={a.get('offset')}  "
-                  f"width={a.get('width')}  access={a.get('access')}  "
-                  f"reset={a.get('reset_value')}  source={a.get('source')}")
+    console.print(
+        f"  address={a.get('address')}  offset={a.get('offset')}  "
+        f"width={a.get('width')}  access={a.get('access')}  "
+        f"reset={a.get('reset_value')}  source={a.get('source')}"
+    )
     console.print(f"  doc={n.doc_id}  page={n.location.page}")
     if n.summary:
         console.print(f"  [italic]{n.summary}[/italic]")
@@ -827,8 +880,13 @@ def register(name: str) -> None:
     for bf in d.bitfields:
         ba = bf.attrs
         bits = f"{ba.get('bit_high')}:{ba.get('bit_low')}"
-        tbl.add_row(bits, bf.name, str(ba.get("access") or ""), str(ba.get("reset") or ""),
-                     (ba.get("description") or "")[:80])
+        tbl.add_row(
+            bits,
+            bf.name,
+            str(ba.get("access") or ""),
+            str(ba.get("reset") or ""),
+            (ba.get("description") or "")[:80],
+        )
     console.print(tbl)
 
 
@@ -863,7 +921,9 @@ def figure(id_or_name: str) -> None:
         console.print(f"[yellow]Figure not found:[/yellow] {id_or_name}")
         return
     n = d.node
-    console.print(f"[bold]{n.name}[/bold]  type={n.attrs.get('figure_type')}  doc={n.doc_id} page={n.location.page}")
+    console.print(
+        f"[bold]{n.name}[/bold]  type={n.attrs.get('figure_type')}  doc={n.doc_id} page={n.location.page}"
+    )
     if n.attrs.get("caption"):
         console.print(f"  caption: {n.attrs['caption']}")
     if n.attrs.get("vlm_desc"):
@@ -880,7 +940,9 @@ def section(path_or_id: str) -> None:
     if d is None:
         console.print(f"[yellow]Section not found:[/yellow] {path_or_id}")
         return
-    console.print(f"[bold]{d.node.name}[/bold]  path={d.node.qualified_name}  page={d.node.location.page}")
+    console.print(
+        f"[bold]{d.node.name}[/bold]  path={d.node.qualified_name}  page={d.node.location.page}"
+    )
     if d.children:
         console.print("  Children:")
         for c in d.children:
@@ -913,7 +975,9 @@ def context(task: str) -> None:
     store.close()
     console.print(f"[bold]Context[/bold] for: {task}")
     console.print(f"  providers: {', '.join(cb.providers)}")
-    console.print(f"  nodes: {len(cb.nodes)}  edges: {len(cb.edges)}  semantic_hits: {len(cb.semantic_hits)}")
+    console.print(
+        f"  nodes: {len(cb.nodes)}  edges: {len(cb.edges)}  semantic_hits: {len(cb.semantic_hits)}"
+    )
     if cb.nodes:
         tbl = Table(show_header=True, header_style="bold")
         for col in ("id", "kind", "name"):
@@ -971,6 +1035,7 @@ def node(id: str) -> None:
 
 def _print_node(n) -> None:
     import json as _json
+
     console.print_json(_json.dumps(n.model_dump(), ensure_ascii=False, default=str))
 
 
@@ -1001,9 +1066,11 @@ def serve(
         web = True  # 默认 web，给非 agent 用户更友好
     if mcp:
         from docgraph.mcp.server import run_stdio
+
         run_stdio()
         return
     from docgraph.web.server import run as run_web
+
     run_web(host=host, port=port)
 
 
@@ -1028,7 +1095,9 @@ admin_app.add_typer(plugins_app, name="plugins")
 
 @plugins_app.command("ls")
 def plugins_ls(
-    kind: str = typer.Option(None, "--kind", help="Filter by group: parsers/extractors/embeddings/stores/llm"),
+    kind: str = typer.Option(
+        None, "--kind", help="Filter by group: parsers/extractors/embeddings/stores/llm"
+    ),
 ) -> None:
     """List installed plugins (builtin + entry_points)."""
     from docgraph.core.plugins import discovered
@@ -1113,7 +1182,9 @@ def migrate(
 # ---------------------------------------------------------------------------
 
 
-federate_app = typer.Typer(help="Federation management — mount other docgraph projects as read-only.")
+federate_app = typer.Typer(
+    help="Federation management — mount other docgraph projects as read-only."
+)
 admin_app.add_typer(federate_app, name="federate")
 
 
@@ -1175,8 +1246,9 @@ def federate_rm(name: str) -> None:
 
 @admin_app.command()
 def review(
-    min_confidence: float = typer.Option(0.85, "--min-confidence",
-                                          help="Show items below this confidence"),
+    min_confidence: float = typer.Option(
+        0.85, "--min-confidence", help="Show items below this confidence"
+    ),
 ) -> None:
     """Interactive TUI to review low-confidence nodes/edges."""
     from docgraph.review import run_review_tui
@@ -1208,13 +1280,15 @@ def export_ipxact_cmd(
     root, store, _qe = _open_project()
     cfg = load_config(root)
     r = export_ipxact(
-        store, out, family=cfg.project.family,
-        component=component, register_name=register,
+        store,
+        out,
+        family=cfg.project.family,
+        component=component,
+        register_name=register,
     )
     store.close()
     console.print(
-        f"[green]Wrote[/green] {r.output_path}  "
-        f"({r.registers} registers, {r.bitfields} bitfields)"
+        f"[green]Wrote[/green] {r.output_path}  ({r.registers} registers, {r.bitfields} bitfields)"
     )
 
 
@@ -1230,13 +1304,15 @@ def export_systemrdl_cmd(
     root, store, _qe = _open_project()
     cfg = load_config(root)
     r = export_systemrdl(
-        store, out, family=cfg.project.family,
-        component=component, register_name=register,
+        store,
+        out,
+        family=cfg.project.family,
+        component=component,
+        register_name=register,
     )
     store.close()
     console.print(
-        f"[green]Wrote[/green] {r.output_path}  "
-        f"({r.registers} registers, {r.bitfields} bitfields)"
+        f"[green]Wrote[/green] {r.output_path}  ({r.registers} registers, {r.bitfields} bitfields)"
     )
 
 

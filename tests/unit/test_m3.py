@@ -10,7 +10,7 @@ from docgraph.parsers.base import ParseContext
 
 
 # ---------------------------------------------------------------------------
-# Markdown parser（无外部依赖，pip install 时已带 markdown-it-py）
+# Markdown parser（markdown-it-py 由 uv 按锁文件同步）
 # ---------------------------------------------------------------------------
 
 

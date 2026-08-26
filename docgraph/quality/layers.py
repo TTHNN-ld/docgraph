@@ -4,6 +4,7 @@ The checks here are deliberately storage-level. They do not depend on L2 nodes,
 so they can be used after a parser/chunker-only build to prove that the lossless
 layout and retrieval substrate are intact.
 """
+
 from __future__ import annotations
 
 import json
@@ -66,7 +67,9 @@ class LayerQualityReport:
         }
 
 
-def audit_l0_l1(store: SQLiteGraphStore, *, table_cell_warn_ratio: float = 0.98) -> LayerQualityReport:
+def audit_l0_l1(
+    store: SQLiteGraphStore, *, table_cell_warn_ratio: float = 0.98
+) -> LayerQualityReport:
     """Audit L0/L1 invariants.
 
     Production-grade acceptance starts with these invariants:
@@ -181,51 +184,79 @@ def audit_l0_l1(store: SQLiteGraphStore, *, table_cell_warn_ratio: float = 0.98)
             ratio = doc["tables_with_cells"] / doc["tables"]
             evidence_ratio = doc["tables_with_evidence"] / doc["tables"]
             if evidence_ratio < 1.0:
-                issues.append(LayerIssue(
-                    "error",
-                    "l0.table_evidence_missing",
-                    f"table evidence coverage {evidence_ratio:.1%}",
-                    doc_id,
-                ))
+                issues.append(
+                    LayerIssue(
+                        "error",
+                        "l0.table_evidence_missing",
+                        f"table evidence coverage {evidence_ratio:.1%}",
+                        doc_id,
+                    )
+                )
             if ratio < table_cell_warn_ratio:
-                issues.append(LayerIssue(
-                    "warning",
-                    "l0.table_cell_coverage",
-                    f"table cell coverage {ratio:.1%} below {table_cell_warn_ratio:.1%}; raw evidence coverage {evidence_ratio:.1%}",
-                    doc_id,
-                ))
+                issues.append(
+                    LayerIssue(
+                        "warning",
+                        "l0.table_cell_coverage",
+                        f"table cell coverage {ratio:.1%} below {table_cell_warn_ratio:.1%}; raw evidence coverage {evidence_ratio:.1%}",
+                        doc_id,
+                    )
+                )
         if doc["figures"] and doc["figures_with_evidence"] < doc["figures"]:
-            issues.append(LayerIssue(
-                "error",
-                "l0.figure_image_missing",
-                f"{doc['figures'] - doc['figures_with_evidence']} figure blocks have no image_path or caption-only evidence",
-                doc_id,
-            ))
+            issues.append(
+                LayerIssue(
+                    "error",
+                    "l0.figure_image_missing",
+                    f"{doc['figures'] - doc['figures_with_evidence']} figure blocks have no image_path or caption-only evidence",
+                    doc_id,
+                )
+            )
 
     if fts_count != len(chunks):
-        issues.append(LayerIssue(
-            "error",
-            "l1.fts_mismatch",
-            f"chunks_fts rows={fts_count}, chunks rows={len(chunks)}",
-        ))
+        issues.append(
+            LayerIssue(
+                "error",
+                "l1.fts_mismatch",
+                f"chunks_fts rows={fts_count}, chunks rows={len(chunks)}",
+            )
+        )
 
     _audit_l2_provenance(nodes, by_doc, block_ids, chunk_ids, issues)
     _audit_l2_trust(nodes, by_doc, issues)
     _audit_l2_structure(nodes, by_doc, issues)
-    _extend_sample_issues(issues, "error", "l1.orphan_chunk", "chunks without block_ids", orphan_chunks)
-    _extend_sample_issues(issues, "error", "l1.missing_block_ref", "chunks reference missing L0 block IDs", missing_block_refs)
-    _extend_sample_issues(issues, "error", "l1.empty_chunk_text", "chunks have empty text", empty_chunks)
-    _extend_sample_issues(issues, "error", "l1.bad_page_range", "chunks have invalid page range", bad_page_ranges)
-    _extend_sample_issues(issues, "warning", "l1.missing_source_hash", "chunks missing source_hash", missing_source_hash)
+    _extend_sample_issues(
+        issues, "error", "l1.orphan_chunk", "chunks without block_ids", orphan_chunks
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l1.missing_block_ref",
+        "chunks reference missing L0 block IDs",
+        missing_block_refs,
+    )
+    _extend_sample_issues(
+        issues, "error", "l1.empty_chunk_text", "chunks have empty text", empty_chunks
+    )
+    _extend_sample_issues(
+        issues, "error", "l1.bad_page_range", "chunks have invalid page range", bad_page_ranges
+    )
+    _extend_sample_issues(
+        issues,
+        "warning",
+        "l1.missing_source_hash",
+        "chunks missing source_hash",
+        missing_source_hash,
+    )
 
     for (doc_id, page), orders in page_orders.items():
         if orders != sorted(orders):
-            issues.append(LayerIssue(
-                "warning",
-                "l0.reading_order_unsorted",
-                f"reading_order is not monotonic on page {page}",
-                doc_id,
-            ))
+            issues.append(
+                LayerIssue(
+                    "warning",
+                    "l0.reading_order_unsorted",
+                    f"reading_order is not monotonic on page {page}",
+                    doc_id,
+                )
+            )
             break
 
     by_doc_rows = [_freeze_doc_stats(by_doc[doc_id]) for doc_id in docs]
@@ -255,30 +286,44 @@ def _freeze_doc_stats(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 def _totals(rows: list[dict[str, Any]], *, fts_count: int) -> dict[str, Any]:
-    total = Counter()
+    total: Counter[str] = Counter()
     block_kinds: Counter[str] = Counter()
     chunk_kinds: Counter[str] = Counter()
     table_profiles: Counter[str] = Counter()
     for row in rows:
         for key in (
-            "blocks", "chunks", "tables", "tables_with_cells", "tables_with_evidence",
-            "figures", "figures_with_image", "figures_with_evidence",
-            "chunks_with_block_ids", "chunks_with_section_id",
-            "chunks_with_section_node_id", "multi_page_chunks",
-            "l2_nodes", "l2_nodes_with_source_blocks", "l2_nodes_with_source_chunks",
-            "l2_nodes_with_evidence", "l2_nodes_structurally_valid",
-            "l2_facts", "l2_candidates", "l2_needs_review",
+            "blocks",
+            "chunks",
+            "tables",
+            "tables_with_cells",
+            "tables_with_evidence",
+            "figures",
+            "figures_with_image",
+            "figures_with_evidence",
+            "chunks_with_block_ids",
+            "chunks_with_section_id",
+            "chunks_with_section_node_id",
+            "multi_page_chunks",
+            "l2_nodes",
+            "l2_nodes_with_source_blocks",
+            "l2_nodes_with_source_chunks",
+            "l2_nodes_with_evidence",
+            "l2_nodes_structurally_valid",
+            "l2_facts",
+            "l2_candidates",
+            "l2_needs_review",
         ):
             total[key] += int(row.get(key) or 0)
         block_kinds.update(row.get("block_kinds") or {})
         chunk_kinds.update(row.get("chunk_kinds") or {})
         table_profiles.update(row.get("table_profiles") or {})
-    total["docs"] = len(rows)
-    total["chunks_fts"] = fts_count
-    total["block_kinds"] = dict(sorted(block_kinds.items()))
-    total["chunk_kinds"] = dict(sorted(chunk_kinds.items()))
-    total["table_profiles"] = dict(sorted(table_profiles.items()))
-    return dict(total)
+    result: dict[str, Any] = dict(total)
+    result["docs"] = len(rows)
+    result["chunks_fts"] = fts_count
+    result["block_kinds"] = dict(sorted(block_kinds.items()))
+    result["chunk_kinds"] = dict(sorted(chunk_kinds.items()))
+    result["table_profiles"] = dict(sorted(table_profiles.items()))
+    return result
 
 
 def _bbox_area(bbox: dict[str, Any]) -> float:
@@ -307,32 +352,35 @@ def _audit_l2_provenance(
     for row in nodes:
         if row["kind"] not in _L2_PROVENANCE_KINDS:
             continue
-        doc = by_doc.setdefault(row["doc_id"], {
-            "doc_id": row["doc_id"],
-            "blocks": 0,
-            "chunks": 0,
-            "block_kinds": Counter(),
-            "chunk_kinds": Counter(),
-            "tables": 0,
-            "tables_with_cells": 0,
-            "tables_with_evidence": 0,
-            "figures": 0,
-            "figures_with_image": 0,
-            "figures_with_evidence": 0,
-            "chunks_with_block_ids": 0,
-            "chunks_with_section_id": 0,
-            "chunks_with_section_node_id": 0,
-            "multi_page_chunks": 0,
-            "table_profiles": Counter(),
-            "l2_nodes": 0,
-            "l2_nodes_with_source_blocks": 0,
-            "l2_nodes_with_source_chunks": 0,
-            "l2_nodes_with_evidence": 0,
-            "l2_nodes_structurally_valid": 0,
-            "l2_facts": 0,
-            "l2_candidates": 0,
-            "l2_needs_review": 0,
-        })
+        doc = by_doc.setdefault(
+            row["doc_id"],
+            {
+                "doc_id": row["doc_id"],
+                "blocks": 0,
+                "chunks": 0,
+                "block_kinds": Counter(),
+                "chunk_kinds": Counter(),
+                "tables": 0,
+                "tables_with_cells": 0,
+                "tables_with_evidence": 0,
+                "figures": 0,
+                "figures_with_image": 0,
+                "figures_with_evidence": 0,
+                "chunks_with_block_ids": 0,
+                "chunks_with_section_id": 0,
+                "chunks_with_section_node_id": 0,
+                "multi_page_chunks": 0,
+                "table_profiles": Counter(),
+                "l2_nodes": 0,
+                "l2_nodes_with_source_blocks": 0,
+                "l2_nodes_with_source_chunks": 0,
+                "l2_nodes_with_evidence": 0,
+                "l2_nodes_structurally_valid": 0,
+                "l2_facts": 0,
+                "l2_candidates": 0,
+                "l2_needs_review": 0,
+            },
+        )
         doc["l2_nodes"] += 1
         attrs = json.loads(row["attrs"]) if row["attrs"] else {}
         evidence = json.loads(row["evidence"]) if row["evidence"] else {}
@@ -355,11 +403,41 @@ def _audit_l2_provenance(
         else:
             missing_chunks[row["doc_id"]].append(row["id"])
 
-    _extend_sample_issues(issues, "error", "l2.missing_source_blocks", "L2 nodes missing source_block_ids", missing_blocks)
-    _extend_sample_issues(issues, "error", "l2.missing_source_chunks", "L2 nodes missing source_chunk_ids", missing_chunks)
-    _extend_sample_issues(issues, "error", "l2.bad_source_blocks", "L2 nodes reference missing L0 block IDs", bad_blocks)
-    _extend_sample_issues(issues, "error", "l2.bad_source_chunks", "L2 nodes reference missing L1 chunk IDs", bad_chunks)
-    _extend_sample_issues(issues, "error", "l2.missing_evidence", "L2 nodes missing real evidence extractor", missing_evidence)
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.missing_source_blocks",
+        "L2 nodes missing source_block_ids",
+        missing_blocks,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.missing_source_chunks",
+        "L2 nodes missing source_chunk_ids",
+        missing_chunks,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.bad_source_blocks",
+        "L2 nodes reference missing L0 block IDs",
+        bad_blocks,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.bad_source_chunks",
+        "L2 nodes reference missing L1 chunk IDs",
+        bad_chunks,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.missing_evidence",
+        "L2 nodes missing real evidence extractor",
+        missing_evidence,
+    )
 
 
 def _audit_l2_trust(nodes, by_doc: dict[str, dict[str, Any]], issues: list[LayerIssue]) -> None:
@@ -380,7 +458,9 @@ def _audit_l2_trust(nodes, by_doc: dict[str, dict[str, Any]], issues: list[Layer
             status = "candidate"
         if status == "fact":
             doc["l2_facts"] += 1
-            has_error = any(issue.get("severity", "error") == "error" for issue in validation_issues)
+            has_error = any(
+                issue.get("severity", "error") == "error" for issue in validation_issues
+            )
             if (
                 derivation.get("method") not in {"deterministic", "manual"}
                 or not derivation.get("verified")
@@ -411,10 +491,7 @@ def _audit_l2_trust(nodes, by_doc: dict[str, dict[str, Any]], issues: list[Layer
 def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[LayerIssue]) -> None:
     """Validate strong L2 entity invariants that should never rely on LLM trust."""
     rows = {row["id"]: row for row in nodes}
-    attrs_by_id = {
-        row["id"]: (json.loads(row["attrs"]) if row["attrs"] else {})
-        for row in nodes
-    }
+    attrs_by_id = {row["id"]: (json.loads(row["attrs"]) if row["attrs"] else {}) for row in nodes}
     invalid_bit_ranges: dict[str, list[str]] = defaultdict(list)
     invalid_bit_widths: dict[str, list[str]] = defaultdict(list)
     missing_register_refs: dict[str, list[str]] = defaultdict(list)
@@ -501,7 +578,7 @@ def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[L
         prev_low = prev_high = None
         prev_id = ""
         for low, high, node_id in ranges:
-            if prev_low is not None and low <= prev_high:
+            if prev_low is not None and prev_high is not None and low <= prev_high:
                 doc_id = rows[node_id]["doc_id"]
                 overlapping_bitfields[doc_id].extend([prev_id, node_id])
             prev_low, prev_high, prev_id = low, high, node_id
@@ -526,15 +603,69 @@ def _audit_l2_structure(nodes, by_doc: dict[str, dict[str, Any]], issues: list[L
         if doc_id in by_doc:
             by_doc[doc_id]["l2_nodes_structurally_valid"] += 1
 
-    _extend_sample_issues(issues, "error", "l2.invalid_bit_range", "bitfields have invalid bit ranges", invalid_bit_ranges)
-    _extend_sample_issues(issues, "error", "l2.invalid_bit_width", "register or bitfield width constraints are invalid", invalid_bit_widths)
-    _extend_sample_issues(issues, "error", "l2.missing_register_ref", "bitfields reference missing registers", missing_register_refs)
-    _extend_sample_issues(issues, "error", "l2.overlapping_bitfields", "bitfields overlap within the same register", overlapping_bitfields)
-    _extend_sample_issues(issues, "error", "l2.missing_required_field", "L2 nodes miss required fields", missing_required_fields)
-    _extend_sample_issues(issues, "error", "l2.invalid_width_value", "signal/interface widths are invalid", invalid_width_values)
-    _extend_sample_issues(issues, "error", "l2.invalid_address_value", "memory map addresses are invalid", invalid_address_values)
-    _extend_sample_issues(issues, "error", "l2.invalid_interrupt_number", "interrupt numbers are invalid", invalid_interrupt_numbers)
-    _extend_sample_issues(issues, "warning", "l2.weak_access_value", "access values are not normalized", weak_access_values)
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.invalid_bit_range",
+        "bitfields have invalid bit ranges",
+        invalid_bit_ranges,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.invalid_bit_width",
+        "register or bitfield width constraints are invalid",
+        invalid_bit_widths,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.missing_register_ref",
+        "bitfields reference missing registers",
+        missing_register_refs,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.overlapping_bitfields",
+        "bitfields overlap within the same register",
+        overlapping_bitfields,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.missing_required_field",
+        "L2 nodes miss required fields",
+        missing_required_fields,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.invalid_width_value",
+        "signal/interface widths are invalid",
+        invalid_width_values,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.invalid_address_value",
+        "memory map addresses are invalid",
+        invalid_address_values,
+    )
+    _extend_sample_issues(
+        issues,
+        "error",
+        "l2.invalid_interrupt_number",
+        "interrupt numbers are invalid",
+        invalid_interrupt_numbers,
+    )
+    _extend_sample_issues(
+        issues,
+        "warning",
+        "l2.weak_access_value",
+        "access values are not normalized",
+        weak_access_values,
+    )
 
 
 def _parse_int(value: Any, default: int | None = None) -> int | None:
@@ -553,9 +684,26 @@ def _looks_like_access(value: Any) -> bool:
     if not text:
         return True
     allowed = {
-        "R", "W", "RW", "RO", "WO", "W1C", "W1S", "W0C", "RC", "RS", "WC",
-        "READ", "WRITE", "READONLY", "WRITEONLY", "R/W", "R/O", "W/O",
-        "R/W1C", "RW1C",
+        "R",
+        "W",
+        "RW",
+        "RO",
+        "WO",
+        "W1C",
+        "W1S",
+        "W0C",
+        "RC",
+        "RS",
+        "WC",
+        "READ",
+        "WRITE",
+        "READONLY",
+        "WRITEONLY",
+        "R/W",
+        "R/O",
+        "W/O",
+        "R/W1C",
+        "RW1C",
     }
     return text in allowed
 
@@ -575,6 +723,7 @@ def _looks_like_width(value: Any) -> bool:
     if _is_emptyish(text):
         return True
     import re
+
     # Pure integer: zero is suspicious but not structurally invalid.
     if re.fullmatch(r"\d+", text):
         return True
@@ -607,6 +756,7 @@ def _looks_like_number(value: Any) -> bool:
     if _is_emptyish(text):
         return True
     import re
+
     return bool(re.fullmatch(r"(0x[0-9a-fA-F]+|\d+|[-\d,\s]+)", text))
 
 
@@ -617,6 +767,7 @@ def _looks_like_address(value: Any) -> bool:
     # Address-like fields in chip specs are often symbolic locators
     # (BAR0, HOST PA, BDF+offset), not only numeric base addresses.
     import re
+
     return bool(re.search(r"[A-Za-z0-9]", text))
 
 

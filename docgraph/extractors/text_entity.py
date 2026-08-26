@@ -12,6 +12,7 @@
 - 节点必须带 evidence + source_block_ids
 - 不写死特定项目，正则覆盖通用编号格式
 """
+
 from __future__ import annotations
 
 import re

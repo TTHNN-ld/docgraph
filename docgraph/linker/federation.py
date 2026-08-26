@@ -1,11 +1,14 @@
-"""FederationLinker —— 联邦合并 + SUPERSEDES 边。
+"""FederationLinker —— 同项目多文档的 SUPERSEDES / ALIAS_OF 边。
 
-简化版（M2）：
-- 从 manifest / config.docs.metadata 拿到每个文档的 type + priority + supersedes
+当前简化规则：
+- runner 从 manifest / config.docs.metadata 传入每个文档的 priority
 - 跨 doc 的同 qualified_name 节点之间：
   - 高 priority doc → 低 priority doc：建 SUPERSEDES 边
-  - 同 priority：建 ALIAS_OF 双向边
+  - 同 priority：从选定的 primary 建 ALIAS_OF 边
+
+`DocMetadata.supersedes` 目前尚未进入此判定路径。
 """
+
 from __future__ import annotations
 
 import time

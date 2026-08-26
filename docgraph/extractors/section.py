@@ -4,6 +4,7 @@
 2. TOC 为空时回退：扫描 L0 heading block，按编号判断层级。
 3. 输出 SECTION 节点 + 父子 CONTAINS 边。
 """
+
 from __future__ import annotations
 
 import re
@@ -87,9 +88,7 @@ class SectionExtractor:
             section_counter += 1
             path = entry.section_path or self._infer_path(entry, toc)
             qn = path or f"sec_{section_counter}"
-            node_id = make_node_id(
-                ctx.family, NodeKind.SECTION, qn, doc_id=doc.doc_id
-            )
+            node_id = make_node_id(ctx.family, NodeKind.SECTION, qn, doc_id=doc.doc_id)
             node = Node(
                 id=node_id,
                 kind=NodeKind.SECTION,

@@ -3,6 +3,7 @@
 The router keeps the default PDF path small and maintainable:
 PyMuPDF inspects every PDF cheaply, then routes to Docling, MinerU, or PyMuPDF.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -77,7 +78,8 @@ def inspect_pdf(path: Path, *, max_pages: int = 16) -> PdfProfile:
         metadata = doc.metadata or {}
         is_tagged = _looks_tagged(doc, metadata)
 
-        for page in list(doc)[:sample_count]:
+        for page_no in range(sample_count):
+            page = doc.load_page(page_no)
             text = page.get_text("text") or ""
             text_chars += len(text.strip())
             cjk_chars += sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
@@ -131,10 +133,7 @@ def choose_pdf_parser(profile: PdfProfile, *, quality: str) -> str:
     - uncertain balanced PDFs prefer Docling, accurate PDFs prefer MinerU.
     """
     normalized = (quality or "balanced").strip().lower()
-    image_heavy = (
-        profile.image_area_ratio >= 0.35
-        or profile.image_count_per_page >= 2.0
-    )
+    image_heavy = profile.image_area_ratio >= 0.35 or profile.image_count_per_page >= 2.0
     table_density = profile.table_candidate_count / max(profile.page_count, 1)
     register_density = profile.register_keyword_count / max(profile.page_count, 1)
     table_heavy = profile.table_candidate_count >= 8 or table_density >= 0.15

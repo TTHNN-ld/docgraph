@@ -1,4 +1,5 @@
 """配置加载与默认值。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,6 +7,14 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
+
+SUPPORTED_DOCUMENT_SUFFIXES = frozenset({".pdf", ".docx", ".xlsx", ".xlsm", ".md", ".markdown"})
+
+DEFAULT_DOCUMENT_GLOBS = [
+    f"{directory}/**/*{suffix}"
+    for directory in ("docs", "spec")
+    for suffix in sorted(SUPPORTED_DOCUMENT_SUFFIXES)
+]
 
 
 class ProjectConfig(BaseModel):
@@ -98,6 +107,7 @@ class ExtractorEntry(BaseModel):
 
 class ExtractorsConfig(BaseModel):
     """已启用的 extractor 列表 + 每个 extractor 的专属选项。"""
+
     enabled: list[str] = Field(default_factory=lambda: ["section", "table_entity"])
     options: dict[str, ExtractorEntry] = Field(default_factory=dict)
 
@@ -110,6 +120,7 @@ class LLMTiers(BaseModel):
 
     可以指定任意模型名（不止 Claude）；调用时按 provider 路由。
     """
+
     fast: str = "claude-haiku-4-5-20251001"
     balanced: str = "claude-sonnet-4-6"
     accurate: str = "claude-opus-4-8"
@@ -124,6 +135,7 @@ class LLMProviderConfig(BaseModel):
       api_key_env: OPENAI_API_KEY    (兼容环境变量/.env)
       base_url_env: OPENAI_BASE_URL  (兼容环境变量/.env)
     """
+
     api_key: str | None = None
     api_key_env: str = "ANTHROPIC_API_KEY"
     base_url_env: str | None = None
@@ -140,6 +152,7 @@ class VLMConfig(BaseModel):
     FigureExtractor.DEFAULT_VLM_FIGURE_LIMIT). 设大一点 (如 200) 即近似 "全量".
     DOCGRAPH_VLM_FIGURE_LIMIT 环境变量仍可单次覆盖本值.
     """
+
     provider: str | None = None
     model: str | None = None
     api_key: str | None = None
@@ -170,6 +183,7 @@ class LLMConfig(BaseModel):
             accurate: doubao-1-5-pro-32k
           vlm_model: qwen-vl-max  # 视觉模型可选；不设则用 accurate
     """
+
     enabled: bool = False
     provider: str = "anthropic"
     providers: dict[str, LLMProviderConfig] = Field(
@@ -196,9 +210,10 @@ class EmbeddingsConfig(BaseModel):
 
     provider 可选值：hash / bge_m3 / openai_compat / openai
     """
+
     provider: str = "hash"
-    model: str | None = None        # bge_m3 默认 "BAAI/bge-m3"；openai 默认 "text-embedding-3-small"
-    dim: int | None = None          # 不设则用 provider 默认
+    model: str | None = None  # bge_m3 默认 "BAAI/bge-m3"；openai 默认 "text-embedding-3-small"
+    dim: int | None = None  # 不设则用 provider 默认
     api_key: str | None = None
     api_key_env: str = "EMBEDDING_API_KEY"
     api_key_fallback_env: str = "OPENAI_API_KEY"
@@ -208,9 +223,7 @@ class EmbeddingsConfig(BaseModel):
 
 
 class DocsConfig(BaseModel):
-    include: list[str] = Field(
-        default_factory=lambda: ["docs/**/*.pdf", "spec/**/*.pdf"]
-    )
+    include: list[str] = Field(default_factory=lambda: list(DEFAULT_DOCUMENT_GLOBS))
     exclude: list[str] = Field(default_factory=list)
     metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
@@ -253,8 +266,18 @@ project:
 
 docs:
   include:
+    - "docs/**/*.docx"
+    - "docs/**/*.markdown"
+    - "docs/**/*.md"
     - "docs/**/*.pdf"
+    - "docs/**/*.xlsm"
+    - "docs/**/*.xlsx"
+    - "spec/**/*.docx"
+    - "spec/**/*.markdown"
+    - "spec/**/*.md"
     - "spec/**/*.pdf"
+    - "spec/**/*.xlsm"
+    - "spec/**/*.xlsx"
   exclude: []
 
 parsers:

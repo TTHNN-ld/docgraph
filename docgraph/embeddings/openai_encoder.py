@@ -9,6 +9,7 @@ OpenAI 等均提供 OpenAI 兼容的 `/embeddings` 端点。
   EMBEDDING_API_KEY   (优先)
   OPENAI_API_KEY      (回退)
 """
+
 from __future__ import annotations
 
 import os
@@ -21,10 +22,12 @@ log = get_logger(__name__)
 
 class OpenAIEmbeddingProvider:
     """OpenAI 兼容 embedding 适配器。"""
+
     name = "openai_compat"
 
     def __init__(
-        self, *,
+        self,
+        *,
         model: str = "text-embedding-3-small",
         dim: int = 1536,
         api_key: str | None = None,
@@ -36,27 +39,20 @@ class OpenAIEmbeddingProvider:
     ) -> None:
         self.model = model
         self.dim = dim
-        self.api_key = (
-            api_key
-            or os.environ.get(api_key_env)
-            or os.environ.get(api_key_fallback_env)
+        self.api_key: str | None = (
+            api_key or os.environ.get(api_key_env) or os.environ.get(api_key_fallback_env)
         )
         if base_url:
-            self.base_url = base_url
+            self.base_url: str | None = base_url
         else:
-            self.base_url = (
-                os.environ.get(base_url_env)
-                or os.environ.get(base_url_fallback_env)
-            )
-        self._client = None
+            self.base_url = os.environ.get(base_url_env) or os.environ.get(base_url_fallback_env)
+        self._client: Any | None = None
 
-    def _ensure_client(self) -> None:
+    def _ensure_client(self) -> Any:
         if self._client is not None:
-            return
+            return self._client
         if not self.api_key:
-            raise RuntimeError(
-                "OpenAI embedding requires EMBEDDING_API_KEY or OPENAI_API_KEY env"
-            )
+            raise RuntimeError("OpenAI embedding requires EMBEDDING_API_KEY or OPENAI_API_KEY env")
         try:
             from openai import OpenAI  # type: ignore
         except ImportError as e:  # pragma: no cover
@@ -65,16 +61,17 @@ class OpenAIEmbeddingProvider:
         if self.base_url:
             kwargs["base_url"] = self.base_url
         self._client = OpenAI(**kwargs)
+        return self._client
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        self._ensure_client()
+        client = self._ensure_client()
         # OpenAI-compatible providers differ on batch limits; Doubao currently
         # accepts at most 10 inputs per embeddings request.
         max_batch = max(1, int(os.environ.get("EMBEDDING_MAX_BATCH", "10")))
         out: list[list[float]] = []
         for i in range(0, len(texts), max_batch):
-            batch = [t or " " for t in texts[i:i + max_batch]]  # 空串会被拒
-            resp = self._client.embeddings.create(model=self.model, input=batch)
+            batch = [t or " " for t in texts[i : i + max_batch]]  # 空串会被拒
+            resp = client.embeddings.create(model=self.model, input=batch)
             for item in resp.data:
                 out.append(list(item.embedding))
         return out

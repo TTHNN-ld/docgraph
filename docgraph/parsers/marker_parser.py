@@ -6,7 +6,7 @@ PDF parser，对表格、公式、章节结构识别比 PyMuPDF 强很多。
 依赖较重（torch + transformers + opencv），故按需 import。
 
 安装：
-  pip install marker-pdf
+  uv sync --extra marker
 
 使用：
   config.yaml:
@@ -15,6 +15,7 @@ PDF parser，对表格、公式、章节结构识别比 PyMuPDF 强很多。
         primary: marker
         fallback: [pymupdf]
 """
+
 from __future__ import annotations
 
 from importlib.util import find_spec
@@ -37,6 +38,7 @@ log = get_logger(__name__)
 
 class MarkerParser:
     """基于 marker-pdf 的 PDF parser。"""
+
     name = "marker"
     supports = {".pdf"}
     version = "0.1"
@@ -55,7 +57,8 @@ class MarkerParser:
             from marker.models import create_model_dict  # type: ignore
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
-                "marker-pdf not installed. Install with: pip install marker-pdf\n"
+                "marker-pdf not installed. "
+                "Run: uv sync --extra marker\n"
                 "Note: this brings ~2GB deps (torch + transformers)."
             ) from e
         log.info("[marker] loading models (one-time, may take ~30s)...")
@@ -93,6 +96,7 @@ class MarkerParser:
     def _md_to_pages(md: str, images: dict, ctx, path: Path) -> list[ParsedPage]:
         """Marker 输出整篇 markdown，我们按 page 标志切；找不到就单页。"""
         import re
+
         # marker 偶尔会用 "<!-- page: N -->" 锚点
         chunks = re.split(r"<!--\s*page:\s*(\d+)\s*-->", md)
         if len(chunks) >= 3:
@@ -110,6 +114,7 @@ class MarkerParser:
     @staticmethod
     def _md_to_toc(md: str) -> list[TocEntry]:
         import re
+
         out: list[TocEntry] = []
         counter = [0] * 6
         for line in md.splitlines():
@@ -121,10 +126,13 @@ class MarkerParser:
             for j in range(level, 6):
                 counter[j] = 0
             path_str = ".".join(str(c) for c in counter[:level] if c > 0)
-            out.append(TocEntry(
-                level=level, title=m.group(2).strip(),
-                section_path=path_str or None,
-            ))
+            out.append(
+                TocEntry(
+                    level=level,
+                    title=m.group(2).strip(),
+                    section_path=path_str or None,
+                )
+            )
         return out
 
 
@@ -146,10 +154,14 @@ def _md_chunk_to_page(md: str, page_no: int, images: dict, ctx) -> ParsedPage:
         # 标题
         m = re.match(r"^(#{1,6})\s+(.+)$", stripped)
         if m:
-            text_blocks.append(TextBlock(
-                text=m.group(2).strip(), reading_order=order,
-                is_heading=True, heading_level=len(m.group(1)),
-            ))
+            text_blocks.append(
+                TextBlock(
+                    text=m.group(2).strip(),
+                    reading_order=order,
+                    is_heading=True,
+                    heading_level=len(m.group(1)),
+                )
+            )
             order += 1
             i += 1
             continue
@@ -160,9 +172,12 @@ def _md_chunk_to_page(md: str, page_no: int, images: dict, ctx) -> ParsedPage:
             alt, src = m.group(1), m.group(2)
             # marker 返回的 images dict：path → bytes；保存到 cache_dir
             img_path = _save_marker_image(src, images, ctx, page_no)
-            figures.append(ParsedFigure(
-                image_path=img_path, caption=alt or None,
-            ))
+            figures.append(
+                ParsedFigure(
+                    image_path=img_path,
+                    caption=alt or None,
+                )
+            )
             i += 1
             continue
 
@@ -198,6 +213,7 @@ def _md_chunk_to_page(md: str, page_no: int, images: dict, ctx) -> ParsedPage:
 def _save_marker_image(src: str, images: dict, ctx, page_no: int) -> str | None:
     """把 marker 返回的图片字节保存到 cache_dir，返回相对路径。"""
     from pathlib import Path
+
     if ctx.cache_dir is None:
         return src
     cache_dir = Path(ctx.cache_dir)

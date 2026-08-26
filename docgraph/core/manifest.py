@@ -2,6 +2,7 @@
 
 存放在 `.docgraph/manifest.json`，每个被追踪的文件一条记录。
 """
+
 from __future__ import annotations
 
 import json

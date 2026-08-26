@@ -12,6 +12,7 @@
 - Token / cost 追踪
 - Tier 路由（fast / balanced / accurate → 具体模型名）
 """
+
 from __future__ import annotations
 
 import json
@@ -24,6 +25,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+from pydantic import BaseModel, ValidationError
 
 from docgraph.core.ids import content_hash
 
@@ -89,6 +92,7 @@ class LLMProvider(Protocol):
         max_tokens: int = 2048,
         temperature: float = 0.0,
         system: str | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> LLMResponse: ...
 
 
@@ -117,28 +121,26 @@ class AnthropicProvider:
         base_url: str | None = None,
     ) -> None:
         self.api_key_env = api_key_env
-        self.base_url = base_url
-        self.api_key = api_key or os.environ.get(api_key_env)
-        self._client = None
+        self.base_url: str | None = base_url
+        self.api_key: str | None = api_key or os.environ.get(api_key_env)
+        self._client: Any | None = None
 
-    def _ensure_client(self) -> None:
+    def _ensure_client(self) -> Any:
         if self._client is not None:
-            return
+            return self._client
         if not self.api_key:
-            raise RuntimeError(
-                f"AnthropicProvider needs {self.api_key_env}; set the env var."
-            )
+            raise RuntimeError(f"AnthropicProvider needs {self.api_key_env}; set the env var.")
         try:
             from anthropic import Anthropic  # type: ignore
         except ImportError as e:
             raise RuntimeError(
-                "anthropic package not installed. "
-                "Install with: pip install 'docgraph-core[llm]'"
+                "anthropic package not installed. Install with: uv sync --extra llm"
             ) from e
         kwargs = {"api_key": self.api_key}
         if self.base_url:
             kwargs["base_url"] = self.base_url
         self._client = Anthropic(**kwargs)
+        return self._client
 
     def complete(
         self,
@@ -148,8 +150,9 @@ class AnthropicProvider:
         max_tokens: int = 2048,
         temperature: float = 0.0,
         system: str | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        self._ensure_client()
+        client = self._ensure_client()
         kwargs: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
@@ -158,7 +161,7 @@ class AnthropicProvider:
         }
         if system:
             kwargs["system"] = system
-        msg = self._client.messages.create(**kwargs)
+        msg = client.messages.create(**kwargs)
         text = ""
         for block in msg.content:
             if getattr(block, "type", None) == "text":
@@ -167,7 +170,10 @@ class AnthropicProvider:
         ti = getattr(usage, "input_tokens", 0) if usage else 0
         to = getattr(usage, "output_tokens", 0) if usage else 0
         return LLMResponse(
-            text=text, model=model, tokens_in=ti, tokens_out=to,
+            text=text,
+            model=model,
+            tokens_in=ti,
+            tokens_out=to,
             cost_usd=estimate_cost(model, ti, to),
         )
 
@@ -194,30 +200,26 @@ class OpenAICompatProvider:
     ) -> None:
         self.name = name
         self.api_key_env = api_key_env
-        self.api_key = api_key or os.environ.get(api_key_env)
+        self.api_key: str | None = api_key or os.environ.get(api_key_env)
         self.timeout_s = timeout_s
         # 显式 base_url 优先，否则环境变量
         if base_url:
-            self.base_url = base_url
+            self.base_url: str | None = base_url
         elif base_url_env:
             self.base_url = os.environ.get(base_url_env)
         else:
             self.base_url = None
-        self._client = None
+        self._client: Any | None = None
 
-    def _ensure_client(self) -> None:
+    def _ensure_client(self) -> Any:
         if self._client is not None:
-            return
+            return self._client
         if not self.api_key:
-            raise RuntimeError(
-                f"{self.name} provider needs {self.api_key_env}; set the env var."
-            )
+            raise RuntimeError(f"{self.name} provider needs {self.api_key_env}; set the env var.")
         try:
             from openai import OpenAI  # type: ignore
         except ImportError as e:
-            raise RuntimeError(
-                "openai package not installed. Install: pip install openai"
-            ) from e
+            raise RuntimeError("openai package not installed. Run: uv sync --extra llm") from e
         kwargs: dict[str, Any] = {"api_key": self.api_key}
         if self.base_url:
             kwargs["base_url"] = self.base_url
@@ -230,6 +232,7 @@ class OpenAICompatProvider:
                 timeout_s = 60.0
         kwargs["timeout"] = timeout_s
         self._client = OpenAI(**kwargs)
+        return self._client
 
     def complete(
         self,
@@ -241,8 +244,8 @@ class OpenAICompatProvider:
         system: str | None = None,
         extra_body: dict | None = None,
     ) -> LLMResponse:
-        self._ensure_client()
-        messages = []
+        client = self._ensure_client()
+        messages: list[dict[str, Any]] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
@@ -257,13 +260,16 @@ class OpenAICompatProvider:
         # 大幅降低延迟和 token 消耗（推理不再吃光 max_tokens 导致 content 空）。
         if extra_body:
             kwargs["extra_body"] = extra_body
-        resp = self._client.chat.completions.create(**kwargs)
+        resp = client.chat.completions.create(**kwargs)
         text = (resp.choices[0].message.content or "") if resp.choices else ""
         usage = getattr(resp, "usage", None)
         ti = getattr(usage, "prompt_tokens", 0) if usage else 0
         to = getattr(usage, "completion_tokens", 0) if usage else 0
         return LLMResponse(
-            text=text, model=model, tokens_in=ti, tokens_out=to,
+            text=text,
+            model=model,
+            tokens_in=ti,
+            tokens_out=to,
             cost_usd=estimate_cost(model, ti, to),
         )
 
@@ -505,7 +511,7 @@ class LLMClient:
         self,
         prompt: str,
         *,
-        schema: type,
+        schema: type[BaseModel],
         tier: str = "balanced",
         max_tokens: int = 2048,
         temperature: float = 0.0,
@@ -514,11 +520,7 @@ class LLMClient:
         require_pydantic: bool = True,
         extra_body: dict | None = None,
     ) -> Any:
-        from pydantic import BaseModel, ValidationError
-
-        if require_pydantic and not (
-            isinstance(schema, type) and issubclass(schema, BaseModel)
-        ):
+        if require_pydantic and not (isinstance(schema, type) and issubclass(schema, BaseModel)):
             raise TypeError("schema must be a Pydantic BaseModel subclass")
 
         schema_json = schema.model_json_schema() if require_pydantic else {}
@@ -549,8 +551,7 @@ class LLMClient:
             except (json.JSONDecodeError, ValidationError, ValueError) as e:
                 last_err = e
                 cur_prompt = (
-                    prompt
-                    + "\n\n⚠️ 上次输出无法解析为合规 JSON。请重新输出，严格遵守 schema。"
+                    prompt + "\n\n⚠️ 上次输出无法解析为合规 JSON。请重新输出，严格遵守 schema。"
                 )
                 continue
         raise ValueError(

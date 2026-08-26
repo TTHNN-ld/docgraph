@@ -6,6 +6,7 @@ M4 升级：
 - 统一 base64 + image_url 两种 payload 编码
 - 不同 provider 的 vision payload 格式由 _build_messages 路由
 """
+
 from __future__ import annotations
 
 import base64
@@ -70,6 +71,7 @@ class VLMProvider(Protocol):
 
 class AnthropicVLMProvider:
     """复用 Anthropic SDK 的视觉能力。"""
+
     name = "anthropic"
 
     def __init__(
@@ -80,26 +82,39 @@ class AnthropicVLMProvider:
         self._inner = AnthropicProvider(api_key_env=api_key_env, api_key=api_key)
 
     def describe(
-        self, image_path: Path, prompt: str, *,
-        model: str, max_tokens: int = 1500, temperature: float = 0.0,
+        self,
+        image_path: Path,
+        prompt: str,
+        *,
+        model: str,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
         system: str | None = None,
     ) -> LLMResponse:
-        self._inner._ensure_client()  # type: ignore
-        client = self._inner._client  # type: ignore
+        client = self._inner._ensure_client()
         img_bytes = Path(image_path).read_bytes()
         b64 = base64.b64encode(img_bytes).decode("ascii")
         media_type = _guess_media_type(image_path)
         kwargs: dict[str, Any] = {
-            "model": model, "max_tokens": max_tokens, "temperature": temperature,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {
-                        "type": "base64", "media_type": media_type, "data": b64,
-                    }},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": b64,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
         }
         if system:
             kwargs["system"] = system
@@ -108,8 +123,13 @@ class AnthropicVLMProvider:
         usage = getattr(msg, "usage", None)
         ti = getattr(usage, "input_tokens", 0) if usage else 0
         to = getattr(usage, "output_tokens", 0) if usage else 0
-        return LLMResponse(text=text, model=model, tokens_in=ti, tokens_out=to,
-                           cost_usd=estimate_cost(model, ti, to))
+        return LLMResponse(
+            text=text,
+            model=model,
+            tokens_in=ti,
+            tokens_out=to,
+            cost_usd=estimate_cost(model, ti, to),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +146,10 @@ class OpenAICompatVLMProvider:
     - 默认使用 OpenAI SDK；`DOCGRAPH_VLM_TRANSPORT=http` 可切到内置 HTTP
       fallback，便于诊断 provider SDK 兼容问题。
     """
+
     def __init__(
-        self, *,
+        self,
+        *,
         name: str = "openai_compat",
         api_key_env: str = "OPENAI_API_KEY",
         api_key: str | None = None,
@@ -148,8 +170,13 @@ class OpenAICompatVLMProvider:
         )
 
     def describe(
-        self, image_path: Path, prompt: str, *,
-        model: str, max_tokens: int = 1500, temperature: float = 0.0,
+        self,
+        image_path: Path,
+        prompt: str,
+        *,
+        model: str,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
         system: str | None = None,
     ) -> LLMResponse:
         img_bytes = Path(image_path).read_bytes()
@@ -157,16 +184,18 @@ class OpenAICompatVLMProvider:
         media_type = _guess_media_type(image_path)
         data_url = f"data:{media_type};base64,{b64}"
 
-        messages = []
+        messages: list[dict[str, Any]] = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": data_url}},
-            ],
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        )
 
         payload = {
             "model": model,
@@ -199,8 +228,7 @@ class OpenAICompatVLMProvider:
         *,
         extra_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self._inner._ensure_client()
-        client = self._inner._client
+        client = self._inner._ensure_client()
         kwargs: dict[str, Any] = {**payload, "timeout": _vlm_timeout_s()}
         if extra_body:
             kwargs["extra_body"] = extra_body
@@ -210,11 +238,13 @@ class OpenAICompatVLMProvider:
         usage = getattr(resp, "usage", None)
         return {
             "model": getattr(resp, "model", None) or payload.get("model"),
-            "choices": [{
-                "message": {
-                    "content": getattr(message, "content", "") if message else "",
-                },
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "content": getattr(message, "content", "") if message else "",
+                    },
+                }
+            ],
             "usage": {
                 "prompt_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
                 "completion_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
@@ -272,8 +302,11 @@ def _vlm_extra_body(model: str) -> dict[str, Any]:
 
 def _guess_media_type(path: Path) -> str:
     return {
-        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".webp": "image/webp", ".gif": "image/gif",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
     }.get(path.suffix.lower(), "image/png")
 
 
@@ -284,9 +317,13 @@ def _guess_media_type(path: Path) -> str:
 
 class VLMClient:
     def __init__(
-        self, provider: VLMProvider, *,
-        model: str, cache_dir: Path | None = None,
-        tracker=None, max_retries: int = 1,
+        self,
+        provider: VLMProvider,
+        *,
+        model: str,
+        cache_dir: Path | None = None,
+        tracker=None,
+        max_retries: int = 1,
         disable_after_failures: int = 2,
     ) -> None:
         self.provider = provider
@@ -305,9 +342,14 @@ class VLMClient:
         return self._disabled
 
     def describe(
-        self, image_path: Path, prompt: str, *,
-        system: str | None = None, max_tokens: int = 1500,
-        cache_key_extra: str = "", extractor: str = "figure",
+        self,
+        image_path: Path,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1500,
+        cache_key_extra: str = "",
+        extractor: str = "figure",
     ) -> LLMResponse:
         if self._disabled:
             raise RuntimeError(
@@ -318,15 +360,17 @@ class VLMClient:
         model_key = _safe_key(self.model)
         extra_key = _safe_key(cache_key_extra)
         cache_p = (
-            self.cache_dir / f"{img_hash}.{model_key}.{extra_key}.json"
-            if self.cache_dir else None
+            self.cache_dir / f"{img_hash}.{model_key}.{extra_key}.json" if self.cache_dir else None
         )
         if cache_p and cache_p.is_file():
             cached = json.loads(cache_p.read_text("utf-8"))
             resp = LLMResponse(
-                text=cached["text"], model=cached.get("model", self.model),
-                tokens_in=cached.get("tokens_in", 0), tokens_out=cached.get("tokens_out", 0),
-                cost_usd=0.0, cache_hit=True,
+                text=cached["text"],
+                model=cached.get("model", self.model),
+                tokens_in=cached.get("tokens_in", 0),
+                tokens_out=cached.get("tokens_out", 0),
+                cost_usd=0.0,
+                cache_hit=True,
             )
             if self.tracker is not None:
                 self.tracker.record(resp, extractor=extractor)
@@ -337,16 +381,27 @@ class VLMClient:
             try:
                 with _llm_deadline(_vlm_timeout_s()):
                     resp = self.provider.describe(
-                        image_path, prompt,
-                        model=self.model, max_tokens=max_tokens, system=system,
+                        image_path,
+                        prompt,
+                        model=self.model,
+                        max_tokens=max_tokens,
+                        system=system,
                     )
                 # 成功 → 重置失败计数
                 self._consecutive_failures = 0
                 if cache_p:
-                    cache_p.write_text(json.dumps({
-                        "text": resp.text, "model": resp.model,
-                        "tokens_in": resp.tokens_in, "tokens_out": resp.tokens_out,
-                    }, ensure_ascii=False), encoding="utf-8")
+                    cache_p.write_text(
+                        json.dumps(
+                            {
+                                "text": resp.text,
+                                "model": resp.model,
+                                "tokens_in": resp.tokens_in,
+                                "tokens_out": resp.tokens_out,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
                 if self.tracker is not None:
                     self.tracker.record(resp, extractor=extractor)
                 return resp

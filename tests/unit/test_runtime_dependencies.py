@@ -37,9 +37,8 @@ def test_install_policy_uses_allowlisted_extra(monkeypatch):
 
     assert result.available is True
     assert result.installed is True
-    assert commands[0][1:4] == ["-m", "pip", "install"]
-    assert "-e" in commands[0]
-    assert commands[0][-1].endswith("[docling]")
+    assert commands[0][:5] == ["uv", "sync", "--locked", "--inexact", "--project"]
+    assert commands[0][-2:] == ["--extra", "docling"]
 
 
 def test_unknown_plugin_is_never_auto_installed(monkeypatch):
@@ -48,7 +47,7 @@ def test_unknown_plugin_is_never_auto_installed(monkeypatch):
     monkeypatch.setattr(
         dependencies.subprocess,
         "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("pip called")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("uv called")),
     )
 
     result = dependencies.ensure_parser_dependency("third_party_parser", "install")
@@ -89,11 +88,27 @@ def test_scanned_pdf_rejects_low_text_pymupdf_result():
 
 
 def test_runtime_config_defaults_are_safe():
-    from docgraph.core.config import DocGraphConfig
+    import yaml
 
-    runtime = DocGraphConfig().runtime
+    from docgraph.core.config import (
+        DEFAULT_PROJECT_CONFIG_YAML,
+        SUPPORTED_DOCUMENT_SUFFIXES,
+        DocGraphConfig,
+    )
+
+    cfg = DocGraphConfig()
+    runtime = cfg.runtime
     assert runtime.dependency_policy == "prompt"
     assert runtime.parser_failure == "fallback"
+    assert SUPPORTED_DOCUMENT_SUFFIXES == {
+        ".pdf", ".docx", ".xlsx", ".xlsm", ".md", ".markdown"
+    }
+    assert all(
+        any(pattern.endswith(suffix) for pattern in cfg.docs.include)
+        for suffix in SUPPORTED_DOCUMENT_SUFFIXES
+    )
+    template_cfg = DocGraphConfig.model_validate(yaml.safe_load(DEFAULT_PROJECT_CONFIG_YAML))
+    assert template_cfg.docs.include == cfg.docs.include
 
 
 def test_default_user_config_validates():
@@ -107,7 +122,7 @@ def test_default_user_config_validates():
     assert cfg.embeddings.provider == "hash"
 
 
-def test_setup_command_reports_ready_with_fallback(monkeypatch, tmp_path):
+def test_setup_command_reports_missing_core_parser_as_not_ready(monkeypatch, tmp_path):
     from docgraph.cli import main
     from docgraph.core.dependencies import DependencyResult
 
@@ -135,13 +150,13 @@ def test_setup_command_reports_ready_with_fallback(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["status"] == "READY_WITH_FALLBACK"
+    assert payload["status"] == "NOT_READY"
     assert payload["project"]["initialized"] is False
     assert payload["next_steps"][0]["commands"] == ["docgraph init"]
     assert payload["next_steps"][1]["commands"] == ["docgraph build"]
     assert any(
-        'python -m pip install -e ".[docling,documents]"' in step["commands"]
-        for step in payload["next_steps"]
+        row["parser"] == "docx" and row["role"] == "required"
+        for row in payload["parsers"]
     )
     assert any(row["parser"] == "docling" and not row["available"] for row in payload["parsers"])
 
@@ -208,7 +223,7 @@ def test_setup_command_gives_copyable_embedding_install_command(monkeypatch, tmp
     assert result.exit_code == 0
     payload = json.loads(result.output)
     commands = [command for step in payload["next_steps"] for command in step["commands"]]
-    assert 'python -m pip install -e ".[embeddings]"' in commands
+    assert "uv sync --extra embeddings" in commands
 
 
 def test_setup_text_output_escapes_extra_install_command(monkeypatch, tmp_path):
@@ -230,4 +245,4 @@ def test_setup_text_output_escapes_extra_install_command(monkeypatch, tmp_path):
     result = CliRunner().invoke(main.app, ["setup"])
 
     assert result.exit_code == 0
-    assert 'python -m pip install -e ".[embeddings]"' in result.output
+    assert "uv sync --extra embeddings" in result.output

@@ -2,6 +2,7 @@
 
 复用 QueryEngine 实例（与 CLI / MCP 一致），让所有数据来自同一个 graph.db。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -42,9 +43,7 @@ def create_app(root: Path | None = None):
         from fastapi import FastAPI
         from fastapi.staticfiles import StaticFiles
     except ImportError as e:  # pragma: no cover
-        raise RuntimeError(
-            "fastapi/uvicorn not installed. Install: pip install 'docgraph-core[web]'"
-        ) from e
+        raise RuntimeError("fastapi/uvicorn not installed. Run: uv sync --extra web") from e
 
     root = root or project_root_from_cwd()
     if not docgraph_dir(root).is_dir():
@@ -70,6 +69,7 @@ def create_app(root: Path | None = None):
 
     # 路由
     from docgraph.web.routes import register_routes
+
     register_routes(app)
 
     return app
@@ -86,9 +86,7 @@ def run(
     try:
         import uvicorn
     except ImportError as e:  # pragma: no cover
-        raise RuntimeError(
-            "uvicorn not installed. Install: pip install 'docgraph-core[web]'"
-        ) from e
+        raise RuntimeError("uvicorn not installed. Run: uv sync --extra web") from e
 
     app = create_app(root)
     log.info(f"[web] DocGraph UI starting on http://{host}:{port}")

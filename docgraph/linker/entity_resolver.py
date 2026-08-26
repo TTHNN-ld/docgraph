@@ -7,6 +7,7 @@
 
 输出：在图里写 ALIAS_OF 边；同时写 .docgraph/entities/linker.merged.jsonl 审计日志。
 """
+
 from __future__ import annotations
 
 import json
@@ -94,9 +95,7 @@ class EntityResolver:
                 if len(group) < 2:
                     continue
                 # 主节点：按 doc 的 priority 决定（无法直接拿到 priority，用 page 较前 + 名字较短）
-                primary = sorted(
-                    group, key=lambda n: (n.location.page or 9999, len(n.name))
-                )[0]
+                primary = sorted(group, key=lambda n: (n.location.page or 9999, len(n.name)))[0]
                 for other in group:
                     if other.id == primary.id:
                         continue

@@ -4,6 +4,7 @@ LanceDB is optional. The core project keeps SQLite JSON vectors as the zero
 dependency default; this adapter is selected only when `storage.vector_backend`
 is configured as `lancedb`.
 """
+
 from __future__ import annotations
 
 import math
@@ -28,8 +29,7 @@ class LanceDBVectorStore:
                 import lancedb
             except ImportError as e:  # pragma: no cover - optional dependency
                 raise RuntimeError(
-                    "LanceDB vector backend requires lancedb. "
-                    "Install with: pip install 'docgraph-core[lancedb]'"
+                    "LanceDB vector backend requires lancedb. Install with: uv sync --extra lancedb"
                 ) from e
             self._db = lancedb.connect(str(self.db_path))
         return self._db
@@ -92,13 +92,17 @@ class LanceDBVectorStore:
     ) -> None:
         table = self._table("vec_nodes")
         table.delete(f"node_id = '{_sql_quote(node_id)}'")
-        table.add([{
-            "node_id": node_id,
-            "model": model,
-            "dim": len(vector),
-            "vector": _float32(vector),
-            "content_hash": content_hash,
-        }])
+        table.add(
+            [
+                {
+                    "node_id": node_id,
+                    "model": model,
+                    "dim": len(vector),
+                    "vector": _float32(vector),
+                    "content_hash": content_hash,
+                }
+            ]
+        )
 
     def upsert_item(
         self,
@@ -109,17 +113,19 @@ class LanceDBVectorStore:
         content_hash: str | None = None,
     ) -> None:
         table = self._table("vec_items")
-        table.delete(
-            f"namespace = '{_sql_quote(namespace)}' AND item_id = '{_sql_quote(item_id)}'"
+        table.delete(f"namespace = '{_sql_quote(namespace)}' AND item_id = '{_sql_quote(item_id)}'")
+        table.add(
+            [
+                {
+                    "namespace": namespace,
+                    "item_id": item_id,
+                    "model": model,
+                    "dim": len(vector),
+                    "vector": _float32(vector),
+                    "content_hash": content_hash,
+                }
+            ]
         )
-        table.add([{
-            "namespace": namespace,
-            "item_id": item_id,
-            "model": model,
-            "dim": len(vector),
-            "vector": _float32(vector),
-            "content_hash": content_hash,
-        }])
 
     def delete(self, node_id: str) -> None:
         self._table("vec_nodes").delete(f"node_id = '{_sql_quote(node_id)}'")
@@ -146,10 +152,7 @@ class LanceDBVectorStore:
         for node_id in node_ids:
             node_table.delete(f"node_id = '{_sql_quote(node_id)}'")
         for chunk_id in chunk_ids:
-            item_table.delete(
-                "namespace = 'chunk' AND "
-                f"item_id = '{_sql_quote(chunk_id)}'"
-            )
+            item_table.delete(f"namespace = 'chunk' AND item_id = '{_sql_quote(chunk_id)}'")
         return len(node_ids) + len(chunk_ids)
 
     def stored_node_hashes(self, model: str) -> dict[str, str | None]:
@@ -183,8 +186,7 @@ class LanceDBVectorStore:
             node_table.delete(f"node_id = '{_sql_quote(node_id)}'")
         for item_id in stale_items:
             item_table.delete(
-                f"namespace = '{_sql_quote(namespace)}' AND "
-                f"item_id = '{_sql_quote(item_id)}'"
+                f"namespace = '{_sql_quote(namespace)}' AND item_id = '{_sql_quote(item_id)}'"
             )
         return len(stale_nodes) + len(stale_items)
 
@@ -194,7 +196,8 @@ class LanceDBVectorStore:
 
     def all_items_for_model(self, namespace: str, model: str) -> list[tuple[str, list[float]]]:
         rows = [
-            r for r in self._all_rows("vec_items")
+            r
+            for r in self._all_rows("vec_items")
             if r.get("namespace") == namespace and r.get("model") == model
         ]
         return [(str(r["item_id"]), list(r["vector"])) for r in rows]

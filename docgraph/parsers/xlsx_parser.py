@@ -12,6 +12,7 @@ Excel 在芯片 spec 中常用于：
 - ordering info
 TableEntityExtractor 可以从中扫描表格。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -42,8 +43,8 @@ class XlsxParser:
             from openpyxl import load_workbook  # type: ignore
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
-                "openpyxl not installed. Install with: "
-                "pip install 'docgraph-core[documents]'"
+                "openpyxl is a required DocGraph dependency; "
+                "reinstall or repair the docgraph-core installation"
             ) from e
 
         wb = load_workbook(filename=str(path), data_only=True, read_only=True)
@@ -92,9 +93,7 @@ class XlsxParser:
             )
             # 同时把表格内容拼成 text，便于关键字检索
             joined = "\n".join("\t".join(r) for r in rows[:200])
-            text_blocks.append(
-                TextBlock(text=joined, reading_order=order)
-            )
+            text_blocks.append(TextBlock(text=joined, reading_order=order))
             order += 1
 
         wb.close()

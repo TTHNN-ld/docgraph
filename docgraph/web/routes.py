@@ -3,15 +3,17 @@
 所有 HTML 路由用 Jinja2 模板；HTMX 局部刷新走单独的 fragment 视图；
 图谱与寄存器位图前端用 d3.js 通过 /api/* 拿数据。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from docgraph.graph.schema import EdgeKind, NodeKind
+from docgraph.graph.schema import Chunk, EdgeKind, Node, NodeKind
 from docgraph.graph.store import NodeQuery
 
 
@@ -37,14 +39,15 @@ def register_routes(app: FastAPI) -> None:
     tpl = Jinja2Templates(directory=str(templates_dir))
 
     # 全局帮助函数 / 过滤器
-    tpl.env.filters["short_id"] = lambda s: (s.split("::")[-1].split("#")[0])
-    tpl.env.filters["short"] = lambda s, n=80: (str(s)[:n] + "…") if s and len(str(s)) > n else (s or "")
+    tpl.env.filters["short_id"] = lambda s: s.split("::")[-1].split("#")[0]
+    tpl.env.filters["short"] = lambda s, n=80: (
+        (str(s)[:n] + "…") if s and len(str(s)) > n else (s or "")
+    )
     tpl.env.filters["pretty_text"] = _pretty_text
     # doc_id → 可读文档名：取 family::type:: 之后的文档名部分
-    tpl.env.filters["doc_name"] = lambda s: (str(s).split("::", 2)[-1] if "::" in str(s) else str(s))
+    tpl.env.filters["doc_name"] = lambda s: str(s).split("::", 2)[-1] if "::" in str(s) else str(s)
 
-    def render(request: Request, name: str, context: dict | None = None,
-               status_code: int = 200):
+    def render(request: Request, name: str, context: dict | None = None, status_code: int = 200):
         """统一用 Starlette 新签名：(request, name, context)。
 
         自动注入 nav_counts：各导航 kind 的节点计数，供模板按数据有无
@@ -61,18 +64,26 @@ def register_routes(app: FastAPI) -> None:
         qe = app.state.qe
         status = qe.status()
         docs = status.docs
-        return render(request, "index.html", {
-            "status": status,
-            "docs": docs,
-            "project": app.state.cfg.project.model_dump(),
-        })
+        return render(
+            request,
+            "index.html",
+            {
+                "status": status,
+                "docs": docs,
+                "project": app.state.cfg.project.model_dump(),
+            },
+        )
 
     @app.get("/registers", response_class=HTMLResponse)
     def registers_page(request: Request, q: str = "", limit: int = 100):
         store = app.state.store
-        nodes = store.search_nodes(NodeQuery(
-            kind=NodeKind.REGISTER, fuzzy=q or None, limit=limit,
-        ))
+        nodes = store.search_nodes(
+            NodeQuery(
+                kind=NodeKind.REGISTER,
+                fuzzy=q or None,
+                limit=limit,
+            )
+        )
         nodes = sorted(nodes, key=lambda n: (n.doc_id, n.location.page or 0, n.name))
         return render(request, "registers.html", {"q": q, "nodes": nodes})
 
@@ -81,39 +92,57 @@ def register_routes(app: FastAPI) -> None:
         store = app.state.store
         node = store.get_node(node_id)
         if node is None or node.kind != NodeKind.REGISTER:
-            return render(request, "not_found.html",
-                          {"id": node_id, "kind": "register"}, status_code=404)
+            return render(
+                request, "not_found.html", {"id": node_id, "kind": "register"}, status_code=404
+            )
         sub = store.neighbors(node_id, edge_kinds=[EdgeKind.HAS_BITFIELD], depth=1)
         bitfields = [n for n in sub.nodes if n.kind == NodeKind.BITFIELD]
         bitfields.sort(key=lambda n: -int(n.attrs.get("bit_high", 0)))
-        return render(request, "register_detail.html", {
-            "node": node, "bitfields": bitfields,
-        })
+        return render(
+            request,
+            "register_detail.html",
+            {
+                "node": node,
+                "bitfields": bitfields,
+            },
+        )
 
     @app.get("/pins", response_class=HTMLResponse)
     def pins_page(request: Request, q: str = "", limit: int = 200):
         store = app.state.store
-        nodes = store.search_nodes(NodeQuery(
-            kind=NodeKind.PIN, fuzzy=q or None, limit=limit,
-        ))
+        nodes = store.search_nodes(
+            NodeQuery(
+                kind=NodeKind.PIN,
+                fuzzy=q or None,
+                limit=limit,
+            )
+        )
         nodes = sorted(nodes, key=lambda n: (n.doc_id, n.location.page or 0, n.name))
         return render(request, "pins.html", {"q": q, "nodes": nodes})
 
     @app.get("/timing", response_class=HTMLResponse)
     def timing_page(request: Request, q: str = "", limit: int = 200):
         store = app.state.store
-        nodes = store.search_nodes(NodeQuery(
-            kind=NodeKind.PARAMETER, fuzzy=q or None, limit=limit,
-        ))
+        nodes = store.search_nodes(
+            NodeQuery(
+                kind=NodeKind.PARAMETER,
+                fuzzy=q or None,
+                limit=limit,
+            )
+        )
         nodes = sorted(nodes, key=lambda n: (n.doc_id, n.location.page or 0, n.name))
         return render(request, "timing.html", {"q": q, "nodes": nodes})
 
     @app.get("/figures", response_class=HTMLResponse)
     def figures_page(request: Request, q: str = "", limit: int = 100):
         store = app.state.store
-        nodes = store.search_nodes(NodeQuery(
-            kind=NodeKind.FIGURE, fuzzy=q or None, limit=limit,
-        ))
+        nodes = store.search_nodes(
+            NodeQuery(
+                kind=NodeKind.FIGURE,
+                fuzzy=q or None,
+                limit=limit,
+            )
+        )
         # 按文档分组展示：同文档的图聚在一起，便于按文档浏览
         nodes = sorted(nodes, key=lambda n: (n.doc_id, n.location.page or 0))
         return render(request, "figures.html", {"q": q, "nodes": nodes})
@@ -121,9 +150,13 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/glossary", response_class=HTMLResponse)
     def glossary_page(request: Request, q: str = "", limit: int = 500):
         store = app.state.store
-        nodes = store.search_nodes(NodeQuery(
-            kind=NodeKind.TERM, fuzzy=q or None, limit=limit,
-        ))
+        nodes = store.search_nodes(
+            NodeQuery(
+                kind=NodeKind.TERM,
+                fuzzy=q or None,
+                limit=limit,
+            )
+        )
         return render(request, "glossary.html", {"q": q, "nodes": nodes})
 
     @app.get("/sections", response_class=HTMLResponse)
@@ -132,27 +165,38 @@ def register_routes(app: FastAPI) -> None:
 
     @app.get("/search", response_class=HTMLResponse)
     def search_page(
-        request: Request, q: str = "", kind: str = "", limit: int = 30,
+        request: Request,
+        q: str = "",
+        kind: str = "",
+        limit: int = 30,
     ):
         qe = app.state.qe
-        nodes = []
-        chunks = []
+        nodes: list[Node] = []
+        chunks: list[Chunk] = []
         if q:
             kind_enum = NodeKind(kind) if kind else None
             nodes = qe.search(q, kind=kind_enum, limit=limit)
             chunks = qe.search_chunks(q, limit=min(limit, 20)) if not kind else []
         kinds = [k.value for k in NodeKind]
-        return render(request, "search.html", {
-            "q": q, "kind": kind, "nodes": nodes, "chunks": chunks,
-            "kinds": kinds,
-        })
+        return render(
+            request,
+            "search.html",
+            {
+                "q": q,
+                "kind": kind,
+                "nodes": nodes,
+                "chunks": chunks,
+                "kinds": kinds,
+            },
+        )
 
     @app.get("/chunks/{chunk_id:path}", response_class=HTMLResponse)
     def chunk_detail_page(request: Request, chunk_id: str):
         data = app.state.qe.fetch(chunk_id)
         if data.get("error"):
-            return render(request, "not_found.html",
-                          {"id": chunk_id, "kind": "chunk"}, status_code=404)
+            return render(
+                request, "not_found.html", {"id": chunk_id, "kind": "chunk"}, status_code=404
+            )
         return render(request, "chunk_detail.html", data)
 
     @app.get("/nodes/{node_id:path}", response_class=HTMLResponse)
@@ -160,8 +204,9 @@ def register_routes(app: FastAPI) -> None:
         store = app.state.store
         node = store.get_node(node_id)
         if node is None:
-            return render(request, "not_found.html",
-                          {"id": node_id, "kind": "node"}, status_code=404)
+            return render(
+                request, "not_found.html", {"id": node_id, "kind": "node"}, status_code=404
+            )
         sub = store.neighbors(node_id, depth=1, limit=80)
         neighbors = [n for n in sub.nodes if n.id != node.id]
         source_block_ids = node.attrs.get("source_block_ids") or node.attrs.get("block_ids") or []
@@ -169,13 +214,17 @@ def register_routes(app: FastAPI) -> None:
         blocks = store.get_blocks(source_block_ids) if source_block_ids else []
         chunks = [store.get_chunk(cid) for cid in source_chunk_ids]
         chunks = [c for c in chunks if c is not None]
-        return render(request, "node_detail.html", {
-            "node": node,
-            "neighbors": neighbors,
-            "edges": sub.edges,
-            "blocks": blocks,
-            "chunks": chunks,
-        })
+        return render(
+            request,
+            "node_detail.html",
+            {
+                "node": node,
+                "neighbors": neighbors,
+                "edges": sub.edges,
+                "blocks": blocks,
+                "chunks": chunks,
+            },
+        )
 
     @app.get("/graph", response_class=HTMLResponse)
     def graph_page(request: Request, seed: str = "", depth: int = 1):
@@ -191,15 +240,21 @@ def register_routes(app: FastAPI) -> None:
             c = store.count_edges(ek)
             if c:
                 edge_kind_counts[ek.value] = c
-        return render(request, "graph.html", {
-            "seed": seed, "depth": depth,
-            "node_kind_counts": node_kind_counts,
-            "edge_kind_counts": edge_kind_counts,
-        })
+        return render(
+            request,
+            "graph.html",
+            {
+                "seed": seed,
+                "depth": depth,
+                "node_kind_counts": node_kind_counts,
+                "edge_kind_counts": edge_kind_counts,
+            },
+        )
 
     @app.get("/plugins", response_class=HTMLResponse)
     def plugins_page(request: Request):
         from docgraph.core.plugins import discovered
+
         return render(request, "plugins.html", {"by_group": discovered()})
 
     # ----- JSON API -----
@@ -209,9 +264,10 @@ def register_routes(app: FastAPI) -> None:
         return app.state.qe.status().model_dump()
 
     @app.get("/api/sections/tree")
-    def api_sections_tree():
+    def api_sections_tree() -> dict[str, Any]:
         """返回章节树 JSON：多文档先分组，再按真实章节号推父子。"""
         import re
+
         _NUM_PREFIX = re.compile(r"^(\d+(?:\.\d+)*)")
         store = app.state.store
         nodes = store.search_nodes(NodeQuery(kind=NodeKind.SECTION, limit=100000))
@@ -220,13 +276,16 @@ def register_routes(app: FastAPI) -> None:
         for n in nodes:
             if _is_section_noise(n.name or "", n.location.page):
                 continue
-            doc = docs.setdefault(n.doc_id, {
-                "doc_id": n.doc_id,
-                "name": n.doc_id.split("::")[-1],
-                "roots": [],
-                "_by_num": {},
-                "_no_num": [],
-            })
+            doc = docs.setdefault(
+                n.doc_id,
+                {
+                    "doc_id": n.doc_id,
+                    "name": n.doc_id.split("::")[-1],
+                    "roots": [],
+                    "_by_num": {},
+                    "_no_num": [],
+                },
+            )
             clean_name = _clean_section_name(n.name or "")
             title_num = _NUM_PREFIX.match(clean_name)
             explicit_path = n.location.section_path or n.attrs.get("path")
@@ -235,10 +294,12 @@ def register_routes(app: FastAPI) -> None:
             raw = title_num.group(1) if title_num else (explicit_path or clean_name)
             m = _NUM_PREFIX.match(str(raw))
             entry = {
-                "id": n.id, "name": clean_name,
+                "id": n.id,
+                "name": clean_name,
                 "path": m.group(1) if m else raw,
                 "raw_path": raw,
-                "page": n.location.page, "doc_id": n.doc_id,
+                "page": n.location.page,
+                "doc_id": n.doc_id,
                 "children": [],
             }
             if m:
@@ -257,28 +318,35 @@ def register_routes(app: FastAPI) -> None:
                 clean_name = _clean_section_name(first_line or c.section_id)
                 if _is_section_noise(clean_name, c.page_start or c.page):
                     continue
-                doc = docs.setdefault(c.doc_id, {
-                    "doc_id": c.doc_id,
-                    "name": c.doc_id.split("::")[-1],
-                    "roots": [],
-                    "_by_num": {},
-                    "_no_num": [],
-                })
+                doc = docs.setdefault(
+                    c.doc_id,
+                    {
+                        "doc_id": c.doc_id,
+                        "name": c.doc_id.split("::")[-1],
+                        "roots": [],
+                        "_by_num": {},
+                        "_no_num": [],
+                    },
+                )
                 raw = c.section_id
                 m = _NUM_PREFIX.match(str(raw))
                 if not m:
                     continue
                 key = m.group(1)
-                _put_section_entry(doc, key, {
-                    "id": c.id,
-                    "name": clean_name,
-                    "path": key,
-                    "raw_path": raw,
-                    "page": c.page_start or c.page,
-                    "doc_id": c.doc_id,
-                    "source": "l1",
-                    "children": [],
-                })
+                _put_section_entry(
+                    doc,
+                    key,
+                    {
+                        "id": c.id,
+                        "name": clean_name,
+                        "path": key,
+                        "raw_path": raw,
+                        "page": c.page_start or c.page,
+                        "doc_id": c.doc_id,
+                        "source": "l1",
+                        "children": [],
+                    },
+                )
 
         for doc in docs.values():
             by_num = doc["_by_num"]
@@ -297,6 +365,7 @@ def register_routes(app: FastAPI) -> None:
             tree_list.sort(key=lambda d: _natural_path(d["path"]))
             for d in tree_list:
                 _sort(d["children"])
+
         for doc in docs.values():
             _sort(doc["roots"])
         ordered_docs = sorted(docs.values(), key=lambda d: d["name"])
@@ -308,7 +377,9 @@ def register_routes(app: FastAPI) -> None:
 
     @app.get("/api/search")
     def api_search(
-        q: str, kind: str | None = None, limit: int = 20,
+        q: str,
+        kind: str | None = None,
+        limit: int = 20,
     ):
         qe = app.state.qe
         kind_enum = NodeKind(kind) if kind else None
@@ -317,9 +388,13 @@ def register_routes(app: FastAPI) -> None:
             "total": len(nodes),
             "results": [
                 {
-                    "id": n.id, "kind": n.kind.value, "name": n.name,
-                    "qualified_name": n.qualified_name, "doc_id": n.doc_id,
-                    "page": n.location.page, "summary": n.summary,
+                    "id": n.id,
+                    "kind": n.kind.value,
+                    "name": n.name,
+                    "qualified_name": n.qualified_name,
+                    "doc_id": n.doc_id,
+                    "page": n.location.page,
+                    "summary": n.summary,
                 }
                 for n in nodes
             ],
@@ -363,7 +438,7 @@ def register_routes(app: FastAPI) -> None:
         wanted_kinds = None
         if kinds:
             wanted_kinds = {NodeKind(k.strip()) for k in kinds.split(",") if k.strip()}
-        nodes_list = []
+        nodes_list: list[Node] = []
         for kind in NodeKind:
             if wanted_kinds and kind not in wanted_kinds:
                 continue
@@ -383,24 +458,34 @@ def register_routes(app: FastAPI) -> None:
         node_ids = {n.id for n in nodes_list}
         edges_out = []
         conn = store._connect()  # type: ignore[attr-defined]
-        rows = conn.execute(
-            f"SELECT src, dst, kind, confidence FROM edges "
-            f"WHERE src IN ({','.join('?' for _ in node_ids)}) "
-            f"AND dst IN ({','.join('?' for _ in node_ids)})",
-            list(node_ids) + list(node_ids),
-        ).fetchall() if node_ids else []
+        rows = (
+            conn.execute(
+                f"SELECT src, dst, kind, confidence FROM edges "
+                f"WHERE src IN ({','.join('?' for _ in node_ids)}) "
+                f"AND dst IN ({','.join('?' for _ in node_ids)})",
+                list(node_ids) + list(node_ids),
+            ).fetchall()
+            if node_ids
+            else []
+        )
         for r in rows:
             if wanted_edges and r["kind"] not in wanted_edges:
                 continue
-            edges_out.append({
-                "src": r["src"], "dst": r["dst"],
-                "kind": r["kind"], "confidence": r["confidence"],
-            })
+            edges_out.append(
+                {
+                    "src": r["src"],
+                    "dst": r["dst"],
+                    "kind": r["kind"],
+                    "confidence": r["confidence"],
+                }
+            )
 
         return {
             "nodes": [
                 {
-                    "id": n.id, "kind": n.kind.value, "name": n.name,
+                    "id": n.id,
+                    "kind": n.kind.value,
+                    "name": n.name,
                     "doc_id": n.doc_id,
                 }
                 for n in nodes_list
@@ -424,9 +509,20 @@ def _natural_path(s: str) -> list:
 def _clean_section_name(name: str) -> str:
     """Normalize common TOC/OCR glitches for display only."""
     import re
+
     s = " ".join((name or "").split())
-    s = re.sub(r"^Chapter\s+(\d+)\s*(.*)$", lambda m: f"{m.group(1)} {m.group(2).strip()}".strip(), s, flags=re.I)
-    s = re.sub(r"^Appendix\s+([A-Z])\s*(.*)$", lambda m: f"{m.group(1).upper()} {m.group(2).strip()}".strip(), s, flags=re.I)
+    s = re.sub(
+        r"^Chapter\s+(\d+)\s*(.*)$",
+        lambda m: f"{m.group(1)} {m.group(2).strip()}".strip(),
+        s,
+        flags=re.I,
+    )
+    s = re.sub(
+        r"^Appendix\s+([A-Z])\s*(.*)$",
+        lambda m: f"{m.group(1).upper()} {m.group(2).strip()}".strip(),
+        s,
+        flags=re.I,
+    )
     # "6FEATURES29" -> "6 FEATURES"; "7APPENDIX.40" -> "7 APPENDIX"
     m = re.match(r"^(\d+)([A-Za-z][A-Za-z ]+?)(?:[. ]*\d+)$", s)
     if m:
@@ -445,6 +541,7 @@ def _clean_section_name(name: str) -> str:
 def _pretty_text(text: str | None) -> str:
     """Display-only cleanup for parser spacing glitches."""
     import re
+
     s = str(text or "")
     s = re.sub(r"^(\d+(?:\.\d+)+)(?=[A-Za-z\u4e00-\u9fff])", r"\1 ", s)
     s = re.sub(r"\n(\d+(?:\.\d+)+)(?=[A-Za-z\u4e00-\u9fff])", r"\n\1 ", s)
@@ -454,18 +551,22 @@ def _pretty_text(text: str | None) -> str:
 def _keep_unnumbered_section(name: str) -> bool:
     """Section tree is navigational; unnumbered body headings stay in L0/L1."""
     import re
+
     return bool(re.match(r"^\d+(?:\.\d+)*\b", name or ""))
 
 
 def _is_section_noise(name: str, page: int | None) -> bool:
     """Hide page furniture and TOC/list artifacts from the section-tree view."""
     import re
+
     s = " ".join((name or "").split()).strip()
     low = s.lower()
     if not s:
         return True
     exact_noise = {
-        "目录", "contents", "table of contents",
+        "目录",
+        "contents",
+        "table of contents",
     }
     if low in exact_noise:
         return True
@@ -496,6 +597,7 @@ def _put_section_entry(doc: dict, key: str, entry: dict) -> None:
 
 def _section_candidate_score(entry: dict) -> int:
     import re
+
     name = entry.get("name") or ""
     page = entry.get("page")
     score = 0

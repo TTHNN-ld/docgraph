@@ -6,6 +6,7 @@
 - 每页有 hits_per_page 上限避免成本失控
 - 失败优雅 fallback（DeepSeek 无 vision → 警告 + 继续）
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -50,6 +51,7 @@ def vlm_extract(
     DeepSeek 等无 vision 的 provider 会在 describe() 内抛错 → 这里捕获返回 None。
     """
     import json
+
     sys_prompt = (
         "你正在分析芯片 spec 文档的一页。请只返回**唯一一个 JSON 对象**，"
         "不要 markdown 代码块、不要解释文字。JSON 必须严格匹配以下 schema：\n"
@@ -59,8 +61,10 @@ def vlm_extract(
         return None
     try:
         resp = vlm_client.describe(
-            Path(image_path), prompt,
-            system=sys_prompt, max_tokens=max_tokens,
+            Path(image_path),
+            prompt,
+            system=sys_prompt,
+            max_tokens=max_tokens,
             extractor=extractor,
         )
     except Exception as e:
@@ -71,6 +75,7 @@ def vlm_extract(
     if not resp or not resp.text:
         return None
     from docgraph.llm.client import _extract_json
+
     try:
         data = _extract_json(resp.text)
         return schema.model_validate(data)

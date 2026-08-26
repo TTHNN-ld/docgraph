@@ -1,4 +1,5 @@
 """Embedding 构造工厂 —— 从 config 解析，含 fallback。"""
+
 from __future__ import annotations
 
 from docgraph.core.config import EmbeddingsConfig
@@ -24,6 +25,7 @@ def build_encoder(cfg: EmbeddingsConfig) -> EmbeddingProvider:
             from docgraph.embeddings.openai_encoder import (
                 try_make_openai_embedding,
             )
+
             enc = try_make_openai_embedding(
                 model=cfg.model or "text-embedding-3-small",
                 dim=cfg.dim or 1536,
@@ -36,8 +38,7 @@ def build_encoder(cfg: EmbeddingsConfig) -> EmbeddingProvider:
             )
             if enc is None:
                 log.warning(
-                    f"[embed] {name} encoder unavailable (no API key); "
-                    f"falling back to hash encoder"
+                    f"[embed] {name} encoder unavailable (no API key); falling back to hash encoder"
                 )
                 return HashEncoder(dim=256)
             return enc

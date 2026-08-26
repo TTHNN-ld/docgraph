@@ -4,6 +4,7 @@ The evaluator compares expected entity names against persisted L2 nodes. It is
 deliberately lightweight so teams can start with small hand-written JSON files
 before investing in a full benchmark harness.
 """
+
 from __future__ import annotations
 
 import json
@@ -116,30 +117,39 @@ def eval_l2_golden(
     min_recall: float = 0.0,
 ) -> L2EvalReport:
     expected, files, warnings = load_expected_entities(golden_path, kinds=kinds)
-    selected_kinds = sorted({entity.kind for entity in expected} | {_canonical_kind(k) for k in kinds or []})
+    selected_kinds = sorted(
+        {entity.kind for entity in expected} | {_canonical_kind(k) for k in kinds or []}
+    )
     actual = _load_actual_entities(store, selected_kinds, expected)
 
     by_kind: list[KindEval] = []
-    totals = {
-        "expected": 0,
-        "actual": 0,
-        "true_positive": 0,
-        "false_positive": 0,
-        "false_negative": 0,
-    }
+    expected_total = 0
+    actual_total = 0
+    true_positive_total = 0
+    false_positive_total = 0
+    false_negative_total = 0
     for kind in selected_kinds:
         row = _eval_kind(kind, expected, actual)
         by_kind.append(row)
-        totals["expected"] += row.expected
-        totals["actual"] += row.actual
-        totals["true_positive"] += row.true_positive
-        totals["false_positive"] += row.false_positive
-        totals["false_negative"] += row.false_negative
+        expected_total += row.expected
+        actual_total += row.actual
+        true_positive_total += row.true_positive
+        false_positive_total += row.false_positive
+        false_negative_total += row.false_negative
 
-    totals["precision"] = _safe_div(totals["true_positive"], totals["true_positive"] + totals["false_positive"])
-    totals["recall"] = _safe_div(totals["true_positive"], totals["true_positive"] + totals["false_negative"])
-    totals["f1"] = _f1(totals["precision"], totals["recall"])
-    ok = totals["precision"] >= min_precision and totals["recall"] >= min_recall
+    precision = _safe_div(true_positive_total, true_positive_total + false_positive_total)
+    recall = _safe_div(true_positive_total, true_positive_total + false_negative_total)
+    totals: dict[str, int | float] = {
+        "expected": expected_total,
+        "actual": actual_total,
+        "true_positive": true_positive_total,
+        "false_positive": false_positive_total,
+        "false_negative": false_negative_total,
+        "precision": precision,
+        "recall": recall,
+        "f1": _f1(precision, recall),
+    }
+    ok = precision >= min_precision and recall >= min_recall
     if not expected:
         ok = False
         warnings.append("no expected L2 entities found")
@@ -169,7 +179,9 @@ def load_expected_entities(
             warnings.append(f"failed to read {path}: {exc}")
             continue
         inferred_kind = _kind_from_filename(path)
-        out.extend(_entities_from_json(data, inferred_kind=inferred_kind, source=path, warnings=warnings))
+        out.extend(
+            _entities_from_json(data, inferred_kind=inferred_kind, source=path, warnings=warnings)
+        )
     if allowed:
         out = [entity for entity in out if entity.kind in allowed]
     return out, files, warnings
@@ -224,16 +236,19 @@ def _entities_from_json(
 
 def _entity_from_item(item: Any, kind: str, source: Path) -> ExpectedEntity | None:
     if isinstance(item, str):
-        name = item
+        raw_name: Any = item
         doc_id = None
     elif isinstance(item, dict):
-        name = item.get("name") or item.get("symbol") or item.get("qualified_name") or item.get("id")
-        doc_id = item.get("doc_id")
+        raw_name = (
+            item.get("name") or item.get("symbol") or item.get("qualified_name") or item.get("id")
+        )
+        raw_doc_id = item.get("doc_id")
+        doc_id = str(raw_doc_id) if raw_doc_id is not None else None
     else:
         return None
-    if not name:
+    if not raw_name:
         return None
-    return ExpectedEntity(kind=kind, name=str(name), doc_id=doc_id, source=str(source))
+    return ExpectedEntity(kind=kind, name=str(raw_name), doc_id=doc_id, source=str(source))
 
 
 def _load_actual_entities(

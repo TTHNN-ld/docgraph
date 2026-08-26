@@ -1,4 +1,5 @@
 """GraphStore 协议 —— 让上层不绑定具体存储后端。"""
+
 from __future__ import annotations
 
 from typing import Protocol
@@ -10,6 +11,7 @@ from docgraph.graph.schema import Edge, EdgeKind, Node, NodeKind
 
 class NodeQuery(BaseModel):
     """节点查询条件。任一字段为 None 表示不过滤。"""
+
     name: str | None = None
     kind: NodeKind | None = None
     doc_id: str | None = None

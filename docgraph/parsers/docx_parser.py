@@ -5,15 +5,16 @@
 - 标题段（Heading 1/2/3/...）成为 TocEntry
 - 所有正文段落 → TextBlock（按文档顺序 reading_order）
 - 表格 → ParsedTable（headers + rows）
-- 图片暂不抽（M3 时机不成熟，python-docx 提取嵌入图比较繁琐，留待 M4）
+- 当前不抽取嵌入图片；这是轻量 parser 的明确能力边界
 
 对 docx 的章节路径推断：
 - Heading 1 → "1"
 - 下一个 Heading 2 → "1.1"
 - 维护栈式计数器，与 SectionExtractor 配合
 
-为避免硬依赖，python-docx 按需 import。
+python-docx 是核心依赖，但仍按需 import，避免未使用该格式时增加启动开销。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -42,8 +43,8 @@ class DocxParser:
             from docx import Document  # type: ignore  # python-docx
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
-                "python-docx not installed. Install with: "
-                "pip install 'docgraph-core[documents]'"
+                "python-docx is a required DocGraph dependency; "
+                "reinstall or repair the docgraph-core installation"
             ) from e
 
         doc = Document(str(path))
@@ -65,9 +66,7 @@ class DocxParser:
                 heading_counter[heading_level - 1] += 1
                 for i in range(heading_level, 6):
                     heading_counter[i] = 0
-                path_str = ".".join(
-                    str(n) for n in heading_counter[:heading_level] if n > 0
-                )
+                path_str = ".".join(str(n) for n in heading_counter[:heading_level] if n > 0)
                 toc.append(
                     TocEntry(
                         level=heading_level,

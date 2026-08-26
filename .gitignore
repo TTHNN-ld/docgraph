@@ -24,7 +24,7 @@ history.md
 # Local specs, generated parser outputs, and model weights
 case/
 spec*/
-reference/
+/reference/
 mineru-models/
 magic-pdf.json
 *.pdf

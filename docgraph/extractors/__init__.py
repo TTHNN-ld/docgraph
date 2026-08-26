@@ -1,4 +1,5 @@
 """Extractor 层。"""
+
 from docgraph.extractors.base import ExtractContext, Extractor, ExtractorRegistry, registry
 from docgraph.extractors.figure import FigureExtractor
 from docgraph.extractors.glossary import GlossaryExtractor

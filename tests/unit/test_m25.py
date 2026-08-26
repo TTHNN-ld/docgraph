@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import os
 import tempfile
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # .env 加载
@@ -151,6 +150,31 @@ def test_anthropic_provider_missing_key(monkeypatch):
         p._ensure_client()
 
 
+def test_anthropic_provider_accepts_shared_extra_body():
+    from docgraph.llm.client import AnthropicProvider
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            assert "extra_body" not in kwargs
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="ok")],
+                usage=SimpleNamespace(input_tokens=2, output_tokens=1),
+            )
+
+    provider = AnthropicProvider(api_key="test-key")
+    provider._client = SimpleNamespace(messages=FakeMessages())
+
+    response = provider.complete(
+        "hello",
+        model="claude-sonnet-4-6",
+        extra_body={"enable_thinking": False},
+    )
+
+    assert response.text == "ok"
+    assert response.tokens_in == 2
+    assert response.tokens_out == 1
+
+
 def test_openai_provider_missing_key(monkeypatch):
     from docgraph.llm.client import OpenAICompatProvider
 
@@ -200,6 +224,7 @@ def test_config_supports_openai_compat():
 def test_config_yaml_round_trip(tmp_path):
     """yaml 可解析 openai_compat 配置。"""
     import yaml
+
     from docgraph.core.config import DocGraphConfig
 
     yaml_str = """

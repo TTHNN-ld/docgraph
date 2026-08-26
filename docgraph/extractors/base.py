@@ -1,4 +1,5 @@
 """Extractor 协议与注册表。"""
+
 from __future__ import annotations
 
 from typing import Any, Protocol
@@ -10,6 +11,7 @@ from docgraph.graph.schema import ExtractResult, NodeKind, ParsedDoc
 
 class ExtractContext(BaseModel):
     """传给 extractor 的上下文。"""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     family: str = "default"

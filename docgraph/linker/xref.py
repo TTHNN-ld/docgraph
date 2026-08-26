@@ -5,6 +5,7 @@
 - 在图谱中查找匹配的 Section/Figure/Table 节点
 - 建 REFERENCES 边；找不到的写入 .docgraph/entities/linker.unresolved.jsonl
 """
+
 from __future__ import annotations
 
 import json
@@ -24,13 +25,25 @@ log = get_logger(__name__)
 # 正则
 _XREF_PATTERNS: list[tuple[re.Pattern, NodeKind]] = [
     # Section 3.2 / Section 3.2.1
-    (re.compile(r"\b(?:see\s+)?(?:section|sec\.|§|章节)\s+(\d+(?:\.\d+){0,4})", re.I), NodeKind.SECTION),
+    (
+        re.compile(r"\b(?:see\s+)?(?:section|sec\.|§|章节)\s+(\d+(?:\.\d+){0,4})", re.I),
+        NodeKind.SECTION,
+    ),
     # Chapter 5
-    (re.compile(r"\b(?:see\s+)?(?:chapter|chap\.|第)\s*(\d+(?:\.\d+){0,2})\s*章?", re.I), NodeKind.SECTION),
+    (
+        re.compile(r"\b(?:see\s+)?(?:chapter|chap\.|第)\s*(\d+(?:\.\d+){0,2})\s*章?", re.I),
+        NodeKind.SECTION,
+    ),
     # Figure 3-2 / Fig. 4
-    (re.compile(r"\b(?:see\s+)?(?:figure|fig\.?|图)\s*([\dA-Z]+(?:[-.]\d+){0,2})", re.I), NodeKind.FIGURE),
+    (
+        re.compile(r"\b(?:see\s+)?(?:figure|fig\.?|图)\s*([\dA-Z]+(?:[-.]\d+){0,2})", re.I),
+        NodeKind.FIGURE,
+    ),
     # Table 7-2 / 表 7-2
-    (re.compile(r"\b(?:see\s+)?(?:table|tbl\.?|表)\s*([\dA-Z]+(?:[-.]\d+){0,2})", re.I), NodeKind.TABLE),
+    (
+        re.compile(r"\b(?:see\s+)?(?:table|tbl\.?|表)\s*([\dA-Z]+(?:[-.]\d+){0,2})", re.I),
+        NodeKind.TABLE,
+    ),
 ]
 
 
@@ -75,9 +88,7 @@ class XRefLinker:
                 for pattern, target_kind in _XREF_PATTERNS:
                     for m in pattern.finditer(text_pool):
                         target_key = m.group(1)
-                        target = self._find_target(
-                            store, target_kind, target_key, src.doc_id
-                        )
+                        target = self._find_target(store, target_kind, target_key, src.doc_id)
                         if target is None:
                             unresolved.append(
                                 {
@@ -123,21 +134,18 @@ class XRefLinker:
         key: str,
         prefer_doc: str | None,
     ):
-        results = store.search_nodes(
-            NodeQuery(kind=kind, fuzzy=key, limit=10)
-        )
+        results = store.search_nodes(NodeQuery(kind=kind, fuzzy=key, limit=10))
         if not results:
             return None
         # 同文档命中优先（xref 引用通常指同文档章节/图表）
         same_doc = [n for n in results if n.doc_id == prefer_doc]
         if same_doc:
-            same_doc.sort(
-                key=lambda n: not (n.qualified_name or "").startswith(key)
-            )
+            same_doc.sort(key=lambda n: not (n.qualified_name or "").startswith(key))
             return same_doc[0]
         # 跨文档只接受 qualified_name 严格匹配 key 的，避免 "3.2" 模糊命中无关章节
         strict = [
-            n for n in results
+            n
+            for n in results
             if (n.qualified_name or "") == key
             or (n.qualified_name or "").startswith(key + " ")
             or (n.qualified_name or "").startswith(key + "-")

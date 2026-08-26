@@ -1,4 +1,5 @@
 """docgraph.graph —— 图谱存储层。"""
+
 from docgraph.graph.schema import (
     BBox,
     BitFieldDef,

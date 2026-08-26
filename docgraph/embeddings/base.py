@@ -1,4 +1,5 @@
 """EmbeddingProvider 协议与注册表。"""
+
 from __future__ import annotations
 
 from typing import Protocol

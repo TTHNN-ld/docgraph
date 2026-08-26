@@ -1,4 +1,5 @@
 """Normalize parser-derived views into the authoritative L0 block model."""
+
 from __future__ import annotations
 
 from docgraph.graph.schema import Block, BlockKind, ParsedPage, TableData
@@ -19,9 +20,7 @@ def populate_l0_blocks(page: ParsedPage, *, doc_id: str, parser: str) -> ParsedP
             section_counters[level - 1] += 1
             for index in range(level, len(section_counters)):
                 section_counters[index] = 0
-            section_path = ".".join(
-                str(value) for value in section_counters[:level] if value
-            )
+            section_path = ".".join(str(value) for value in section_counters[:level] if value)
             kind = BlockKind.HEADING
         elif text_block.text.lstrip().startswith("```"):
             kind = BlockKind.CODE

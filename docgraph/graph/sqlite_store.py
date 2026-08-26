@@ -6,6 +6,7 @@
 - 用 UPSERT (ON CONFLICT) 实现幂等。
 - 邻居/路径用递归 CTE。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -231,9 +232,7 @@ class SQLiteGraphStore:
         existing = self.get_node(node.id)
         if existing is not None:
             node = _merge_node(existing, node)
-        bbox_json = (
-            json.dumps(node.location.bbox.model_dump()) if node.location.bbox else None
-        )
+        bbox_json = json.dumps(node.location.bbox.model_dump()) if node.location.bbox else None
         conn.execute(
             """
             INSERT INTO nodes (
@@ -315,9 +314,7 @@ class SQLiteGraphStore:
             clauses.append("qualified_name = ?")
             params.append(query.qualified_name)
         if query.alias is not None:
-            clauses.append(
-                "id IN (SELECT node_id FROM aliases WHERE alias = ?)"
-            )
+            clauses.append("id IN (SELECT node_id FROM aliases WHERE alias = ?)")
             params.append(query.alias)
         if query.fuzzy is not None:
             clauses.append("(name LIKE ? OR qualified_name LIKE ?)")
@@ -419,8 +416,7 @@ class SQLiteGraphStore:
     def delete_doc(self, doc_id: str) -> None:
         with self.transaction() as conn:
             conn.execute(
-                "DELETE FROM chunks_fts WHERE chunk_id IN "
-                "(SELECT id FROM chunks WHERE doc_id = ?)",
+                "DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE doc_id = ?)",
                 (doc_id,),
             )
             conn.execute(
@@ -454,11 +450,18 @@ class SQLiteGraphStore:
             """,
             [
                 (
-                    b.id, b.doc_id, b.page, b.kind.value, b.reading_order,
+                    b.id,
+                    b.doc_id,
+                    b.page,
+                    b.kind.value,
+                    b.reading_order,
                     json.dumps(b.bbox.model_dump()) if b.bbox else None,
                     b.text,
                     json.dumps(b.table.model_dump(), ensure_ascii=False) if b.table else None,
-                    b.image_path, b.latex, b.section_path, b.heading_level,
+                    b.image_path,
+                    b.latex,
+                    b.section_path,
+                    b.heading_level,
                     json.dumps(b.attrs, ensure_ascii=False),
                 )
                 for b in blocks
@@ -476,9 +479,7 @@ class SQLiteGraphStore:
             return []
         conn = self._connect()
         ph = ",".join("?" * len(block_ids))
-        rows = conn.execute(
-            f"SELECT * FROM blocks WHERE id IN ({ph})", block_ids
-        ).fetchall()
+        rows = conn.execute(f"SELECT * FROM blocks WHERE id IN ({ph})", block_ids).fetchall()
         by_id = {r["id"]: self._row_to_block(r) for r in rows}
         return [by_id[bid] for bid in block_ids if bid in by_id]
 
@@ -506,11 +507,18 @@ class SQLiteGraphStore:
         if row["table_json"]:
             table = TableData(**json.loads(row["table_json"]))
         return Block(
-            id=row["id"], doc_id=row["doc_id"], page=row["page"],
-            kind=BlockKind(row["kind"]), reading_order=row["reading_order"] or 0,
-            bbox=bbox, text=row["text"], table=table,
-            image_path=row["image_path"], latex=row["latex"],
-            section_path=row["section_path"], heading_level=row["heading_level"],
+            id=row["id"],
+            doc_id=row["doc_id"],
+            page=row["page"],
+            kind=BlockKind(row["kind"]),
+            reading_order=row["reading_order"] or 0,
+            bbox=bbox,
+            text=row["text"],
+            table=table,
+            image_path=row["image_path"],
+            latex=row["latex"],
+            section_path=row["section_path"],
+            heading_level=row["heading_level"],
             attrs=json.loads(row["attrs"]) if row["attrs"] else {},
         )
 
@@ -523,8 +531,16 @@ class SQLiteGraphStore:
         conn = self._connect()
         rows = [
             (
-                c.id, c.doc_id, c.page, c.page_start, c.page_end,
-                c.section_id, c.section_node_id, c.text, c.hash, c.source_hash,
+                c.id,
+                c.doc_id,
+                c.page,
+                c.page_start,
+                c.page_end,
+                c.section_id,
+                c.section_node_id,
+                c.text,
+                c.hash,
+                c.source_hash,
                 json.dumps(c.block_ids, ensure_ascii=False),
                 c.chunk_type or c.kind,
                 json.dumps(c.attrs, ensure_ascii=False),
@@ -548,8 +564,7 @@ class SQLiteGraphStore:
             """,
             rows,
         )
-        conn.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?",
-                         [(r[0],) for r in rows])
+        conn.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", [(r[0],) for r in rows])
         conn.executemany(
             "INSERT INTO chunks_fts (chunk_id, text) VALUES (?, ?)",
             [(r[0], r[7]) for r in rows],
@@ -571,18 +586,26 @@ class SQLiteGraphStore:
 
     def _row_to_chunk(self, row):
         from docgraph.graph.schema import Chunk
+
         attrs = json.loads(row["attrs"]) if row["attrs"] else {}
         block_ids = json.loads(row["block_ids"]) if row["block_ids"] else []
         return Chunk(
-            id=row["id"], doc_id=row["doc_id"], page=row["page"],
+            id=row["id"],
+            doc_id=row["doc_id"],
+            page=row["page"],
             page_start=row["page_start"] if "page_start" in row.keys() else row["page"],
             page_end=row["page_end"] if "page_end" in row.keys() else row["page"],
             section_id=row["section_id"],
             section_node_id=row["section_node_id"] if "section_node_id" in row.keys() else None,
-            text=row["text"], hash=row["hash"],
+            text=row["text"],
+            hash=row["hash"],
             source_hash=row["source_hash"] if "source_hash" in row.keys() else row["hash"],
             block_ids=block_ids,
-            kind=(row["chunk_type"] if "chunk_type" in row.keys() and row["chunk_type"] else attrs.get("chunk_type", "section")),
+            kind=(
+                row["chunk_type"]
+                if "chunk_type" in row.keys() and row["chunk_type"]
+                else attrs.get("chunk_type", "section")
+            ),
             chunk_type=(row["chunk_type"] if "chunk_type" in row.keys() else None),
             attrs=attrs,
         )
@@ -705,6 +728,7 @@ class SQLiteGraphStore:
     ) -> dict[str, Any]:
         """Text-search chunks and report which retrieval paths produced hits."""
         import re
+
         conn = self._connect()
         q = query.strip()
         if not q:
@@ -968,7 +992,9 @@ def _merge_l2_trust_metadata(
     incoming_status = str(incoming.get("l2_status") or "candidate")
     chosen = incoming if rank.get(incoming_status, 0) > rank.get(existing_status, 0) else existing
     attrs["l2_status"] = chosen.get("l2_status", "candidate")
-    attrs["derivation"] = chosen.get("derivation") or existing.get("derivation") or incoming.get("derivation")
+    attrs["derivation"] = (
+        chosen.get("derivation") or existing.get("derivation") or incoming.get("derivation")
+    )
     attrs["validation_issues"] = list(chosen.get("validation_issues") or [])
 
     history: list[dict[str, Any]] = []
@@ -985,7 +1011,11 @@ def _merge_evidence(existing: Evidence, incoming: Evidence) -> Evidence:
         [*_split_extractors(existing.extractor), *_split_extractors(incoming.extractor)]
     )
     raw_snippet = existing.raw_snippet or incoming.raw_snippet
-    if existing.raw_snippet and incoming.raw_snippet and incoming.raw_snippet not in existing.raw_snippet:
+    if (
+        existing.raw_snippet
+        and incoming.raw_snippet
+        and incoming.raw_snippet not in existing.raw_snippet
+    ):
         raw_snippet = f"{existing.raw_snippet}\n---\n{incoming.raw_snippet}"
     return Evidence(
         chunk_ids=_dedupe_preserve_order([*existing.chunk_ids, *incoming.chunk_ids]),

@@ -5,6 +5,7 @@
 - 当前节点数（10k-100k）下，Python 端计算余弦相似度足够快（< 100ms）
 - 通过 VectorStore 接口隔离，将来切 sqlite-vec / faiss 都不影响业务层
 """
+
 from __future__ import annotations
 
 import json
@@ -108,8 +109,11 @@ class VectorStore:
             except Exception:
                 pass
             self._conn = None
-        for p in [self.db_path, self.db_path.with_name(self.db_path.name + "-wal"),
-                  self.db_path.with_name(self.db_path.name + "-shm")]:
+        for p in [
+            self.db_path,
+            self.db_path.with_name(self.db_path.name + "-wal"),
+            self.db_path.with_name(self.db_path.name + "-shm"),
+        ]:
             try:
                 if p.exists():
                     p.unlink()
@@ -182,12 +186,14 @@ class VectorStore:
         try:
             placeholders = ",".join("?" * len(doc_ids))
             node_ids = {
-                row[0] for row in gconn.execute(
-                f"SELECT id FROM nodes WHERE doc_id IN ({placeholders})", doc_ids
+                row[0]
+                for row in gconn.execute(
+                    f"SELECT id FROM nodes WHERE doc_id IN ({placeholders})", doc_ids
                 ).fetchall()
             }
             chunk_ids = {
-                row[0] for row in gconn.execute(
+                row[0]
+                for row in gconn.execute(
                     f"SELECT id FROM chunks WHERE doc_id IN ({placeholders})", doc_ids
                 ).fetchall()
             }
@@ -217,8 +223,7 @@ class VectorStore:
         return {
             row["item_id"]: row["content_hash"]
             for row in c.execute(
-                "SELECT item_id, content_hash FROM vec_items "
-                "WHERE namespace = ? AND model = ?",
+                "SELECT item_id, content_hash FROM vec_items WHERE namespace = ? AND model = ?",
                 (namespace, model),
             ).fetchall()
         }

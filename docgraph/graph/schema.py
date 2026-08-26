@@ -5,6 +5,7 @@
 - 每个 Node / Edge 都必须带 evidence，让 Agent 可追溯。
 - attrs 是开放的 dict，由对应 extractor 约束其子 schema。
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -66,11 +67,11 @@ class EdgeKind(str, Enum):
     DERIVED_FROM = "derived_from"
     # ADR-015 语义关系层（IP-XACT 对齐）
     CONTAINED_IN = "contained_in"  # memory_map → register
-    MAPPED_TO = "mapped_to"        # interrupt → register
-    DRIVES = "drives"              # signal → pin | interface
-    CLOCKS = "clocks"              # clock → module | signal
-    RESETS = "resets"              # reset_domain → module | register
-    IMPLEMENTS = "implements"      # module → interface
+    MAPPED_TO = "mapped_to"  # interrupt → register
+    DRIVES = "drives"  # signal → pin | interface
+    CLOCKS = "clocks"  # clock → module | signal
+    RESETS = "resets"  # reset_domain → module | register
+    IMPLEMENTS = "implements"  # module → interface
 
 
 class DocType(str, Enum):
@@ -132,6 +133,7 @@ def _utcnow() -> str:
 
 class BBox(BaseModel):
     """Page-relative bounding box: [x0, y0, x1, y1]，单位为 pt。"""
+
     model_config = ConfigDict(frozen=True)
 
     x0: float
@@ -143,6 +145,7 @@ class BBox(BaseModel):
 
 class Location(BaseModel):
     """节点在文档中的位置。"""
+
     page: int | None = None
     bbox: BBox | None = None
     section_path: str | None = None  # e.g. "3.2.1"
@@ -150,6 +153,7 @@ class Location(BaseModel):
 
 class Evidence(BaseModel):
     """节点 / 边的来源证据。**永不为空**。"""
+
     chunk_ids: list[str] = Field(default_factory=list)
     pages: list[int] = Field(default_factory=list)
     bboxes: list[BBox] = Field(default_factory=list)
@@ -182,6 +186,7 @@ class ValidationIssue(BaseModel):
 
 class DocMetadata(BaseModel):
     """从文档头部 / 用户配置中拿到的元数据。"""
+
     title: str | None = None
     family: str | None = None  # e.g. "stm32f407"（项目级命名空间，进 node_id）
     # 芯片型号/IP 实例（比 family 更细，用于消歧判断"同一实例"）。
@@ -202,6 +207,7 @@ class DocMetadata(BaseModel):
 
 # === L0 高保真版面层（layered-architecture.md §3.1）===
 
+
 class BlockKind(str, Enum):
     PARAGRAPH = "paragraph"
     HEADING = "heading"
@@ -215,6 +221,7 @@ class BlockKind(str, Enum):
 
 class TableData(BaseModel):
     """表格数据 —— 单元格级别，禁止再揉成纯文本（L0 契约）。"""
+
     headers: list[str] = Field(default_factory=list)
     rows: list[list[str]] = Field(default_factory=list)
     n_rows: int = 0
@@ -229,16 +236,17 @@ class Block(BaseModel):
 
     稳定 ID 形如：<doc_id>#p<page>#b<idx>
     """
+
     id: str
     doc_id: str
     page: int
     kind: BlockKind
     reading_order: int = 0
     bbox: BBox | None = None
-    text: str | None = None          # 文本类
-    table: TableData | None = None   # 表格类
-    image_path: str | None = None    # 图 / 公式渲染
-    latex: str | None = None         # 公式
+    text: str | None = None  # 文本类
+    table: TableData | None = None  # 表格类
+    image_path: str | None = None  # 图 / 公式渲染
+    latex: str | None = None  # 公式
     section_path: str | None = None  # 归属章节
     heading_level: int | None = None
     attrs: dict[str, Any] = Field(default_factory=dict)
@@ -250,6 +258,7 @@ class Block(BaseModel):
 # 适配器内部组织文本、表格和图片，再归一为 Block 入库；Extractor 不应
 # 把它们作为事实入口。
 
+
 class TextBlock(BaseModel):
     text: str
     bbox: BBox | None = None
@@ -260,6 +269,7 @@ class TextBlock(BaseModel):
 
 class ParsedTable(BaseModel):
     """Parser adapter 的表格中间视图，最终必须归一为 TableData/Block。"""
+
     html: str | None = None
     headers: list[str] = Field(default_factory=list)
     rows: list[list[str]] = Field(default_factory=list)
@@ -301,17 +311,18 @@ class PageQuality(BaseModel):
 
     各路 extractor 看 `needs_vlm` + `vlm_reasons` 决定是否走 VLM 路径。
     """
+
     text_chars: int = 0
     text_blocks: int = 0
-    text_density: float = 0.0          # 字符数 / 页面面积（粗略）
-    image_area_ratio: float = 0.0      # 图片像素面积占比 [0,1]
-    has_text_layer: bool = True        # False = 扫描版无文本层
-    table_keyword_hits: int = 0        # "Table N: …" 命中
-    register_keyword_hits: int = 0     # register / bit field / 寄存器 / 位域 …
-    figure_caption_hits: int = 0       # "Figure N: …"
-    pin_keyword_hits: int = 0          # pin / 管脚 / direction / function
-    timing_keyword_hits: int = 0       # min/typ/max + 单位
-    needs_vlm: bool = False            # 综合判定
+    text_density: float = 0.0  # 字符数 / 页面面积（粗略）
+    image_area_ratio: float = 0.0  # 图片像素面积占比 [0,1]
+    has_text_layer: bool = True  # False = 扫描版无文本层
+    table_keyword_hits: int = 0  # "Table N: …" 命中
+    register_keyword_hits: int = 0  # register / bit field / 寄存器 / 位域 …
+    figure_caption_hits: int = 0  # "Figure N: …"
+    pin_keyword_hits: int = 0  # pin / 管脚 / direction / function
+    timing_keyword_hits: int = 0  # min/typ/max + 单位
+    needs_vlm: bool = False  # 综合判定
     vlm_reasons: list[str] = Field(default_factory=list)
 
 
@@ -339,6 +350,7 @@ class ParsedDoc(BaseModel):
 
 class Node(BaseModel):
     """图谱节点。"""
+
     schema_version: int = NODE_SCHEMA_VERSION
     id: str
     kind: NodeKind
@@ -363,6 +375,7 @@ class Node(BaseModel):
 
 class Edge(BaseModel):
     """图谱边。"""
+
     schema_version: int = EDGE_SCHEMA_VERSION
     src: str
     dst: str
@@ -383,6 +396,7 @@ class Chunk(BaseModel):
 
     block_ids 指回 L0 版面块（layered-architecture §3.2 契约：可回溯）。
     """
+
     id: str
     doc_id: str
     page: int | None = None
@@ -493,6 +507,7 @@ class BitFieldDef(BaseModel):
 
 class RegisterDef(BaseModel):
     """table_entity:register 的严格输出 schema。LLM 必须吐这个。"""
+
     name: str
     address: str | None = None
     offset: str | None = None

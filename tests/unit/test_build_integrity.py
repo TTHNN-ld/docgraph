@@ -6,10 +6,11 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from docgraph.core.bootstrap import bootstrap
 from docgraph.core.config import DocGraphConfig, DocsConfig, ExtractorsConfig
 from docgraph.core.ids import file_hash
 from docgraph.core.manifest import FileRecord, Manifest
-from docgraph.core.pipeline import BuildReport, _stage_extract, build
+from docgraph.core.pipeline import BuildReport, _stage_extract, build, discover_files
 from docgraph.embeddings.hash_encoder import HashEncoder
 from docgraph.embeddings.indexer import embed_graph
 from docgraph.embeddings.vector_store import VectorStore
@@ -23,6 +24,103 @@ from docgraph.graph.schema import (
     ParsedPage,
 )
 from docgraph.graph.sqlite_store import SQLiteGraphStore
+
+
+def test_default_discovery_includes_all_core_document_formats(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    spec = tmp_path / "spec"
+    docs.mkdir()
+    spec.mkdir()
+    expected = {
+        docs / "manual.pdf",
+        docs / "registers.docx",
+        docs / "pins.xlsx",
+        docs / "macros.xlsm",
+        spec / "protocol.md",
+        spec / "notes.markdown",
+    }
+    for path in expected:
+        path.write_bytes(b"fixture")
+    (docs / "ignored.txt").write_text("not a supported document", encoding="utf-8")
+
+    discovered = set(discover_files(tmp_path, DocGraphConfig()))
+
+    assert discovered == {path.resolve() for path in expected}
+
+
+def test_build_keeps_same_stem_different_format_documents_distinct(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "registers.md").write_text("# Markdown source\n", encoding="utf-8")
+    (docs / "registers.markdown").write_text(
+        "# Long-extension source\n", encoding="utf-8"
+    )
+    (tmp_path / ".docgraph").mkdir()
+    store = SQLiteGraphStore(tmp_path / ".docgraph" / "graph.db")
+    store.init_schema()
+    cfg = DocGraphConfig(
+        docs=DocsConfig(include=["docs/*.md", "docs/*.markdown"]),
+        extractors=ExtractorsConfig(enabled=[]),
+    )
+    manifest = Manifest()
+    bootstrap()
+
+    report = build(tmp_path, cfg, store, manifest)
+
+    expected_doc_ids = {
+        "default::doc::docs/registers.md",
+        "default::doc::docs/registers.markdown",
+    }
+    assert report.errors == 0
+    assert set(store.list_docs()) == expected_doc_ids
+    assert {record.doc_id for record in manifest.files.values()} == expected_doc_ids
+    store.close()
+
+
+def test_build_replaces_legacy_document_id_even_when_content_hash_matches(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    source = docs / "guide.md"
+    source.write_text("# Guide\n", encoding="utf-8")
+    (tmp_path / ".docgraph").mkdir()
+    store = SQLiteGraphStore(tmp_path / ".docgraph" / "graph.db")
+    store.init_schema()
+    store.upsert_blocks(
+        [
+            Block(
+                id="default::doc::guide#p1#b0",
+                doc_id="default::doc::guide",
+                page=1,
+                kind=BlockKind.PARAGRAPH,
+                text="legacy",
+            )
+        ]
+    )
+    manifest = Manifest(
+        files={
+            "docs/guide.md": FileRecord(
+                path="docs/guide.md",
+                doc_id="default::doc::guide",
+                hash=file_hash(source),
+                status="extracted",
+            )
+        }
+    )
+    cfg = DocGraphConfig(
+        docs=DocsConfig(include=["docs/*.md"]),
+        extractors=ExtractorsConfig(enabled=[]),
+    )
+    bootstrap()
+
+    report = build(tmp_path, cfg, store, manifest)
+
+    assert report.parsed == 1
+    assert report.skipped == 0
+    assert store.list_docs() == ["default::doc::docs/guide.md"]
+    assert store.get_block("default::doc::guide#p1#b0") is None
+    store.close()
 
 
 def test_nested_store_transaction_rolls_back_all_document_layers(tmp_path: Path) -> None:
@@ -126,7 +224,7 @@ def test_build_skips_model_initialization_and_embedding_when_everything_is_cache
         files={
             "spec/cached.pdf": FileRecord(
                 path="spec/cached.pdf",
-                doc_id="doc",
+                doc_id="default::doc::spec/cached.pdf",
                 hash=file_hash(doc_path),
                 status="extracted",
             )
@@ -169,7 +267,7 @@ def test_build_embeds_when_embedding_config_changed_but_files_are_cached(
         files={
             "spec/cached.pdf": FileRecord(
                 path="spec/cached.pdf",
-                doc_id="doc",
+                doc_id="default::doc::spec/cached.pdf",
                 hash=file_hash(doc_path),
                 status="extracted",
             )
@@ -186,8 +284,8 @@ def test_build_embeds_when_embedding_config_changed_but_files_are_cached(
     store.upsert_chunks(
         [
             Chunk(
-                id="doc::chunk:1",
-                doc_id="doc",
+                id="default::doc::spec/cached.pdf::chunk:1",
+                doc_id="default::doc::spec/cached.pdf",
                 page=1,
                 page_start=1,
                 page_end=1,

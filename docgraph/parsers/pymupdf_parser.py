@@ -8,6 +8,7 @@ M6 升级：
 
 ParsedPage.quality.needs_vlm == True 的页，下游 Extractor 可以用 VLM 整页兜底。
 """
+
 from __future__ import annotations
 
 import re
@@ -68,9 +69,9 @@ class PyMuPDFParser:
     version = "0.2"
 
     # 触发 VLM 的阈值
-    MIN_TEXT_CHARS_PER_PAGE = 80            # < 此值 → 视为扫描/空白
-    IMAGE_AREA_HEAVY_RATIO = 0.35           # 图片占比超过此值 → 图重页
-    DPI_FOR_VLM_RENDER = 144                # 整页渲染 DPI
+    MIN_TEXT_CHARS_PER_PAGE = 80  # < 此值 → 视为扫描/空白
+    IMAGE_AREA_HEAVY_RATIO = 0.35  # 图片占比超过此值 → 图重页
+    DPI_FOR_VLM_RENDER = 144  # 整页渲染 DPI
 
     def can_parse(self, path: Path) -> bool:
         return path.suffix.lower() in self.supports
@@ -81,7 +82,7 @@ class PyMuPDFParser:
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
                 "pymupdf is required for PyMuPDFParser. "
-                "Install with: pip install pymupdf"
+                "Run uv sync to install the core dependencies"
             ) from e
 
         doc = pymupdf.open(str(path))
@@ -93,9 +94,7 @@ class PyMuPDFParser:
 
         n_vlm = sum(1 for p in pages if p.quality and p.quality.needs_vlm)
         if n_vlm:
-            log.info(
-                f"[pymupdf] {path.name}: {n_vlm}/{len(pages)} pages flagged for VLM"
-            )
+            log.info(f"[pymupdf] {path.name}: {n_vlm}/{len(pages)} pages flagged for VLM")
 
         return ParsedDoc(
             doc_id=ctx.doc_id,
@@ -128,26 +127,30 @@ class PyMuPDFParser:
             figures: list[ParsedFigure] = []
             if quality.figure_caption_hits > 0 and rendered:
                 caption_text = self._find_first_figure_caption(text_blocks)
-                figures.append(ParsedFigure(
-                    image_path=rendered,
-                    caption=caption_text,
-                ))
+                figures.append(
+                    ParsedFigure(
+                        image_path=rendered,
+                        caption=caption_text,
+                    )
+                )
 
             # L0：构建统一 Block 列表（文本 + 表格 + 图）
             blocks = self._build_blocks(
                 ctx.doc_id, page_no, text_blocks, parsed_tables, table_bboxes, figures
             )
 
-            out.append(ParsedPage(
-                page_no=page_no,
-                blocks=blocks,
-                text_blocks=text_blocks,
-                tables=parsed_tables,
-                figures=figures,
-                formulas=[],
-                quality=quality,
-                rendered_image_path=rendered,
-            ))
+            out.append(
+                ParsedPage(
+                    page_no=page_no,
+                    blocks=blocks,
+                    text_blocks=text_blocks,
+                    tables=parsed_tables,
+                    figures=figures,
+                    formulas=[],
+                    quality=quality,
+                    rendered_image_path=rendered,
+                )
+            )
         return out
 
     # ------- L0：表格抽取（保留单元格） -------
@@ -176,11 +179,13 @@ class PyMuPDFParser:
             headers = rows[0]
             body = rows[1:] if len(rows) > 1 else []
             bb = getattr(t, "bbox", None)
-            parsed.append(ParsedTable(
-                headers=headers,
-                rows=body,
-                bbox=BBox(x0=bb[0], y0=bb[1], x1=bb[2], y1=bb[3], page=page_no) if bb else None,
-            ))
+            parsed.append(
+                ParsedTable(
+                    headers=headers,
+                    rows=body,
+                    bbox=BBox(x0=bb[0], y0=bb[1], x1=bb[2], y1=bb[3], page=page_no) if bb else None,
+                )
+            )
             bboxes.append(bb)
         return parsed, bboxes
 
@@ -205,30 +210,52 @@ class PyMuPDFParser:
             if tb.bbox and any(_inside(tb.bbox, bb) for bb in tbbs):
                 continue
             kind = BlockKind.HEADING if tb.is_heading else BlockKind.PARAGRAPH
-            blocks.append(Block(
-                id=_bid(), doc_id=doc_id, page=page_no, kind=kind,
-                reading_order=tb.reading_order, bbox=tb.bbox,
-                text=tb.text, heading_level=tb.heading_level,
-            ))
+            blocks.append(
+                Block(
+                    id=_bid(),
+                    doc_id=doc_id,
+                    page=page_no,
+                    kind=kind,
+                    reading_order=tb.reading_order,
+                    bbox=tb.bbox,
+                    text=tb.text,
+                    heading_level=tb.heading_level,
+                )
+            )
 
         for t in parsed_tables:
-            blocks.append(Block(
-                id=_bid(), doc_id=doc_id, page=page_no, kind=BlockKind.TABLE,
-                reading_order=10_000 + len(blocks), bbox=t.bbox,
-                table=TableData(
-                    headers=t.headers, rows=t.rows,
-                    n_rows=len(t.rows), n_cols=len(t.headers),
-                    caption=t.caption,
-                ),
-                attrs={"parser": self.name, "table_source": "cells"},
-            ))
+            blocks.append(
+                Block(
+                    id=_bid(),
+                    doc_id=doc_id,
+                    page=page_no,
+                    kind=BlockKind.TABLE,
+                    reading_order=10_000 + len(blocks),
+                    bbox=t.bbox,
+                    table=TableData(
+                        headers=t.headers,
+                        rows=t.rows,
+                        n_rows=len(t.rows),
+                        n_cols=len(t.headers),
+                        caption=t.caption,
+                    ),
+                    attrs={"parser": self.name, "table_source": "cells"},
+                )
+            )
 
         for f in figures:
-            blocks.append(Block(
-                id=_bid(), doc_id=doc_id, page=page_no, kind=BlockKind.FIGURE,
-                reading_order=20_000 + len(blocks), bbox=f.bbox,
-                image_path=f.image_path, text=f.caption,
-            ))
+            blocks.append(
+                Block(
+                    id=_bid(),
+                    doc_id=doc_id,
+                    page=page_no,
+                    kind=BlockKind.FIGURE,
+                    reading_order=20_000 + len(blocks),
+                    bbox=f.bbox,
+                    image_path=f.image_path,
+                    text=f.caption,
+                )
+            )
 
         return blocks
 
@@ -249,11 +276,13 @@ class PyMuPDFParser:
             text = (text or "").strip()
             if not text:
                 continue
-            out.append(TextBlock(
-                text=text,
-                bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1, page=page_no),
-                reading_order=int(block_no),
-            ))
+            out.append(
+                TextBlock(
+                    text=text,
+                    bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1, page=page_no),
+                    reading_order=int(block_no),
+                )
+            )
         for tb in out:
             tb.is_heading = self._looks_like_heading(tb.text)
         return out
@@ -268,9 +297,7 @@ class PyMuPDFParser:
 
     # ------- 质量评估 -------
 
-    def _assess_quality(
-        self, page, text_blocks: list[TextBlock], n_tables: int = 0
-    ) -> PageQuality:
+    def _assess_quality(self, page, text_blocks: list[TextBlock], n_tables: int = 0) -> PageQuality:
         # 文本字符数
         text_chars = sum(len(tb.text) for tb in text_blocks)
         # 页面面积（pt^2）
@@ -350,8 +377,8 @@ class PyMuPDFParser:
         if out.is_file():
             return str(out)
         import pymupdf  # type: ignore
-        matrix = pymupdf.Matrix(self.DPI_FOR_VLM_RENDER / 72,
-                                 self.DPI_FOR_VLM_RENDER / 72)
+
+        matrix = pymupdf.Matrix(self.DPI_FOR_VLM_RENDER / 72, self.DPI_FOR_VLM_RENDER / 72)
         pix = page.get_pixmap(matrix=matrix, alpha=False)
         pix.save(str(out))
         return str(out)
@@ -368,9 +395,13 @@ class PyMuPDFParser:
             if len(entry) < 3:
                 continue
             level, title, page = entry[0], entry[1], entry[2]
-            out.append(TocEntry(
-                level=int(level), title=str(title).strip(), page=int(page),
-            ))
+            out.append(
+                TocEntry(
+                    level=int(level),
+                    title=str(title).strip(),
+                    page=int(page),
+                )
+            )
         return out
 
     # ------- helpers -------
@@ -381,7 +412,7 @@ class PyMuPDFParser:
             m = _RE_FIGURE_CAPTION.search(tb.text)
             if m:
                 # 取 caption 整行
-                line = tb.text[m.start():m.start() + 200].split("\n", 1)[0].strip()
+                line = tb.text[m.start() : m.start() + 200].split("\n", 1)[0].strip()
                 return line
         return None
 

@@ -5,6 +5,7 @@
 - 行级正则：缩写 + 全称
 - 建 TERM 节点；后续 Linker 在缩写出现处建 ALIAS_OF 边
 """
+
 from __future__ import annotations
 
 import re
@@ -99,8 +100,12 @@ class GlossaryExtractor:
         return out
 
     def _make_term_node(
-        self, abbr: str, full: str, page_no: int,
-        doc: ParsedDoc, ctx: ExtractContext,
+        self,
+        abbr: str,
+        full: str,
+        page_no: int,
+        doc: ParsedDoc,
+        ctx: ExtractContext,
     ) -> Node:
         return Node(
             id=make_node_id(ctx.family, NodeKind.TERM, abbr, doc_id=doc.doc_id),

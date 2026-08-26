@@ -1,10 +1,11 @@
 """Docling PDF parser adapter."""
+
 from __future__ import annotations
 
 import re
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 from docgraph.graph.schema import (
     BBox,
@@ -28,7 +29,7 @@ class DoclingParser:
     """
 
     name = "docling"
-    supports: ClassVar[set[str]] = {".pdf"}
+    supports = {".pdf"}
     version = "0.1"
 
     def can_parse(self, path: Path) -> bool:
@@ -41,7 +42,7 @@ class DoclingParser:
             from docling.document_converter import DocumentConverter, PdfFormatOption
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
-                "docling is required for DoclingParser. Install with: pip install docling"
+                "docling is required for DoclingParser. Run: uv sync --extra docling"
             ) from e
 
         opts = PdfPipelineOptions()
@@ -95,39 +96,47 @@ def _docling_document_to_pages(document: Any, ctx: ParseContext, path: Path) -> 
             blocks.append(block)
             match block.kind:
                 case BlockKind.HEADING | BlockKind.PARAGRAPH | BlockKind.LIST | BlockKind.CAPTION:
-                    text_blocks.append(TextBlock(
-                        text=block.text or "",
-                        bbox=block.bbox,
-                        reading_order=order,
-                        is_heading=block.kind == BlockKind.HEADING,
-                        heading_level=block.heading_level,
-                    ))
+                    text_blocks.append(
+                        TextBlock(
+                            text=block.text or "",
+                            bbox=block.bbox,
+                            reading_order=order,
+                            is_heading=block.kind == BlockKind.HEADING,
+                            heading_level=block.heading_level,
+                        )
+                    )
                 case BlockKind.TABLE:
                     if block.table:
-                        tables.append(ParsedTable(
-                            html=block.table.html,
-                            headers=block.table.headers,
-                            rows=block.table.rows,
-                            bbox=block.bbox,
-                            caption=block.table.caption,
-                        ))
+                        tables.append(
+                            ParsedTable(
+                                html=block.table.html,
+                                headers=block.table.headers,
+                                rows=block.table.rows,
+                                bbox=block.bbox,
+                                caption=block.table.caption,
+                            )
+                        )
                 case BlockKind.FIGURE:
-                    figures.append(ParsedFigure(
-                        image_path=block.image_path,
-                        bbox=block.bbox,
-                        caption=block.text,
-                    ))
+                    figures.append(
+                        ParsedFigure(
+                            image_path=block.image_path,
+                            bbox=block.bbox,
+                            caption=block.text,
+                        )
+                    )
                 case _:
                     pass
             order += 1
 
-        pages.append(ParsedPage(
-            page_no=page_no,
-            blocks=blocks,
-            text_blocks=text_blocks,
-            tables=tables,
-            figures=figures,
-        ))
+        pages.append(
+            ParsedPage(
+                page_no=page_no,
+                blocks=blocks,
+                text_blocks=text_blocks,
+                tables=tables,
+                figures=figures,
+            )
+        )
     return pages
 
 
@@ -347,13 +356,15 @@ def _table_grid(item: Any) -> tuple[list[str], list[list[str]], list[dict[str, A
         row_span = int(getattr(cell, "row_span", 1) or 1)
         col_span = int(getattr(cell, "col_span", 1) or 1)
         if row_span > 1 or col_span > 1:
-            merged.append({
-                "row": int(getattr(cell, "start_row_offset_idx", 0) or 0),
-                "col": int(getattr(cell, "start_col_offset_idx", 0) or 0),
-                "row_span": row_span,
-                "col_span": col_span,
-                "text": str(getattr(cell, "text", "") or ""),
-            })
+            merged.append(
+                {
+                    "row": int(getattr(cell, "start_row_offset_idx", 0) or 0),
+                    "col": int(getattr(cell, "start_col_offset_idx", 0) or 0),
+                    "row_span": row_span,
+                    "col_span": col_span,
+                    "text": str(getattr(cell, "text", "") or ""),
+                }
+            )
     return headers, body, merged
 
 
@@ -429,12 +440,14 @@ def _toc_from_blocks(pages: list[ParsedPage]) -> list[TocEntry]:
                     counters[i] = 0
                 section_path = ".".join(str(v) for v in counters[:level] if v)
                 title = block.text or ""
-            toc.append(TocEntry(
-                level=level,
-                title=title or block.text or "",
-                page=page.page_no,
-                section_path=section_path,
-            ))
+            toc.append(
+                TocEntry(
+                    level=level,
+                    title=title or block.text or "",
+                    page=page.page_no,
+                    section_path=section_path,
+                )
+            )
     return toc
 
 

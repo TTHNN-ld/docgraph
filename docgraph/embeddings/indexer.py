@@ -4,6 +4,7 @@
 - 对"有意义的节点"做嵌入：register / bitfield / section / pin / parameter / term / figure
 - 编码材料 = name + qualified_name + summary + 关键 attrs
 """
+
 from __future__ import annotations
 
 import time
@@ -100,13 +101,9 @@ def embed_graph(
     for kind in _EMBED_KINDS:
         nodes = store.search_nodes(NodeQuery(kind=kind, limit=100000))
         current_node_ids.update(n.id for n in nodes)
-        desired_hashes = {
-            n.id: content_hash(text_for_embedding(n))
-            for n in nodes
-        }
+        desired_hashes = {n.id: content_hash(text_for_embedding(n)) for n in nodes}
         nodes = [
-            n for n in nodes
-            if not only_missing or stored_hashes.get(n.id) != desired_hashes[n.id]
+            n for n in nodes if not only_missing or stored_hashes.get(n.id) != desired_hashes[n.id]
         ]
         for i in range(0, len(nodes), batch):
             chunk = nodes[i : i + batch]
@@ -152,16 +149,14 @@ def embed_chunks(
     namespace 固定为 `chunk`；后续如果接段落、图片语义、外部文档片段，
     仍然走同一套 VectorStore item 接口。
     """
-    stored_hashes = (
-        vstore.stored_item_hashes("chunk", encoder.model) if only_missing else {}
-    )
+    stored_hashes = vstore.stored_item_hashes("chunk", encoder.model) if only_missing else {}
     all_chunks = store.list_chunks(limit=1_000_000)
     desired_hashes = {
-        chunk.id: content_hash(text_for_chunk_embedding(chunk))
-        for chunk in all_chunks
+        chunk.id: content_hash(text_for_chunk_embedding(chunk)) for chunk in all_chunks
     }
     chunks = [
-        chunk for chunk in all_chunks
+        chunk
+        for chunk in all_chunks
         if not only_missing or stored_hashes.get(chunk.id) != desired_hashes[chunk.id]
     ]
     n_embedded = 0

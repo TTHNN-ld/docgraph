@@ -12,6 +12,7 @@
 - NodeKind 不再借壳：interrupt/clock/power_domain/memory_map/requirement/errata
   各有独立 NodeKind。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from docgraph.graph.schema import DocType, NodeKind, RegisterDef
 @dataclass
 class EntitySchema:
     """一种 L2 实体的定义。"""
+
     kind: NodeKind
     target_model: type[BaseModel]
     list_wrapper: type[BaseModel]
@@ -58,10 +60,10 @@ class RegisterDefList(BaseModel):
 
 class PinDef(BaseModel):
     name: str
-    direction: str | None = None      # IN / OUT / IO / POWER / GND / ANALOG
+    direction: str | None = None  # IN / OUT / IO / POWER / GND / ANALOG
     pin_no: str | None = None
     description: str = ""
-    voltage: str | None = None        # 供电电压（电源 pin 用）
+    voltage: str | None = None  # 供电电压（电源 pin 用）
 
 
 class PinDefList(BaseModel):
@@ -83,8 +85,8 @@ class TimingParamList(BaseModel):
 
 class SignalDef(BaseModel):
     name: str
-    direction: str | None = None      # IN / OUT / IO / BIDIR
-    width: str | None = None          # 位宽（如 32、[31:0]）
+    direction: str | None = None  # IN / OUT / IO / BIDIR
+    width: str | None = None  # 位宽（如 32、[31:0]）
     description: str = ""
 
 
@@ -93,9 +95,9 @@ class SignalDefList(BaseModel):
 
 
 class InterfaceDef(BaseModel):
-    name: str                         # 接口名 e.g. AXI4, APB, PIPE
-    protocol: str | None = None       # 协议 e.g. AMBA AXI, APB, PIPE
-    direction: str | None = None      # master / slave / initiator / target
+    name: str  # 接口名 e.g. AXI4, APB, PIPE
+    protocol: str | None = None  # 协议 e.g. AMBA AXI, APB, PIPE
+    direction: str | None = None  # master / slave / initiator / target
     width: str | None = None
     description: str = ""
 
@@ -145,7 +147,7 @@ class PhysicalConstraintDefList(BaseModel):
 class InterruptDef(BaseModel):
     name: str
     number: str | None = None
-    type: str | None = None           # level / pulse / MSI / MSI-X
+    type: str | None = None  # level / pulse / MSI / MSI-X
     description: str = ""
 
 
@@ -155,10 +157,10 @@ class InterruptDefList(BaseModel):
 
 class ClockResetDef(BaseModel):
     name: str
-    type: str = "clock"               # clock / reset / power
-    frequency: str | None = None     # 时钟频率
-    domain: str | None = None        # 时钟域
-    polarity: str | None = None      # 极性（active high/low）
+    type: str = "clock"  # clock / reset / power
+    frequency: str | None = None  # 时钟频率
+    domain: str | None = None  # 时钟域
+    polarity: str | None = None  # 极性（active high/low）
     description: str = ""
 
 
@@ -179,12 +181,13 @@ class MemoryMapDefList(BaseModel):
 
 class ErrataDef(BaseModel):
     """勘误条目 —— errata 文档核心实体。"""
-    id: str | None = None              # errata 编号 e.g. ERR012345
+
+    id: str | None = None  # errata 编号 e.g. ERR012345
     title: str = ""
-    affected: str | None = None        # 受影响版本/修订 e.g. r0p0-r2p3
-    severity: str | None = None        # critical / major / minor
+    affected: str | None = None  # 受影响版本/修订 e.g. r0p0-r2p3
+    severity: str | None = None  # critical / major / minor
     description: str = ""
-    workaround: str = ""               # 规避方法（agent 最需要的结构化字段）
+    workaround: str = ""  # 规避方法（agent 最需要的结构化字段）
 
 
 class ErrataDefList(BaseModel):
@@ -220,12 +223,33 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "bit", "field", "bits", "name", "access", "reset",
-            "description", "address", "offset", "register",
-            "位", "字段", "访问", "复位", "描述", "地址", "寄存器", "偏移",
+            "bit",
+            "field",
+            "bits",
+            "name",
+            "access",
+            "reset",
+            "description",
+            "address",
+            "offset",
+            "register",
+            "位",
+            "字段",
+            "访问",
+            "复位",
+            "描述",
+            "地址",
+            "寄存器",
+            "偏移",
         ],
-        doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM,
-                   DocType.APP_NOTE, DocType.ERRATA, DocType.PROTOCOL),
+        doc_types=(
+            DocType.DATASHEET,
+            DocType.REFERENCE_MANUAL,
+            DocType.TRM,
+            DocType.APP_NOTE,
+            DocType.ERRATA,
+            DocType.PROTOCOL,
+        ),
     ),
     "pin": EntitySchema(
         kind=NodeKind.PIN,
@@ -242,9 +266,21 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "pin", "name", "no", "number", "direction", "function",
-            "type", "voltage", "ball",
-            "管脚", "引脚", "编号", "方向", "功能", "封装",
+            "pin",
+            "name",
+            "no",
+            "number",
+            "direction",
+            "function",
+            "type",
+            "voltage",
+            "ball",
+            "管脚",
+            "引脚",
+            "编号",
+            "方向",
+            "功能",
+            "封装",
         ],
         min_confidence=0.9,
         doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL),
@@ -262,13 +298,24 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "address", "offset", "size", "range", "base", "bar",
-            "memory", "region",
-            "地址", "偏移", "大小", "范围", "内存", "区域", "映射",
+            "address",
+            "offset",
+            "size",
+            "range",
+            "base",
+            "bar",
+            "memory",
+            "region",
+            "地址",
+            "偏移",
+            "大小",
+            "范围",
+            "内存",
+            "区域",
+            "映射",
         ],
         min_confidence=0.75,
-        doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM,
-                   DocType.PROTOCOL),
+        doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM, DocType.PROTOCOL),
     ),
     "interrupt": EntitySchema(
         kind=NodeKind.INTERRUPT,
@@ -283,12 +330,19 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "interrupt", "irq", "msi", "vector", "number", "priority",
-            "中断", "向量", "优先级", "中断号",
+            "interrupt",
+            "irq",
+            "msi",
+            "vector",
+            "number",
+            "priority",
+            "中断",
+            "向量",
+            "优先级",
+            "中断号",
         ],
         min_confidence=0.8,
-        doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM,
-                   DocType.PROTOCOL),
+        doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM, DocType.PROTOCOL),
     ),
     "errata": EntitySchema(
         kind=NodeKind.ERRATA,
@@ -304,8 +358,18 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "errata", "workaround", "affected", "severity", "silicon",
-            "勘误", "勘误表", "规避", "影响", "严重", "修订", "变通",
+            "errata",
+            "workaround",
+            "affected",
+            "severity",
+            "silicon",
+            "勘误",
+            "勘误表",
+            "规避",
+            "影响",
+            "严重",
+            "修订",
+            "变通",
         ],
         min_confidence=0.75,
         doc_types=(DocType.ERRATA,),
@@ -324,12 +388,17 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "signal", "direction", "width", "port",
-            "信号", "位宽", "端口", "方向",
+            "signal",
+            "direction",
+            "width",
+            "port",
+            "信号",
+            "位宽",
+            "端口",
+            "方向",
         ],
         min_confidence=0.8,
-        doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM,
-                   DocType.PROTOCOL),
+        doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM, DocType.PROTOCOL),
     ),
     "interface": EntitySchema(
         kind=NodeKind.INTERFACE,
@@ -344,13 +413,22 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "interface", "bus", "protocol", "master", "slave",
-            "width", "port",
-            "接口", "总线", "协议", "主", "从", "端口",
+            "interface",
+            "bus",
+            "protocol",
+            "master",
+            "slave",
+            "width",
+            "port",
+            "接口",
+            "总线",
+            "协议",
+            "主",
+            "从",
+            "端口",
         ],
         min_confidence=0.8,
-        doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM,
-                   DocType.PROTOCOL),
+        doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM, DocType.PROTOCOL),
     ),
     "timing": EntitySchema(
         kind=NodeKind.PARAMETER,
@@ -365,8 +443,20 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "min", "max", "typ", "unit", "symbol", "condition", "parameter",
-            "参数", "时序", "最小", "最大", "典型", "单位", "条件",
+            "min",
+            "max",
+            "typ",
+            "unit",
+            "symbol",
+            "condition",
+            "parameter",
+            "参数",
+            "时序",
+            "最小",
+            "最大",
+            "典型",
+            "单位",
+            "条件",
         ],
         doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.PROTOCOL),
     ),
@@ -383,14 +473,35 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "clock", "reset", "frequency", "period", "polarity",
-            "时钟", "复位", "频率", "周期", "极性",
+            "clock",
+            "reset",
+            "frequency",
+            "period",
+            "polarity",
+            "时钟",
+            "复位",
+            "频率",
+            "周期",
+            "极性",
         ],
         # 排除 SoC 拓扑 / 地址映射 / 封装条目，它们不是时钟复位实体
         negative_hints=(
-            "soc die", "chip ", "bar ", "iova", "address map", "address space",
-            "memory + io", "host ddr", "gpu", "smmu", "iommu", "reserved",
-            "拓扑", "地址映射", "地址空间", "封装",
+            "soc die",
+            "chip ",
+            "bar ",
+            "iova",
+            "address map",
+            "address space",
+            "memory + io",
+            "host ddr",
+            "gpu",
+            "smmu",
+            "iommu",
+            "reserved",
+            "拓扑",
+            "地址映射",
+            "地址空间",
+            "封装",
         ),
         min_confidence=0.8,
         doc_types=(DocType.DATASHEET, DocType.REFERENCE_MANUAL, DocType.TRM),
@@ -408,8 +519,14 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "requirement", "category", "feature", "id",
-            "需求", "功能", "条件", "要求",
+            "requirement",
+            "category",
+            "feature",
+            "id",
+            "需求",
+            "功能",
+            "条件",
+            "要求",
         ],
         min_confidence=0.7,
         doc_types=(DocType.REFERENCE_MANUAL, DocType.USER_GUIDE, DocType.APP_NOTE),
@@ -429,18 +546,66 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "constraint", "target", "object", "value", "unit", "condition",
-            "sdc", "sta", "setup", "hold", "uncertainty", "transition",
-            "fanout", "false path", "multicycle", "input delay", "output delay",
-            "corner", "pvt",
-            "约束", "目标", "对象", "取值", "单位", "条件", "时序",
-            "建立", "保持", "不确定度", "转换", "扇出", "假路径", "多周期",
+            "constraint",
+            "target",
+            "object",
+            "value",
+            "unit",
+            "condition",
+            "sdc",
+            "sta",
+            "setup",
+            "hold",
+            "uncertainty",
+            "transition",
+            "fanout",
+            "false path",
+            "multicycle",
+            "input delay",
+            "output delay",
+            "corner",
+            "pvt",
+            "约束",
+            "目标",
+            "对象",
+            "取值",
+            "单位",
+            "条件",
+            "时序",
+            "建立",
+            "保持",
+            "不确定度",
+            "转换",
+            "扇出",
+            "假路径",
+            "多周期",
         ],
         negative_hints=(
-            "register", "bit", "reset", "address", "pin no", "管脚编号", "寄存器",
-            "floorplan", "placement", "routing", "layer", "region", "macro",
-            "keepout", "blockage", "power grid", "布局", "摆放", "布线",
-            "层", "区域", "宏", "禁布", "阻塞", "电源网格",
+            "register",
+            "bit",
+            "reset",
+            "address",
+            "pin no",
+            "管脚编号",
+            "寄存器",
+            "floorplan",
+            "placement",
+            "routing",
+            "layer",
+            "region",
+            "macro",
+            "keepout",
+            "blockage",
+            "power grid",
+            "布局",
+            "摆放",
+            "布线",
+            "层",
+            "区域",
+            "宏",
+            "禁布",
+            "阻塞",
+            "电源网格",
         ),
         min_confidence=0.8,
         doc_types=None,
@@ -458,11 +623,39 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
             "{table_text}"
         ),
         table_header_hints=[
-            "floorplan", "placement", "route", "routing", "layer", "region",
-            "macro", "keepout", "blockage", "halo", "channel", "spacing",
-            "width", "density", "utilization", "power grid", "voltage area",
-            "物理", "布局", "布图", "摆放", "布线", "层", "区域", "宏",
-            "禁布", "阻塞", "间距", "线宽", "密度", "利用率", "电源网格", "电压区域",
+            "floorplan",
+            "placement",
+            "route",
+            "routing",
+            "layer",
+            "region",
+            "macro",
+            "keepout",
+            "blockage",
+            "halo",
+            "channel",
+            "spacing",
+            "width",
+            "density",
+            "utilization",
+            "power grid",
+            "voltage area",
+            "物理",
+            "布局",
+            "布图",
+            "摆放",
+            "布线",
+            "层",
+            "区域",
+            "宏",
+            "禁布",
+            "阻塞",
+            "间距",
+            "线宽",
+            "密度",
+            "利用率",
+            "电源网格",
+            "电压区域",
         ],
         negative_hints=("register", "bit", "reset", "irq", "interrupt", "寄存器", "中断"),
         min_confidence=0.8,
@@ -477,20 +670,46 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
 
 # UNKNOWN 文档保守启用核心强 schema 子集，避免 9 schema 全扫每份文档。
 _DEFAULT_SCHEMA_BY_DOCTYPE: dict[DocType, tuple[str, ...]] = {
-    DocType.DATASHEET: ("register", "pin", "memory_map", "interrupt",
-                        "signal", "interface", "timing"),
-    DocType.REFERENCE_MANUAL: ("register", "memory_map", "interrupt",
-                               "signal", "interface", "clock_reset", "requirement"),
-    DocType.TRM: ("register", "memory_map", "interrupt", "signal",
-                  "interface", "clock_reset"),
+    DocType.DATASHEET: (
+        "register",
+        "pin",
+        "memory_map",
+        "interrupt",
+        "signal",
+        "interface",
+        "timing",
+    ),
+    DocType.REFERENCE_MANUAL: (
+        "register",
+        "memory_map",
+        "interrupt",
+        "signal",
+        "interface",
+        "clock_reset",
+        "requirement",
+    ),
+    DocType.TRM: ("register", "memory_map", "interrupt", "signal", "interface", "clock_reset"),
     DocType.ERRATA: ("errata", "register"),
     DocType.APP_NOTE: ("register", "signal", "timing", "requirement"),
     DocType.USER_GUIDE: ("register", "requirement", "constraint", "physical_constraint"),
     DocType.PROTOCOL: (
-        "register", "pin", "signal", "interface", "timing",
-        "memory_map", "interrupt", "constraint",
+        "register",
+        "pin",
+        "signal",
+        "interface",
+        "timing",
+        "memory_map",
+        "interrupt",
+        "constraint",
     ),
-    DocType.UNKNOWN: ("register", "pin", "memory_map", "interrupt", "constraint", "physical_constraint"),
+    DocType.UNKNOWN: (
+        "register",
+        "pin",
+        "memory_map",
+        "interrupt",
+        "constraint",
+        "physical_constraint",
+    ),
 }
 
 # 全集（向后兼容：显式指定 schema_names 时仍可全扫）

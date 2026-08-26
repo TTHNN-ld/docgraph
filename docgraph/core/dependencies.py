@@ -1,8 +1,10 @@
-"""Runtime checks for optional parser dependencies.
+"""Runtime checks for built-in parser dependencies.
 
-Only project-owned, allow-listed extras may be installed. Parser names from user
-configuration are never converted into arbitrary package names.
+Core dependencies are reported as installation errors when absent. Only
+project-owned, allow-listed optional extras may be installed. Parser names from
+user configuration are never converted into arbitrary package names.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -52,11 +54,9 @@ PARSER_DEPENDENCIES: dict[str, ParserDependency] = {
         "http-client backends keep VLM inference on the configured model server.",
     ),
     "marker": ParserDependency("marker", "marker", "marker", "Marker"),
-    "docx": ParserDependency("docx", "docx", "documents", "python-docx"),
-    "xlsx": ParserDependency("xlsx", "openpyxl", "documents", "openpyxl"),
-    "markdown": ParserDependency(
-        "markdown", "markdown_it", "documents", "markdown-it-py"
-    ),
+    "docx": ParserDependency("docx", "docx", None, "python-docx"),
+    "xlsx": ParserDependency("xlsx", "openpyxl", None, "openpyxl"),
+    "markdown": ParserDependency("markdown", "markdown_it", None, "markdown-it-py"),
 }
 
 
@@ -70,7 +70,7 @@ def ensure_parser_dependency(
     *,
     confirm: Callable[[str], bool] | None = None,
 ) -> DependencyResult:
-    """Check and, when authorized, install an optional parser extra."""
+    """Check a parser dependency and install its optional extra when authorized."""
     dependency = parser_dependency(parser_name)
     if dependency is None:
         # Third-party parser plugins own their dependency lifecycle.
@@ -105,7 +105,13 @@ def ensure_parser_dependency(
             reason=f"{dependency.display_name} is not installed",
         )
 
-    command, target = _extra_install_command(dependency.extra)
+    try:
+        command, target = _extra_install_command(dependency.extra)
+    except RuntimeError as exc:
+        return DependencyResult(
+            available=False,
+            reason=str(exc),
+        )
     try:
         completed = subprocess.run(
             command,
@@ -115,7 +121,7 @@ def ensure_parser_dependency(
         return DependencyResult(
             available=False,
             attempted_install=True,
-            reason=f"could not start pip: {exc}",
+            reason=f"could not start uv: {exc}",
         )
     importlib.invalidate_caches()
     installed = completed.returncode == 0 and _module_available(dependency.module)
@@ -123,7 +129,7 @@ def ensure_parser_dependency(
         available=installed,
         attempted_install=True,
         installed=installed,
-        reason=None if installed else f"pip could not install {target}",
+        reason=None if installed else f"uv could not install {target}",
     )
 
 
@@ -148,7 +154,18 @@ def _install_prompt(dependency: ParserDependency) -> str:
 def _extra_install_command(extra: str) -> tuple[list[str], str]:
     source_root = Path(__file__).resolve().parents[2]
     if (source_root / "pyproject.toml").is_file():
-        target = f"{source_root}[{extra}]"
-        return [sys.executable, "-m", "pip", "install", "-e", target], target
-    target = f"docgraph-core[{extra}]"
-    return [sys.executable, "-m", "pip", "install", target], target
+        target = f"extra '{extra}' in {source_root}"
+        return [
+            "uv",
+            "sync",
+            "--locked",
+            "--inexact",
+            "--project",
+            str(source_root),
+            "--extra",
+            extra,
+        ], target
+    raise RuntimeError(
+        "automatic extra installation is only available from a uv-managed source checkout; "
+        f"reinstall the tool with: uv tool install 'docgraph-core[{extra}]' --force"
+    )

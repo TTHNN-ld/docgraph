@@ -3,6 +3,7 @@
 M4 简化实现：用 rich.prompt 做选择式审核。
 审核结果写到 `.docgraph/entities/reviewed.jsonl`，下次 build 自动保留。
 """
+
 from __future__ import annotations
 
 import json
@@ -21,14 +22,17 @@ console = Console()
 
 @dataclass
 class ReviewItem:
-    kind: str           # "node" | "edge"
-    target: dict        # 完整 dump
+    kind: str  # "node" | "edge"
+    target: dict  # 完整 dump
     confidence: float
     reason: str = ""
 
 
 def gather_low_confidence(
-    store: SQLiteGraphStore, *, min_confidence: float = 0.85, limit: int = 50,
+    store: SQLiteGraphStore,
+    *,
+    min_confidence: float = 0.85,
+    limit: int = 50,
 ) -> list[ReviewItem]:
     """边的 confidence 显式存了；节点没有，所以只过边。"""
     conn = store._connect()  # type: ignore[attr-defined]
@@ -44,15 +48,19 @@ def gather_low_confidence(
     ).fetchall()
     out: list[ReviewItem] = []
     for r in rows:
-        out.append(ReviewItem(
-            kind="edge",
-            target={
-                "src": r["src"], "dst": r["dst"], "kind": r["kind"],
-                "confidence": r["confidence"],
-                "evidence": json.loads(r["evidence"]) if r["evidence"] else {},
-            },
-            confidence=r["confidence"] or 0.0,
-        ))
+        out.append(
+            ReviewItem(
+                kind="edge",
+                target={
+                    "src": r["src"],
+                    "dst": r["dst"],
+                    "kind": r["kind"],
+                    "confidence": r["confidence"],
+                    "evidence": json.loads(r["evidence"]) if r["evidence"] else {},
+                },
+                confidence=r["confidence"] or 0.0,
+            )
+        )
     return out
 
 
@@ -68,7 +76,10 @@ def append_review(root: Path, item: dict) -> None:
 
 
 def run_review_tui(
-    root: Path, store: SQLiteGraphStore, *, min_confidence: float = 0.85,
+    root: Path,
+    store: SQLiteGraphStore,
+    *,
+    min_confidence: float = 0.85,
 ) -> dict:
     items = gather_low_confidence(store, min_confidence=min_confidence, limit=200)
     if not items:
@@ -86,16 +97,21 @@ def run_review_tui(
         console.print(tbl)
         choice = Prompt.ask(
             "[a]ccept / [r]eject / [s]kip / [q]uit",
-            choices=["a", "r", "s", "q"], default="s",
+            choices=["a", "r", "s", "q"],
+            default="s",
         )
         if choice == "q":
             break
         if choice == "a":
             stats["accepted"] += 1
-            append_review(root, {
-                "decision": "accept", "item": it.target,
-                "confidence": it.confidence,
-            })
+            append_review(
+                root,
+                {
+                    "decision": "accept",
+                    "item": it.target,
+                    "confidence": it.confidence,
+                },
+            )
         elif choice == "r":
             stats["rejected"] += 1
             # 同时从图中删除这条边
@@ -108,10 +124,14 @@ def run_review_tui(
                 conn.commit()
             except Exception as e:
                 console.print(f"[red]Delete failed:[/red] {e}")
-            append_review(root, {
-                "decision": "reject", "item": it.target,
-                "confidence": it.confidence,
-            })
+            append_review(
+                root,
+                {
+                    "decision": "reject",
+                    "item": it.target,
+                    "confidence": it.confidence,
+                },
+            )
         else:
             stats["skipped"] += 1
     stats["reviewed"] = stats["accepted"] + stats["rejected"]

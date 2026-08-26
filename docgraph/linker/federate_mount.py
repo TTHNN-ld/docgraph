@@ -6,6 +6,7 @@
 - 查询时由 FederatedGraphStore 跨多 db 合并结果（只读）
 - 写入操作只影响当前项目的 graph.db；远端是只读
 """
+
 from __future__ import annotations
 
 import json
@@ -22,7 +23,7 @@ log = get_logger(__name__)
 @dataclass
 class FederationEntry:
     name: str
-    path: str            # 绝对路径，指向另一个项目根（含 .docgraph/）
+    path: str  # 绝对路径，指向另一个项目根（含 .docgraph/）
     family: str = "unknown"
     added_at: str = ""
 
@@ -41,9 +42,7 @@ def load_federations(root: Path) -> FederationManifest:
     if not p.is_file():
         return FederationManifest()
     data = json.loads(p.read_text("utf-8"))
-    return FederationManifest(
-        entries=[FederationEntry(**e) for e in data.get("entries", [])]
-    )
+    return FederationManifest(entries=[FederationEntry(**e) for e in data.get("entries", [])])
 
 
 def save_federations(root: Path, manifest: FederationManifest) -> None:
@@ -73,12 +72,12 @@ def add_federation(
     target = target_path.resolve()
     if not (target / ".docgraph" / "graph.db").is_file():
         raise RuntimeError(
-            f"Target {target} does not contain .docgraph/graph.db; "
-            f"is it a docgraph project?"
+            f"Target {target} does not contain .docgraph/graph.db; is it a docgraph project?"
         )
 
     # 读 target 的 config 拿 family
     from docgraph.core.config import load_config
+
     family = "unknown"
     try:
         cfg = load_config(target)

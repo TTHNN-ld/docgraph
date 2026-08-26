@@ -1,4 +1,5 @@
 """Build pipeline for L0/L1 construction and optional L2 enrichment."""
+
 from __future__ import annotations
 
 import os
@@ -6,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 from docgraph.core.config import DocGraphConfig
 from docgraph.core.dependencies import (
@@ -16,7 +17,7 @@ from docgraph.core.dependencies import (
     parser_dependency,
 )
 from docgraph.core.dotenv import autoload_env
-from docgraph.core.ids import file_hash, infer_chip_model, make_doc_id
+from docgraph.core.ids import file_hash, infer_chip_model, make_doc_id, source_path_token
 from docgraph.core.logger import get_logger
 from docgraph.core.manifest import FileRecord, Manifest, StageRecord, save_manifest
 from docgraph.embeddings.factory import build_encoder
@@ -97,7 +98,10 @@ def _infer_doc_metadata(path: Path, cfg: DocGraphConfig, root: Path) -> DocMetad
         doc_type = DocType.USER_GUIDE
     elif "app" in name_lower and "note" in name_lower:
         doc_type = DocType.APP_NOTE
-    elif any(token in name_lower for token in ("protocol", "subsystem spec", "interface spec", " spec", "_spec", "-spec")):
+    elif any(
+        token in name_lower
+        for token in ("protocol", "subsystem spec", "interface spec", " spec", "_spec", "-spec")
+    ):
         doc_type = DocType.PROTOCOL
     else:
         doc_type = DocType.UNKNOWN
@@ -124,6 +128,7 @@ def _build_llm_client(root: Path, cfg: DocGraphConfig, cache_dir: Path) -> LLMCl
     if provider_cfg is None:
         # 允许 fallback：用一份默认 provider 配置
         from docgraph.core.config import LLMProviderConfig
+
         if provider_name in ("openai_compat", "openai", "volces", "deepseek"):
             provider_cfg = LLMProviderConfig(
                 api_key_env="OPENAI_API_KEY",
@@ -173,7 +178,9 @@ def _build_llm_client(root: Path, cfg: DocGraphConfig, cache_dir: Path) -> LLMCl
     )
 
 
-def _build_vlm_client(root: Path, cfg: DocGraphConfig, cache_dir: Path, tracker: CostTracker | None = None) -> Any | None:
+def _build_vlm_client(
+    root: Path, cfg: DocGraphConfig, cache_dir: Path, tracker: CostTracker | None = None
+) -> Any | None:
     """构造 VLM 客户端。
 
     优先级：
@@ -299,7 +306,13 @@ def build(
         rec = manifest.files.get(rel) or FileRecord(path=rel)
         h = file_hash(path)
 
-        if not force and rec.hash == h and rec.status in ("extracted", "linked", "embedded"):
+        current_id_format = bool(rec.doc_id and rec.doc_id.endswith(f"::{source_path_token(rel)}"))
+        if (
+            not force
+            and current_id_format
+            and rec.hash == h
+            and rec.status in ("extracted", "linked", "embedded")
+        ):
             log.info(f"[cyan]skip[/cyan]    {rel}")
             report.skipped += 1
             if rec.doc_id:
@@ -351,16 +364,20 @@ def build(
             report.blocks_total += sum(len(p.blocks) for p in parsed.pages)
             report.chunks_total += n_chunks
             report.llm_calls += extract_res.stats.llm_calls
-            report.per_file.append({
-                "path": rel,
-                "status": "extracted",
-                "parser": parsed.parser,
-                "quality_status": rec.quality_status,
-                "fallback_reason": rec.fallback_reason,
-                "nodes": len(extract_res.nodes),
-                "edges": len(extract_res.edges),
-            })
-            log.info(f"[green]ok[/green]      {rel}  ({len(extract_res.nodes)} nodes / {len(extract_res.edges)} edges)")
+            report.per_file.append(
+                {
+                    "path": rel,
+                    "status": "extracted",
+                    "parser": parsed.parser,
+                    "quality_status": rec.quality_status,
+                    "fallback_reason": rec.fallback_reason,
+                    "nodes": len(extract_res.nodes),
+                    "edges": len(extract_res.edges),
+                }
+            )
+            log.info(
+                f"[green]ok[/green]      {rel}  ({len(extract_res.nodes)} nodes / {len(extract_res.edges)} edges)"
+            )
         except Exception as e:
             rec.status = "error"
             rec.error = str(e)
@@ -388,7 +405,15 @@ def build(
     if cfg.extractors.enabled and report.nodes_total > 0:
         try:
             link_rep = run_linker(root, cfg, store, manifest, llm_client=llm_client)
-            report.linker_edges += link_rep.belongs_to_edges + link_rep.contained_in_edges + link_rep.llm_ie_edges + link_rep.xref_edges + link_rep.alias_edges + link_rep.supersedes_edges + link_rep.fed_alias_edges
+            report.linker_edges += (
+                link_rep.belongs_to_edges
+                + link_rep.contained_in_edges
+                + link_rep.llm_ie_edges
+                + link_rep.xref_edges
+                + link_rep.alias_edges
+                + link_rep.supersedes_edges
+                + link_rep.fed_alias_edges
+            )
         except Exception as e:
             log.warning(f"[link] linker failed: {e}")
 
@@ -439,7 +464,9 @@ def build(
     return report
 
 
-def _embedding_missing_for_config(store: SQLiteGraphStore, vstore: Any, cfg: DocGraphConfig) -> bool:
+def _embedding_missing_for_config(
+    store: SQLiteGraphStore, vstore: Any, cfg: DocGraphConfig
+) -> bool:
     """Return true when the current embedding model has no vectors yet.
 
     This keeps an all-skipped build fast while still rebuilding vectors when a
@@ -509,7 +536,7 @@ def _stage_parse_with_quality(
         pcfg = cfg.parsers.pdf
     elif ext == ".docx":
         pcfg = cfg.parsers.docx
-    elif ext == ".xlsx":
+    elif ext in {".xlsx", ".xlsm"}:
         pcfg = cfg.parsers.xlsx
     elif ext in {".md", ".markdown"}:
         pcfg = cfg.parsers.md
@@ -531,13 +558,13 @@ def _stage_parse_with_quality(
     if ext == ".pdf" and failure_policy == "fallback" and "pymupdf" not in parser_names:
         parser_names.append("pymupdf")
     metadata = _infer_doc_metadata(path, cfg, root)
+    source_rel = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
     doc_id = make_doc_id(
         cfg.project.family,
         metadata.type.value if metadata.type != DocType.UNKNOWN else "doc",
         metadata.version,
+        source_path=source_rel,
     )
-    if not metadata.version:
-        doc_id = f"{doc_id}::{path.stem}"
 
     cache_dir = root / ".docgraph" / "cache" / rec.hash.split(":")[-1][:16] if rec.hash else None
     if cache_dir:
@@ -577,12 +604,51 @@ def _stage_parse_with_quality(
     rec.fallback_reason = _fallback_reason(attempts) if parsed.parser != primary else None
     if rec.fallback_reason:
         log.warning(
-            f"[parse] {path.name} degraded from {primary} to {parsed.parser}: "
-            f"{rec.fallback_reason}"
+            f"[parse] {path.name} degraded from {primary} to {parsed.parser}: {rec.fallback_reason}"
         )
     rec.stage_log["parse"] = StageRecord(duration_s=round(time.time() - t0, 3), ok=True)
     rec.status = "parsed"
     return parsed
+
+
+@overload
+def _parse_with_fallback(
+    path: Path,
+    *,
+    doc_id: str,
+    cache_dir: Path | None,
+    metadata: DocMetadata,
+    quality: str,
+    device: str,
+    ocr_device: str | None,
+    pdf_profile: Any | None,
+    parser_names: list[str],
+    mineru_options: dict[str, Any] | None = None,
+    dependency_policy: DependencyPolicy = "fallback",
+    parser_failure_policy: str = "fallback",
+    dependency_cache: dict[str, DependencyResult] | None = None,
+    return_attempts: Literal[True],
+) -> tuple[ParsedDoc, list[dict[str, Any]]]: ...
+
+
+@overload
+def _parse_with_fallback(
+    path: Path,
+    *,
+    doc_id: str,
+    cache_dir: Path | None,
+    metadata: DocMetadata,
+    quality: str,
+    device: str,
+    ocr_device: str | None,
+    pdf_profile: Any | None,
+    parser_names: list[str],
+    mineru_options: dict[str, Any] | None = None,
+    dependency_policy: DependencyPolicy = "fallback",
+    parser_failure_policy: str = "fallback",
+    dependency_cache: dict[str, DependencyResult] | None = None,
+    return_attempts: Literal[False] = False,
+) -> ParsedDoc: ...
 
 
 def _parse_with_fallback(
@@ -788,9 +854,7 @@ def _stage_extract(
     return merged
 
 
-def _stage_store_blocks(
-    parsed: ParsedDoc, store: SQLiteGraphStore, rec: FileRecord
-) -> None:
+def _stage_store_blocks(parsed: ParsedDoc, store: SQLiteGraphStore, rec: FileRecord) -> None:
     """L0：先清旧 doc，再把所有 Block 落库。"""
     t0 = time.time()
     if rec.doc_id and rec.doc_id != parsed.doc_id:
@@ -799,13 +863,13 @@ def _stage_store_blocks(
     all_blocks = [b for p in parsed.pages for b in p.blocks]
     store.upsert_blocks(all_blocks)
     rec.stage_log["store_blocks"] = StageRecord(
-        duration_s=round(time.time() - t0, 3), ok=True, nodes=len(all_blocks),
+        duration_s=round(time.time() - t0, 3),
+        ok=True,
+        nodes=len(all_blocks),
     )
 
 
-def _stage_store_chunks(
-    parsed: ParsedDoc, store: SQLiteGraphStore, rec: FileRecord
-) -> int:
+def _stage_store_chunks(parsed: ParsedDoc, store: SQLiteGraphStore, rec: FileRecord) -> int:
     """L1：把 Block 切成 chunk 并落库（含 FTS 全文索引）。返回 chunk 数。"""
     from docgraph.chunker import chunk_doc
 
@@ -813,14 +877,14 @@ def _stage_store_chunks(
     chunks = chunk_doc(parsed)
     store.upsert_chunks(chunks)
     rec.stage_log["store_chunks"] = StageRecord(
-        duration_s=round(time.time() - t0, 3), ok=True, nodes=len(chunks),
+        duration_s=round(time.time() - t0, 3),
+        ok=True,
+        nodes=len(chunks),
     )
     return len(chunks)
 
 
-def _stage_store(
-    result: ExtractResult, store: SQLiteGraphStore, rec: FileRecord
-) -> None:
+def _stage_store(result: ExtractResult, store: SQLiteGraphStore, rec: FileRecord) -> None:
     t0 = time.time()
     # 注意：doc 已在 _stage_store_blocks 阶段清理，这里不再 delete_doc
     for node in result.nodes:

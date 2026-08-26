@@ -18,6 +18,7 @@
 - /node/<id>     单节点详情（含邻居）
 - /api/...       JSON API（HTMX 与 d3.js 取数）
 """
+
 from docgraph.web.server import create_app, run
 
 __all__ = ["create_app", "run"]
