@@ -10,6 +10,47 @@
 - **影响范围**：涉及的代码、配置、文档或使用方式
 - **状态**：Accepted / Implemented / Superseded
 
+## 2026-08-26：统一使用 uv 管理 Python 环境
+
+- **需求**：项目依赖、开发环境和 CI 统一由 uv 管理，不再保留其他 Python 包安装路径。
+- **决策**：
+  - 提交 `uv.lock` 和 `.python-version`，锁定完整依赖图并以 Python 3.11 作为默认开发版本。
+  - 核心环境、可选能力和开发工具分别通过 `uv sync`、`--extra` 和 `--group dev` 同步；`default-groups = []` 保持默认环境轻量。
+  - CI 使用固定版本的 uv，先执行 locked sync，再通过普通 `uv run` 运行命令。
+  - 运行时的白名单可选依赖安装在源码检出中调用 `uv sync --locked --inexact --extra`，保留已有环境；已安装工具提示用户用 `uv tool install --force` 重建环境。
+  - MinerU 与 Marker 的 Pillow 约束互斥，作为 uv extra conflict 显式建模，不再提供不可解析的聚合 extra。
+- **影响范围**：项目元数据、锁文件、CI、运行时依赖处理、CLI 提示、README、贡献指南和专题文档。
+- **状态**：Implemented。
+
+## 2026-08-26：文档信息架构与事实收口
+
+- **需求**：README 和专题文档需要反映真实实现，删除阶段编号、不可复现数字、失效命令和重复介绍，并让不同文档各自承担清晰职责。
+- **决策**：
+  - README 只保留定位、安装、快速开始、核心边界和文档入口。
+  - `docs/` 按 architecture、guides、development、reference、project、decisions、research 分类，不再把专题平铺在根目录。
+  - 数据模型并入分层契约，增量并入导入链路，Linker 并入知识图谱；重复 Cookbook 只保留独有的 MCP、Web 和导出操作。
+  - DESIGN 管理设计权威关系；`docs/README.md` 按读者任务导航。
+  - Roadmap 只记录当前基线、已知缺口和下一步；稳定设计、历史决策和研究快照分开保存。
+  - 精确 CLI、配置字段和数据库结构分别以 `--help`、Pydantic config model 和 migrations/store 源码为准，专题文档不复制易漂移实现。
+  - 调研与评测明确标为时间点材料，不再把缺少数据集/版本信息的数字放进 README。
+- **影响范围**：README、DESIGN、AGENTS、文档目录、架构、指南、插件、Roadmap、RFC 和研究评测材料。
+- **状态**：Implemented。
+
+## 2026-08-26：默认支持常用文档格式
+
+- **需求**：默认安装不应只发现 PDF；DOCX、XLSX/XLSM 和 Markdown 也应开箱可用，无需额外配置文档范围或安装轻量 parser extra。
+- **决策**：
+  - 核心安装包含 PyMuPDF、python-docx、openpyxl 和 markdown-it-py。
+  - 默认扫描 `docs/` 与 `spec/` 下的 PDF、DOCX、XLSX/XLSM、MD/Markdown。
+  - document ID 纳入项目相对源路径，避免同名 `.xlsx`/`.xlsm`
+    或不同目录的文档相互覆盖。
+  - 首次使用新 ID 规则构建时，即使文件 hash 未变也会自动重建旧记录。
+  - `docgraph admin watch` 与一次性构建复用同一份文档发现规则，并在删除文件时执行完整增量对账。
+  - Docling、MinerU、Marker 等重型 PDF 后端继续按需安装；它们增强 PDF 解析质量，不决定格式是否受支持。
+  - 各格式统一归一化为 `ParsedDoc + L0 Blocks`，后续继续使用相同的 L1/L2 流程。
+- **影响范围**：核心依赖、配置默认值、document ID、Parser 选择、watch、setup 检查、测试和使用文档。
+- **状态**：Implemented。
+
 ## 2026-08-21：MinerU 远程 VLM 推理服务
 
 - **需求**：MinerU 的视觉模型应能像 vLLM/SGLang 服务一样独立部署，避免 DocGraph 构建机器承担 VLM 权重和 GPU 推理。
@@ -45,10 +86,10 @@
   - 用户级配置放在 `~/.docgraph/config.yaml`。
   - 用户级环境变量放在 `~/.docgraph/.env.local` 与 `~/.docgraph/.env`。
   - 项目级 `docgraph.yaml` 变为可选覆盖文件，只在需要设置 family、文档范围、parser/extractor 策略时使用。
-  - 项目 `.docgraph/` 是纯生成目录，保存 `graph.db`、缓存、manifest、日志和导出结果。
+  - 项目 `.docgraph/` 是纯生成目录，保存 `graph.db`、缓存、manifest、向量和审计产物。
   - `docgraph init` 默认不生成项目配置文件；传入 `--name` 或 `--family` 时生成最小 `docgraph.yaml`。
 - **影响范围**：CLI init、配置加载、dotenv 自动加载、README、configuration、architecture、layered architecture。
-- **状态**：Implemented
+- **状态**：Implemented。
 
 ## 2026-07-02：模型密钥集成到用户配置
 
@@ -59,7 +100,7 @@
   - `llm.vlm` 支持独立配置 `provider` / `model` / `api_key` / `base_url`，允许文本 LLM 与 VLM 使用不同服务。
   - `.env` 和环境变量保留为兼容、CI 和临时覆盖路径，但不再是推荐主路径。
 - **影响范围**：配置模型、LLM provider、VLM provider、embedding provider、configuration、cookbook、operations。
-- **状态**：Implemented
+- **状态**：Implemented。
 
 ## 2026-07-02：默认开箱体验收敛
 
@@ -70,7 +111,7 @@
   - MinerU 作为复杂芯片 PDF 的高保真推荐后端，通过可选 `docgraph.yaml` 显式开启，并建议配置 PyMuPDF fallback。
   - 日常命令保持少量核心入口：`docgraph init`、`docgraph build`、`docgraph doctor`、`docgraph serve` 和检索/查询类命令。
 - **影响范围**：配置默认值、Parser 文档、README、roadmap。
-- **状态**：Implemented
+- **状态**：Superseded by 2026-08-26 默认多格式支持；“零配置运行”原则继续有效。
 
 ## 2026-07-02：L2 生产质量要求
 
@@ -88,11 +129,11 @@
 
 - **需求**：删除中间态和阶段性说明，文档只反映当前最新设计；后续需求变化集中记录。
 - **决策**：
-  - 顶层设计入口保留 `DESIGN.md`、`docs/layered-architecture.md` 和主题文档。
-  - `docs/roadmap.md` 改为当前产品基线、近期工程重点和稳定 ADR。
+  - 当时的顶层设计入口保留 `DESIGN.md`、分层架构和主题文档。
+  - Roadmap 只记录当前产品基线、近期工程重点和稳定 ADR。
   - 需求变化统一写入本文件，避免把临时讨论边界写进正式设计文档。
 - **影响范围**：README、DESIGN、roadmap、layered architecture、configuration、parsers、operations。
-- **状态**：Implemented
+- **状态**：Superseded by 2026-08-26 文档信息架构；需求变更记录原则继续有效。
 
 ## 2026-07-02：L2 质量诊断与接口实体语义收紧
 

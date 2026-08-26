@@ -1,5 +1,7 @@
 # PCIe Case Agent Benchmark
 
+> 本文是评测协议和任务集，不是当前产品成绩单。结果只有在记录数据集版本、DocGraph commit、配置、模型和运行日期后才可解释。仓库不包含所列私有 spec 或历史运行产物。
+
 > 用于评估 Agent 在接入 DocGraph 前后的效果差异。输入文档限定为：
 >
 > - `spec/PCIE Subsystem Spec_v3.21.pdf`
@@ -15,22 +17,9 @@
 - 是否能给出页码、章节、图号、需求编号、寄存器/bitfield 证据。
 - 是否减少全文阅读、减少漏答和幻觉。
 
-## 前置检查：实体覆盖
+## 前置检查
 
-DocsGraph 模式下，Agent 的 KG 查询精度取决于实体是否已被 L2 抽取覆盖。执行每个 case 的 Baseline/DocGraph 跑分之前，**应先检查 DocGraph 中目标实体是否已入库**：
-
-| Case | 期望实体类型 | 覆盖率 | 缺失示例 | 影响 |
-|---|---|---|---|---|
-| 2 clock | clock | ~14% | core_clk, mstr_aclk, slv_aclk, cfg_clk | 时钟接口清单不准 |
-| 2 module | module | ~70% | PCIe_top, Irq_aggregator | 模块边界清单不完整 |
-| 8A signal | signal/interrupt_source | ~60% | 部分 irq_src 信号未入库 | 中断源信号清单不完整 |
-| 8B bitfield | bitfield | ~70% | vf, vfactive | RAL 字段不完整 |
-| 9 INT_NUM | bitfield | ~67% | vf, vfactive | RAL 字段不完整 |
-| 11 clock | clock | ~25% | clk_ref_in, axi_clk, core_clk | STA/SDC 时钟源不完整 |
-
-**规则**：若某个 case 依赖的实体类型覆盖率 < 50%，应先修复 KG 构建（调整解析/VLM prompt/alias），再跑 benchmark。否则测的是"KG 没抽到"而非"Agent 用 KG 好不好"。
-
-> 每次 `docgraph build` 之后、跑分之前，执行 `python check_coverage.py`（或等效 SQL）输出当前各实体类型的数量和覆盖率，记录在 run log 的 `notes` 字段中。
+每次运行前保存 `docgraph doctor --strict --json` 和 `docgraph l2 audit --strict --json` 输出，并记录各 case 依赖实体的已物化数量与缺失样例。不要复用历史覆盖率；如果关键实体未入库，应同时记录 Agent 是否能从 L1/L0 找回证据，以区分“L2 覆盖不足”和“Agent 不会使用分层取证”。
 
 ## 生产角色与交付物
 
@@ -58,11 +47,11 @@ DocGraph 的离线构建成本不计入单题 Agent 运行成本；若评估"首
 
 | 构建指标 | 说明 |
 |---|---|
-| `docgraph_build_s` | 三份 case 文档的一次 DocGraph 全量构建耗时（含 LLM/VLM） |
+| `docgraph_build_s` | 两份 case 文档的一次 DocGraph 全量构建耗时（含 LLM/VLM） |
 | `docgraph_build_llm_calls` | 构建过程 LLM 调用次数 |
 | `docgraph_build_input_tokens` | 构建过程 LLM/VLM 输入 token |
 | `docgraph_build_output_tokens` | 构建过程 LLM/VLM 输出 token |
-| `amortized_build_s` | `docgraph_build_s / 16`（摊到 16 个 case 的单题均摊耗时） |
+| `amortized_build_s` | `docgraph_build_s / 18`（摊到 18 个独立任务的单题均摊耗时） |
 
 建议记录：
 

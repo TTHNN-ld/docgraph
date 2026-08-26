@@ -1,15 +1,15 @@
-# AGENTS.md
+# DocGraph 仓库约定
 
-本文件约定在 DocGraph 仓库中修改代码时需要遵守的边界。它只保留长期有效的工程规则；当前进度和短期任务以 [roadmap](./docs/roadmap.md) 为准。
+本文件约定在 DocGraph 仓库中修改代码时需要遵守的边界。它只保留长期有效的工程规则；当前进度和短期任务以 [Roadmap](./docs/project/roadmap.md) 为准。
 
 ## 改代码前
 
 先阅读与改动相关的设计文档：
 
-1. [分层架构](./docs/layered-architecture.md)：Parser、Block、Chunk、Extractor、Store 和查询链路的数据契约。
+1. [分层数据契约](./docs/architecture/data-layers.md)：Parser、Block、Chunk、Extractor、Store 和查询链路的数据契约。
 2. [DESIGN.md](./DESIGN.md)：设计文档索引。
 3. [docs/](./docs/)：各模块的专项设计。
-4. [roadmap](./docs/roadmap.md) 与 [RFC](./docs/rfcs/)：当前重点和已确认的设计决策。
+4. [Roadmap](./docs/project/roadmap.md) 与 [RFC](./docs/decisions/)：当前重点和已确认的设计决策。
 
 如果实现与设计冲突，不要直接改文档来迁就现有代码。属于实现偏差的，修正代码；确实需要改变架构的，先提交 RFC 并更新设计，再实现。
 
@@ -44,11 +44,13 @@
 提交前至少运行：
 
 ```bash
-.venv/bin/python -m pytest tests/ -q
-.venv/bin/ruff check docgraph/
+uv run pytest tests/ -q
+uv run ruff check docgraph/
+uv run ruff format --check docgraph/
+uv run mypy docgraph/
 git diff --check
 ```
 
-改动 Parser、Chunk、Extractor、Store 或构建流程时，再用代表性文档跑一次 `docgraph build`，并执行 `docgraph doctor --strict`。
+改动 Parser、Chunk、Extractor、Store 或构建流程时，再用代表性文档运行 `uv run docgraph build`，并执行 `uv run docgraph doctor --strict`。
 
 提交或 PR 说明应包含：改动原因、验证结果，以及涉及架构时所遵循或修订的设计条款。

@@ -1,86 +1,82 @@
 # Contributing to DocGraph
 
-DocGraph 计划走开源 Apache 2.0。欢迎任何形式的贡献。
+DocGraph 使用 Apache 2.0 许可证。提交贡献即表示同意以该许可证发布相关改动。
 
-## 设计文档是唯一权威（必读）
-
-- **唯一权威设计**：[DESIGN.md](./DESIGN.md) + [docs/](./docs/)，其中数据架构以 [docs/layered-architecture.md](./docs/layered-architecture.md)（L0/L1/L2）为最高权威。
-- **代码必须紧跟设计文档**。实现与文档冲突时：**改代码，不改文档**——除非先走 [RFC 流程](./docs/rfcs/) 修订文档。
-- 重大架构变更：先改文档（RFC）→ 评审通过 → 再写代码。
-- 每个 PR 描述需注明：遵循/修订了哪条设计条款。
-- Review 时必须检查分层契约（见 layered-architecture.md §2）：
-  - Parser 是否把表格**无损**入库（不允许丢成 `[]`）
-  - L2 抽取失败是否影响了 L0/L1（不允许）
-  - L2 节点是否带 `source_block_ids`（必须）
-
-## 行为准则
-
-本项目遵循 [Contributor Covenant](https://www.contributor-covenant.org/) 行为准则。简而言之：保持友善、专业、尊重他人。
-
-## 怎么开始
+## 开发环境
 
 ```bash
-git clone https://github.com/<org>/docgraph.git
+git clone https://github.com/TTHNN-ld/docgraph.git
 cd docgraph
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-pytest -v
+uv sync --group dev
 ```
 
-## 工作流程
+该命令包含核心依赖、pytest/ruff/mypy 等开发工具，以及 Web 测试依赖；不包含 Docling、MinerU、Marker、LLM 等其他可选能力。需要联合测试时追加相应的 `--extra`。
 
-1. **Issue 优先**：除非是 typo 或 1-2 行的小修，请先开 issue 讨论
-2. **Fork + branch**：`feature/foo` 或 `fix/bar` 命名
-3. **小步提交**：Conventional Commits（`feat: ...`、`fix: ...`、`docs: ...`）
-4. **写测试**：新增/修改代码必须配套测试；CI 会跑 pytest + ruff + mypy
-5. **更新文档**：API 变更同步更新 `docs/`
-6. **提 PR**：模板会引导你填关键信息
+支持 Python 3.11+。跨模块模型使用 Pydantic v2；CLI 使用 Typer；默认图存储和全文索引使用 SQLite。
 
-## 代码风格
+## 修改前
 
-- Python 3.11+
-- Pydantic v2 for all cross-module data
-- `ruff` 配置见 `pyproject.toml`
-- `mypy` 暂为 advisory（M4 转为 strict）
-- 错误用 `docgraph.errors.*`（M4 引入）
-- 日志走 `docgraph.core.logger.get_logger`
+1. 阅读 [设计入口](./DESIGN.md)和与改动相关的专题文档。
+2. Parser、Block、Chunk、Extractor、Store 或查询链路改动必须符合[分层数据契约](./docs/architecture/data-layers.md)。
+3. 重大 API、schema 或跨模块架构变更先从 [RFC 模板](./docs/decisions/0000-template.md)起草方案。
+4. 保留工作区中与当前任务无关的改动，不提交 `.env`、密钥、本地数据库、模型或 `.docgraph/` 生成物。
 
-## 提交新 Parser / Extractor / Embedding
+实现与文档不一致时，先判断是实现偏差还是设计变化。实现偏差修代码；确需改变架构时先更新 RFC 和稳定设计，再实现。
 
-1. 实现接口（详见对应 `base.py`）
-2. 在 `pyproject.toml` 加 entry_point：
-   ```toml
-   [project.entry-points."docgraph.extractors"]
-   my_ext = "my_pkg.module:MyExtractor"
-   ```
-3. 放一份 minimal test + 一份 golden 样本（`tests/golden/`）
-4. 更新 `docs/extractors.md` 或 `docs/plugins.md`
+## 分层约束
 
-## 重大变更：走 RFC
+- L0 保留可重建原文语义的证据；表格不能静默退化为空结构。
+- L1 chunk 必须有稳定 ID，并通过 `block_ids` 回到 L0。
+- L2 是可选增强，失败不能阻断 L0/L1。
+- L2 节点必须有 `source_block_ids`、`source_chunk_ids` 和非空 evidence。
+- 单文档替换必须原子；完整构建必须清理已删除来源。
+- migration 失败必须中止并保留可恢复状态。
 
-涉及破坏性 API / schema / 跨模块设计的变更需先写 RFC：
+## 测试
 
-```
-docs/rfcs/
-├── 0000-template.md
-├── 0001-federation-namespace.md   # 已落地
-└── XXXX-your-proposal.md
+提交前至少运行：
+
+```bash
+uv run pytest tests/ -q
+uv run ruff check docgraph/
+uv run mypy docgraph/
+git diff --check
 ```
 
-RFC 至少应包含：动机、设计、备选方案、迁移路径、未决问题。
+修改 Parser、Chunk、Extractor、Store 或构建流程时，还要：
 
-## 测试要求
+```bash
+uv run docgraph build
+uv run docgraph doctor --strict
+```
 
-| 类型 | 工具 | 阈值 |
-|---|---|---|
-| 单元测试 | pytest | core 模块 ≥80% 覆盖（M4 开始强制） |
-| 集成测试 | pytest + 真实 PDF | 接 RISC-V / 其它开源 spec |
-| Golden 评估 | `docgraph eval` | precision/recall ≥85%（M4） |
-| Property test | hypothesis | schema 健壮性 |
-| Type check | mypy --strict | M4 起强制 |
+测试应覆盖正常路径、同类异常、恢复路径和真实执行顺序。修 bug 时补充能复现根因的测试，不通过降低数据完整性或吞异常来换取绿灯。
 
-CI 跑 ubuntu + macos × Python 3.11/3.12/3.13。
+仓库 CI 当前覆盖 Ubuntu/macOS 与 Python 3.11–3.13，运行 pytest、Ruff、mypy 和 CLI smoke；实际定义以 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) 为准。
 
-## License
+## 扩展 Parser 或 Extractor
 
-提交即同意你的贡献以 Apache 2.0 许可。
+优先使用现有接口和 Python entry points：
+
+```toml
+[project.entry-points."docgraph.parsers"]
+my_parser = "my_package.parser:MyParser"
+
+[project.entry-points."docgraph.extractors"]
+my_extractor = "my_package.extractor:MyExtractor"
+```
+
+新的实体类型优先注册到 schema registry；只有通用 schema 无法表达任务时才增加专用 extractor。重型依赖放到 optional dependency，并在实际使用时 import。
+
+详细边界见[插件开发](./docs/development/plugins.md)、[文档导入](./docs/architecture/ingestion.md)和[知识图谱构建](./docs/architecture/knowledge-graph.md)。
+
+## PR 说明
+
+PR 至少说明：
+
+- 为什么修改以及解决的根因。
+- 用户可见行为和兼容性影响。
+- 运行过的测试及结果。
+- 涉及架构时遵循或修订的设计条款/RFC。
+
+推荐使用小而聚焦的提交和 Conventional Commits 风格，但不要为了格式化而改动无关文件。

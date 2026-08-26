@@ -1,173 +1,118 @@
 # DocGraph
 
-> 面向芯片 Spec 的文档知识图谱引擎 — 让 Spec-driven 芯片开发 Agent 真正用得上 spec。
+> 面向芯片规格书的本地文档知识底座。
 
-DocGraph 把 PDF/Word/Excel/Markdown 形态的芯片 spec 文档解析为 L0 无损版面、L1 可检索索引，并按需增强为 L2 实体图谱，通过 Web / MCP / CLI 暴露稳定、可追溯的查询接口。
+DocGraph 将 PDF、DOCX、XLSX/XLSM 和 Markdown 归一为可追溯的版面块（L0）和检索块（L1），并可选抽取寄存器、位域、管脚、接口、中断等实体与关系（L2）。CLI、Web UI 和 MCP 都读取同一个本地图谱。
 
-灵感来源：`codegraph` —— 把代码索引为图后，agent 查询的精度和成本同时大幅改善。DocGraph 把同一套心智搬到芯片文档。
+## 能做什么
 
----
+| 能力 | 默认行为 | 说明 |
+|---|---|---|
+| 文档导入 | 扫描 `docs/`、`spec/` | 支持 PDF、DOCX、XLSX/XLSM、MD/Markdown |
+| PDF 解析 | `auto` 路由，PyMuPDF 兜底 | Docling、MinerU、Marker 是按需安装的质量增强后端 |
+| 本地检索 | FTS5 + 本地 hash embedding | 可配置真实 embedding provider |
+| 实体图谱 | `section`、`table_entity` 默认启用 | L2 是增强层，失败不阻断 L0/L1 |
+| Agent 接入 | MCP stdio | 6 个只读工具，提供 L1 查询、L0 取证和 L2 图谱浏览 |
+| 人工浏览 | 可选 Web UI | 需要安装 `web` extra |
+
+格式支持不等于版面能力完全相同。PDF 后端可以保留页码、坐标、图片和表格证据；轻量 DOCX parser 主要读取段落、标题和表格；XLSX/XLSM 主要读取 sheet 与单元格；Markdown 保留其语义块。详细边界见[文档导入](./docs/architecture/ingestion.md)。
 
 ## 安装
 
-PyPI 发布后可直接安装（当前尚未发布）：
-
-```bash
-pip install docgraph-core
-```
-
-从源码参与开发：
+需要 uv 0.11.3 或更高版本；安装方法见 [uv 官方文档](https://docs.astral.sh/uv/getting-started/installation/)。
 
 ```bash
 git clone https://github.com/TTHNN-ld/docgraph.git
 cd docgraph
-python -m venv .venv && source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e ".[dev]"
 ```
 
-`llm` extra 只安装模型 provider；调用 LLM/VLM 前还需要按
-[启用 LLM 抽取](./docs/cookbook/02-enable-llm.md) 配置 provider、model 和 API key。
-基础包自带 PyMuPDF。`build` 选中尚未安装的内置 parser 时，交互终端会询问是否
-安装对应 extra；CI 等非交互环境不会擅自修改环境，而是自动尝试下一 parser。
-首次使用可运行 `docgraph setup` 查看当前环境是否已准备好。需要提前安装推荐
-parser 时，执行 `docgraph setup parsers`；需要在一次构建中明确授权补装依赖时，
-使用 `docgraph build --install-missing`。
-
-安装 parser 不等于预下载模型。Docling 在首次实际解析时由上游下载并缓存模型；
-模型下载或初始化失败也会触发 parser 回退，并记录在 `.docgraph/manifest.json`。
-MinerU adapter 使用 3.x 客户端。可将 PDF 编排与 L0 归一化保留在 DocGraph
-所在机器，只把 VLM 推理发往独立的 vLLM/SGLang/OpenAI-compatible 模型服务；
-配置方式见 [Parser 文档](docs/parsers.md#44-mineru-远程模型服务)。
-
----
-
-## 5 分钟跑通
+根据需要选择一条同步命令；每条都会包含核心依赖，不必先单独执行 `uv sync`：
 
 ```bash
-docgraph init                             # 在当前目录创建 .docgraph/
-docgraph setup                            # 可选：检查 parser、LLM/VLM 和 embedding 环境
-docgraph build                            # 解析 docs/**/*.pdf 和 spec/**/*.pdf，构建 L0/L1/L2
-docgraph status                           # 节点/边/文档统计
-docgraph doctor --strict                  # L0/L1 完整性 + L2 provenance/强结构检查
-docgraph l2 audit --strict                # L2 候选覆盖与 schema 质量审计
-
-docgraph search "per_vector_misc"         # 按名称查寄存器
-docgraph search --kind clock "core"       # 按类型查 clock 实体
-docgraph inspect register freeze_reg      # 查看寄存器详情 + bitfields
-
-docgraph serve --mcp                      # 启动 MCP server，供 Claude Code 等 agent 调用
+uv sync                                      # 仅核心功能
+uv sync --extra web                          # 核心 + Web UI
+uv sync --extra docling                      # 核心 + Docling
+uv sync --extra mineru                       # 核心 + MinerU
+uv sync --group dev                          # 核心 + 测试/检查工具 + Web 测试依赖
+uv sync --extra web --extra docling          # 核心 + Web UI + Docling
 ```
 
-日常路径只需要 `init → build`。`setup` 是环境检查和准备入口，不是必经步骤；
-`--install-missing`、`--strict-parsers` 和 `--quality` 保留给 CI 或质量门禁等专家场景。
+`uv sync` 会让环境与当前命令精确一致。后续同步时，需要继续保留的可选能力应再次写在同一条命令中。MinerU 和 Marker 的 Pillow 版本约束不兼容，不能同时启用；重型后端首次使用时可能下载模型。
 
----
+PDF 默认 `auto` 路由会在可用的 Docling、MinerU 和核心 PyMuPDF 之间选择。只想使用 MinerU 时不需要安装另外两个可选后端，但建议在 `docgraph.yaml` 中设置 `primary: mineru`；示例见[配置指南](./docs/guides/configuration.md#mineru-远程推理)。Marker 不参与自动路由，使用时需要显式设置 `primary: marker`。
 
-## 三层数据架构
+## 快速开始
 
-```
-L0  Block — 原文无损镜像
-     每页的段落、表格(cells)、图、公式、阅读顺序、坐标和页码完整保留。
-     表格不允许丢成纯文本，图/公式保留渲染产物和原始证据。
+在项目根创建 `docs/` 或 `spec/`，放入文档后执行：
 
-L1  Chunk — 可寻址检索单元
-     章节、表格、图各自成 chunk，带稳定 ID 和 block_ids 回溯链。
-     支持 FTS5 全文检索 + 语义向量检索，按章节路径和页范围过滤。
-
-L2  Node/Edge — 实体知识图谱（可选增强）
-     寄存器、bitfield、管脚、信号、接口、中断、memory_map、时钟、复位、
-     需求、时序参数等实体。每条标注抽取来源和可信度——
-     deterministic = 表格确定性抽取，可信；
-     vlm/llm = 模型抽取，需回到 L0 原文验证。
-     L2 缺失不影响信息获取，L1/L0 永远可直达。
+```bash
+uv run docgraph init
+uv run docgraph setup                 # 可选：检查 parser、模型和 embedding 状态
+uv run docgraph build
+uv run docgraph doctor --strict
+uv run docgraph status
 ```
 
-## 芯片工程场景
+默认不需要 `docgraph.yaml`。只有要修改文档范围、family、parser 或 extractor 策略时才创建项目配置。
 
-| 阶段 | 典型任务 | 用到什么 |
-|---|---|---|
-| RTL 设计 | 模块边界、接口清单、寄存器 map、地址空间 | L2 register/memory_map/interface + L0 原表兜底 |
-| DV 验证 | test plan、UVM RAL 建模、coverage item | L2 register/bitfield 精确字段 + L0 寄存器表 |
-| 中后端 | STA/SDC 约束、CDC/RDC 检查、floorplan 集成 | L1 时钟/复位章节定位 + L0 结构图原文 |
-| Bring-up | LTSSM debug、JTAG 可测性、中断状态观测 | L2 register + L1 figure/section 联合检索 |
+常用查询：
 
-**当前强项**：寄存器/bitfield 确定性抽取。从表格中提取的字段（bit range、access、reset value）agent 可直接使用，无需人肉对齐原表。
+```bash
+uv run docgraph search "per_vector_misc"
+uv run docgraph search "clock" --kind section
+uv run docgraph inspect register freeze_reg
+uv run docgraph graph context "如何配置中断"
+```
 
-**当前短板**：时钟/复位实体覆盖率偏低（~15%），主要来自框图 VLM 抽取。相关场景 agent 需更多回退到 L1/L0 读原文。
+只重建一个文件或监听变化：
 
-详见 [评测报告](./benchmark_runs/baseline_docgraph_compare/FULL_REPORT.md)。
+```bash
+uv run docgraph build --doc docs/reference-manual.pdf
+uv run docgraph admin watch
+```
 
----
+启动可选接口：
+
+```bash
+uv run docgraph serve --mcp
+uv run docgraph serve --web --port 8000
+```
+
+完整命令以 `uv run docgraph --help` 和各子命令的 `--help` 为准。
+
+## 数据分层
+
+```text
+输入文档
+  └─ L0 Block：段落、标题、表格、图片、公式及版面证据
+       └─ L1 Chunk：稳定 ID、block_ids、全文/向量检索
+            └─ L2 Node/Edge：带来源和可信状态的可选实体增强
+```
+
+- L0 是原文证据层。
+- L1 是 Agent 的主要阅读和检索层，可通过 `block_ids` 回到 L0。
+- L2 用于加速精确实体查询，不能替代原文取证。
+
+分层硬约束见[分层数据契约](./docs/architecture/data-layers.md)，整体数据流见[架构总览](./docs/architecture/overview.md)。
+
+## 当前边界
+
+- DocGraph 面向芯片 spec，不是通用文档管理、协作编辑或权限系统。
+- L0/L1 可以在不配置模型的情况下构建；LLM/VLM 只增强部分 L2 抽取与视觉语义。
+- 结构化表格的确定性抽取最适合自动化使用；LLM/VLM 结果应通过来源块复核。
+- Web UI 默认没有认证，不应直接暴露到公网。
+- IP-XACT/SystemRDL 导出目前聚焦 register/field 子集，交给下游工具前应校验地址、宽度和 reset。
+
+当前工作重点和已知缺口见 [Roadmap](./docs/project/roadmap.md)。
 
 ## 文档
 
-- 顶层架构：[DESIGN.md](./DESIGN.md)
-- 详细话题文档：[docs/](./docs/)
-  - [架构总览](./docs/architecture.md)
-  - [数据模型](./docs/data-model.md)
-  - [Parser 层](./docs/parsers.md)
-  - [Extractor 层](./docs/extractors.md)
-  - [Linker 层](./docs/linker.md)
-  - [检索与 MCP](./docs/retrieval.md)
-  - [联邦机制](./docs/federation.md)
-  - [增量与缓存](./docs/incremental.md)
-  - [插件系统](./docs/plugins.md)
-  - [配置参考](./docs/configuration.md)
-  - [运维与安全](./docs/operations.md)
-  - [贡献指南](./docs/contributing.md)
-  - [路线图](./docs/roadmap.md)
-  - [需求变更记录](./docs/requirements-changelog.md)
-  - [术语表](./docs/glossary.md)
-
----
-
-## Agent 使用模式
-
-```
-1. context(task, mode="auto")            → 默认入口：小语料完整 L1，大语料透明检索视图
-2. fetch_many(chunk_ids)                 → 批量取证：完整 L1 + 去重 L0 blocks + L2 candidates
-3. search("per_vector_misc")             → L2 加速：实体查（每条带 source_quality）
-```
-
-**核心原则**：MCP 提供透明、可解释、可继续展开的文档视图，不替 agent 写答案。L0 原文是权威，L1 chunk 是主要阅读材料，L2 实体是候选和加速索引。Agent 自己决定关注什么、相信什么、是否继续取证。
-
-MCP 工具共 **9 个**（按层次）：
-
-| 层次 | 工具 | 作用 |
-|---|---|---|
-| 默认入口 | `docgraph_context` | 按语料规模返回完整 L1 或检索候选，公开覆盖范围、排序理由和游标 |
-| L0 原文 | `docgraph_fetch`, `docgraph_fetch_many` | 单个或批量读取完整 chunk、L0 blocks 和相关 L2 candidates |
-| L1 发现 | `docgraph_search_chunks`, `docgraph_section` | 关键词/语义搜 chunks + 章节树导航 |
-| L2 提示 | `docgraph_search` | 实体查，每条标注 `needs_source_check` 和来源 |
-| 图谱 | `docgraph_neighbors` | 邻域关系浏览 |
-| 元信息 | `docgraph_status`, `docgraph_files` | 图谱统计和文档列表 |
-
-## 评测结果
-
-基于 2 份 PCIe spec（84 页）的代表性芯片工程 case，Baseline（直接读取 PDF）vs 当前 DocGraph MCP 对照：
-
-| 场景 | DocGraph 表现 | 说明 |
-|---|---|---|
-| **寄存器/RAL 抽取** | ✅ 13 turns / 12 tools / 120.2s / $0.646 | Baseline 为 25 turns / 24 tools / 349.0s / $0.904；结构化表格任务收益明显 |
-| **跨文档地址转换** | ✅ 9 turns / 8 tools / 196.7s / $0.719 | Baseline 为 17 turns / 14 tools / 188.5s / $0.510；DocGraph 成本略高，但证据覆盖更系统，且未突破页数预算 |
-| **Clock/Reset 验证** | ✅ 26 turns / 25 tools / 243.6s / $1.173 | Baseline 480s 超时；L2 覆盖不足时仍可依赖 L1 完成 |
-
-**关键结论**：
-- DocGraph 在**表格式信息**（register/bitfield/signal/interface）上有明确价值，确定性抽取可以直接提供 bit range、access、reset 等字段。
-- `docgraph_context` 让小语料直接返回完整 L1，大语料自动切到检索候选，避免把 L2 当成唯一入口。
-- `docgraph_fetch_many` 能显著减少宽问题中逐条回到 L0 的工具往返。
-- Clock/reset 仍是实体覆盖短板，但当前 MCP 路径已经能通过 L1/L0 完成相关任务。
-
-详见 [自适应上下文评测报告](./benchmark_runs/adaptive_context_compare_20260714/REPORT.md) 和 [历史评测报告](./benchmark_runs/baseline_docgraph_compare/FULL_REPORT.md)。
-
-## 项目状态
-
-**Beta 可用** — L0/L1 已由 `docgraph doctor --strict` 做质量门禁；L2 已有 provenance、强结构校验、候选覆盖审计 `docgraph l2 audit` 和 golden 评估入口 `docgraph l2 eval`。
-
-**当前重点工作**（M7 分层重构）：
-- 提升 clock/reset 实体覆盖率（从接口表确定性抽取，当前 ~15%）
-- 填充 register 实体的 address/offset/access/reset 属性
-- 更大规模文档集评测验证规模优势
+- [文档导航](./docs/README.md)：按读者任务和文档职责分类
+- [MCP 接入](./docs/guides/mcp.md)：连接 Agent host
+- [MCP 工具参考](./docs/reference/mcp-tools.md)：接口、参数、返回值和错误
+- [DESIGN.md](./DESIGN.md)：设计文档入口与权威关系
+- [配置指南](./docs/guides/configuration.md)
+- [运维指南](./docs/guides/operations.md)
+- [贡献指南](./CONTRIBUTING.md)
 
 License: Apache 2.0

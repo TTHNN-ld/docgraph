@@ -1,7 +1,5 @@
 # 术语表
 
-> 对应 DESIGN.md 附录 C。
-
 | 缩写 | 含义 |
 |---|---|
 | Spec | Specification，泛指芯片相关的规范文档 |
@@ -26,14 +24,14 @@
 |---|---|
 | Node | 图谱中的实体节点 |
 | Edge | 图谱中的关系边 |
-| Evidence | 节点/边的来源证据（page、bbox、chunk_id） |
+| Evidence | 节点/边的来源证据（pages、bboxes、chunk IDs、extractor） |
 | Confidence | 抽取/链接的置信度（0.0–1.0） |
 | Manifest | `.docgraph/manifest.json`，文件状态追踪 |
-| Family | 芯片族（如 `stm32f407`），联邦合并的关键 |
-| Federation | 多份 spec 在同一图谱中共存与覆盖 |
+| Family | 项目命名空间；也是 EntityResolver 无法推断芯片实例时的回退键 |
+| Federation | 同项目多文档关系，以及跨项目图数据库的只读联合查询 |
 | ParsedDoc | Parser 输出的统一中间表示 |
 | Tier | LLM 模型分层：`fast` / `balanced` / `accurate` |
-| Walking Skeleton | M1 阶段的最小可运行系统 |
+| Walking Skeleton | 用最小端到端路径尽早验证核心架构的开发方式 |
 
 ## 芯片 spec 高频术语
 

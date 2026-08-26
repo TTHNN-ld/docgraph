@@ -1,8 +1,12 @@
 # L2 Spec Validation
 
-This note records the current L2 quality gate using the small PDFs under
-`spec/*.pdf`. It is intended as a reproducible signal for production readiness,
-not as a replacement for a golden benchmark.
+> Historical validation snapshot. The referenced PDFs and exact source revision
+> are not included in this repository, so the numbers below are not a current or
+> independently reproducible product claim. Use `docgraph l2 eval` with a
+> versioned golden set for production decisions.
+
+This note records one earlier L2 quality run using local PDFs under `spec/*.pdf`.
+It is retained as evaluation history, not as a replacement for a golden benchmark.
 
 ## Dataset
 
@@ -16,7 +20,7 @@ not as a replacement for a golden benchmark.
 - `spec/learn_the_architecture_-_understanding_armv9-a_trace_guide_102856_0100_01_en(学习架构 - 理解 Armv9-A 跟踪指南).pdf`
 - `spec/learn_the_architecture_aarch64_memory_management_examples_102416_0201_01_en(学习架构 - AArch64 内存管理示例).pdf`
 
-## Current Run
+## Recorded Run
 
 Fast configuration:
 
