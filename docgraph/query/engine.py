@@ -7,6 +7,7 @@ M2 升级：
 - impact：N hops 反向影响分析
 - 专项查询：pin / timing / figure / section / glossary
 """
+
 from __future__ import annotations
 
 import base64
@@ -18,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from docgraph.embeddings.base import EmbeddingProvider
 from docgraph.embeddings.vector_store import VectorStore
-from docgraph.graph.schema import Block, Edge, EdgeKind, Node, NodeKind
+from docgraph.graph.schema import Block, Chunk, Edge, EdgeKind, Node, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.graph.store import NodeQuery, Subgraph
 
@@ -147,28 +148,46 @@ class QueryEngine:
         kind: NodeKind | None = None,
         limit: int = 20,
         use_semantic: bool = True,
+        doc_ids: list[str] | None = None,
     ) -> list[Node]:
+        scope = self._resolve_context_scope(doc_ids)
+
+        def find(**filters) -> list[Node]:
+            if scope is None:
+                return self.store.search_nodes(NodeQuery(**filters, kind=kind, limit=limit))
+            found: dict[str, Node] = {}
+            for doc_id in scope:
+                for node in self.store.search_nodes(
+                    NodeQuery(**filters, kind=kind, doc_id=doc_id, limit=limit)
+                ):
+                    found.setdefault(node.id, node)
+            return sorted(found.values(), key=lambda node: (node.name, node.doc_id, node.id))[
+                :limit
+            ]
+
         # 1. 精确 name
-        exact = self.store.search_nodes(NodeQuery(name=query, kind=kind, limit=limit))
+        exact = find(name=query)
         if exact:
             return exact
         # 2. alias
-        alias = self.store.search_nodes(NodeQuery(alias=query, kind=kind, limit=limit))
+        alias = find(alias=query)
         if alias:
             return alias
         # 3. qualified_name 精确
-        qual = self.store.search_nodes(
-            NodeQuery(qualified_name=query, kind=kind, limit=limit)
-        )
+        qual = find(qualified_name=query)
         if qual:
             return qual
         # 4. fuzzy
-        fuzzy = self.store.search_nodes(NodeQuery(fuzzy=query, kind=kind, limit=limit))
+        fuzzy = find(fuzzy=query)
         if fuzzy:
             return fuzzy
         # 5. 向量语义
         if use_semantic and self.vstore is not None and self.encoder is not None:
-            return self._semantic_search(query, kind=kind, top_k=limit)
+            semantic = self._semantic_search(query, kind=kind, top_k=max(limit * 4, limit))
+            if scope is not None:
+                allowed = set(scope)
+                semantic = [node for node in semantic if node.doc_id in allowed]
+            return semantic[:limit]
         return []
 
     def node(self, id: str) -> Node | None:
@@ -179,8 +198,44 @@ class QueryEngine:
         id: str,
         edge_kinds: list[EdgeKind] | None = None,
         depth: int = 1,
+        limit: int = 50,
     ) -> Subgraph:
-        return self.store.neighbors(id, edge_kinds=edge_kinds, depth=depth)
+        return self.store.neighbors(id, edge_kinds=edge_kinds, depth=depth, limit=limit)
+
+    def outline(
+        self,
+        doc_id: str,
+        *,
+        section_id: str | None = None,
+        depth: int = 1,
+        limit: int = 200,
+    ) -> list[Node]:
+        """Return a stable section outline for one document."""
+        self._resolve_context_scope([doc_id])
+        if section_id is None:
+            nodes = self.store.search_nodes(
+                NodeQuery(kind=NodeKind.SECTION, doc_id=doc_id, limit=limit)
+            )
+        else:
+            root = self.store.get_node(section_id)
+            if root is None or root.kind != NodeKind.SECTION or root.doc_id != doc_id:
+                return []
+            sub = self.store.neighbors(
+                root.id,
+                edge_kinds=[EdgeKind.CONTAINS],
+                depth=depth,
+                limit=limit,
+            )
+            nodes = [node for node in sub.nodes if node.kind == NodeKind.SECTION]
+        return sorted(
+            nodes,
+            key=lambda node: (
+                node.location.page if node.location.page is not None else 1_000_000_000,
+                node.location.section_path or "",
+                node.name,
+                node.id,
+            ),
+        )
 
     # ------- 专项 -------
 
@@ -189,13 +244,9 @@ class QueryEngine:
         if not nodes:
             return None
         reg = nodes[0]
-        sub = self.store.neighbors(
-            reg.id, edge_kinds=[EdgeKind.HAS_BITFIELD], depth=1
-        )
+        sub = self.store.neighbors(reg.id, edge_kinds=[EdgeKind.HAS_BITFIELD], depth=1)
         bitfields = [n for n in sub.nodes if n.kind == NodeKind.BITFIELD]
-        bitfields.sort(
-            key=lambda n: int(n.attrs.get("bit_high", 0)), reverse=True
-        )
+        bitfields.sort(key=lambda n: int(n.attrs.get("bit_high", 0)), reverse=True)
         return RegisterDetail(node=reg, bitfields=bitfields)
 
     def pin(self, name: str) -> PinDetail | None:
@@ -229,14 +280,10 @@ class QueryEngine:
         return SectionDetail(node=n, children=children)
 
     def glossary(self, term: str) -> list[TermDetail]:
-        nodes = self.store.search_nodes(
-            NodeQuery(kind=NodeKind.TERM, fuzzy=term, limit=10)
-        )
+        nodes = self.store.search_nodes(NodeQuery(kind=NodeKind.TERM, fuzzy=term, limit=10))
         if not nodes:
             # 也按别名查
-            nodes = self.store.search_nodes(
-                NodeQuery(alias=term, kind=NodeKind.TERM, limit=10)
-            )
+            nodes = self.store.search_nodes(NodeQuery(alias=term, kind=NodeKind.TERM, limit=10))
         return [TermDetail(node=n) for n in nodes]
 
     # ------- 高级 -------
@@ -264,11 +311,11 @@ class QueryEngine:
             for nid, score in hits:
                 if nid in nodes_map:
                     continue
-                n = self.store.get_node(nid)
-                if n is None:
+                fetched_node = self.store.get_node(nid)
+                if fetched_node is None:
                     continue
-                nodes_map[n.id] = n
-                semantic_hits.append({"id": n.id, "score": round(score, 4)})
+                nodes_map[fetched_node.id] = fetched_node
+                semantic_hits.append({"id": fetched_node.id, "score": round(score, 4)})
 
         # 3. 拉一阶邻居丰富上下文
         seeds = list(nodes_map.values())[: max_nodes // 2]
@@ -297,7 +344,7 @@ class QueryEngine:
         if from_id == to_id:
             return [Path(nodes=[from_id], length=0)]
         store = self.store
-        visited = {from_id: None}  # node_id -> (parent_id, edge)
+        visited: dict[str, tuple[str, Edge] | None] = {from_id: None}
         queue: deque[tuple[str, int]] = deque([(from_id, 0)])
         found = False
         while queue:
@@ -477,10 +524,10 @@ class QueryEngine:
         blocks = self.store.get_blocks(chunk.block_ids) if chunk.block_ids else []
         entities_by_id: dict[str, dict] = {}
         for node in self.store.get_entities_for_chunk(chunk.id):
-            entities_by_id.setdefault(node.id, _entity_summary(node))
+            entities_by_id.setdefault(node.id, entity_view(node))
         for block in blocks:
             for node in self.store.get_entities_for_block(block.id):
-                entities_by_id.setdefault(node.id, _entity_summary(node))
+                entities_by_id.setdefault(node.id, entity_view(node))
         return {
             "chunk": _chunk_view(chunk),
             "blocks": [_block_view(block) for block in blocks],
@@ -502,15 +549,9 @@ class QueryEngine:
         """Return a transparent, budgeted L1 view without summarizing chunks."""
         requested_mode = (mode or "auto").strip().lower()
         if requested_mode not in {"auto", "full", "search"}:
-            raise ContextRequestError(
-                "invalid_mode", "mode must be one of: auto, full, search"
-            )
-        max_chars = _bounded_int(
-            "max_chars", max_chars, minimum=1, maximum=_CONTEXT_MAX_CHARS
-        )
-        max_chunks = _bounded_int(
-            "max_chunks", max_chunks, minimum=1, maximum=_CONTEXT_MAX_CHUNKS
-        )
+            raise ContextRequestError("invalid_mode", "mode must be one of: auto, full, search")
+        max_chars = _bounded_int("max_chars", max_chars, minimum=1, maximum=_CONTEXT_MAX_CHARS)
+        max_chunks = _bounded_int("max_chunks", max_chunks, minimum=1, maximum=_CONTEXT_MAX_CHUNKS)
         max_enrichment_chars = _bounded_int(
             "max_enrichment_chars",
             max_enrichment_chars,
@@ -527,10 +568,7 @@ class QueryEngine:
         effective_mode = requested_mode
         reason = f"requested_{requested_mode}"
         if requested_mode == "auto":
-            if (
-                stats["total_chars"] <= max_chars
-                and stats["total_chunks"] <= max_chunks
-            ):
+            if stats["total_chars"] <= max_chars and stats["total_chunks"] <= max_chunks:
                 effective_mode = "full"
                 reason = "corpus_within_budget"
             else:
@@ -538,11 +576,7 @@ class QueryEngine:
                 reason = "corpus_exceeds_budget"
         cursor_data = _decode_context_cursor(cursor) if cursor else None
         normalized_task = (task or "").strip()
-        if (
-            not normalized_task
-            and cursor_data is not None
-            and cursor_data.get("kind") == "search"
-        ):
+        if not normalized_task and cursor_data is not None and cursor_data.get("kind") == "search":
             normalized_task = str(cursor_data.get("task") or "").strip()
         if effective_mode == "search" and not normalized_task:
             raise ContextRequestError(
@@ -604,12 +638,37 @@ class QueryEngine:
             "Only coverage=complete_l1 with l1_complete=true contains the whole "
             "selected L1 scope in this response. Retrieval candidates may omit "
             "relevant content; refine the task, change mode, continue the cursor, "
-            "or use docgraph_search_chunks/docgraph_fetch as needed."
+            "or run a new docgraph_query with a refined task as needed."
             " Chunks already contain complete L1 text; do not fetch every chunk. "
-            "Use docgraph_fetch or docgraph_fetch_many only when L0 table cells, "
+            "Use docgraph_read only when L0 table cells, "
             "image/layout evidence, or source verification is actually needed."
         )
         return result
+
+    def agent_query(
+        self,
+        *,
+        task: str | None = None,
+        doc_ids: list[str] | None = None,
+        cursor: str | None = None,
+        include_entities: bool = False,
+    ) -> dict:
+        """Agent-facing query with server-owned budgets and one mode decision."""
+        normalized_task = (task or "").strip()
+        mode = "search" if normalized_task else "full"
+        if cursor:
+            cursor_data = _decode_context_cursor(cursor)
+            cursor_kind = cursor_data.get("kind")
+            if cursor_kind not in {"full", "search"}:
+                raise ContextRequestError("invalid_cursor", "cursor kind is unsupported")
+            mode = str(cursor_kind)
+        return self.document_context(
+            task=normalized_task or None,
+            mode=mode,
+            doc_ids=doc_ids,
+            include_enrichments=include_entities,
+            cursor=cursor,
+        )
 
     def _resolve_context_scope(self, doc_ids: list[str] | None) -> list[str] | None:
         if doc_ids is None:
@@ -649,7 +708,7 @@ class QueryEngine:
             after=after,
             limit=max_chunks + 1,
         )
-        selected = []
+        selected: list[Chunk] = []
         returned_chars = 0
         for chunk in candidates:
             if len(selected) >= max_chunks or returned_chars + len(chunk.text) > max_chars:
@@ -673,7 +732,9 @@ class QueryEngine:
                     "after": list(_chunk_sort_key(selected[-1])),
                 }
             )
-        complete_in_response = after is None and not has_more and len(selected) == stats["total_chunks"]
+        complete_in_response = (
+            after is None and not has_more and len(selected) == stats["total_chunks"]
+        )
         selection = {
             **_context_stats(stats),
             "mode": "full",
@@ -721,8 +782,8 @@ class QueryEngine:
             candidate_limit=_CONTEXT_CANDIDATE_LIMIT,
         )
         candidates = search["hits"]
-        selected_chunks = []
-        selected_hits = []
+        selected_chunks: list[Chunk] = []
+        selected_hits: list[dict] = []
         returned_chars = 0
         response_chunk_limit = min(max_chunks, _CONTEXT_SEARCH_PAGE_CHUNKS)
         for hit in candidates[offset:]:
@@ -855,12 +916,8 @@ class QueryEngine:
                 blocks[block_id] = _block_brief(got[0])
 
         for n in bundle.nodes[:max_nodes]:
-            source_block_ids = (
-                n.attrs.get("source_block_ids") or n.attrs.get("block_ids") or []
-            )
-            source_chunk_ids = (
-                n.attrs.get("source_chunk_ids") or n.evidence.chunk_ids or []
-            )
+            source_block_ids = n.attrs.get("source_block_ids") or n.attrs.get("block_ids") or []
+            source_chunk_ids = n.attrs.get("source_chunk_ids") or n.evidence.chunk_ids or []
             n_info = {
                 "id": n.id,
                 "kind": n.kind.value,
@@ -871,7 +928,7 @@ class QueryEngine:
                 "summary": n.summary,
                 "source": n.attrs.get("source") or n.evidence.extractor,
                 "extraction_confidence": n.attrs.get("extraction_confidence"),
-                "needs_source_check": _needs_source_check(n),
+                "needs_source_check": needs_source_check(n),
                 "source_block_ids": source_block_ids,
                 "source_chunk_ids": source_chunk_ids,
             }
@@ -970,23 +1027,31 @@ class QueryEngine:
                 continue
             snip = meta.get("snippet") or ""
             score, reasons = _score_chunk_hit(query, c, snip)
-            semantic_score = meta.get("semantic_score")
-            if semantic_score is not None:
-                score += max(0.0, float(semantic_score)) * 2.0
-                reasons.append(f"semantic:{float(semantic_score):.3f}")
+            stored_semantic_score = meta.get("semantic_score")
+            if stored_semantic_score is not None:
+                score += max(0.0, float(stored_semantic_score)) * 2.0
+                reasons.append(f"semantic:{float(stored_semantic_score):.3f}")
                 if not snip:
                     snip = (c.text or "")[:240]
-            ranked.append((score, {
-                "chunk_id": c.id, "doc_id": c.doc_id, "kind": c.kind, "page": c.page,
-                "page_start": c.page_start or c.page,
-                "page_end": c.page_end or c.page,
-                "section_id": c.section_id,
-                "section_node_id": c.section_node_id,
-                "snippet": snip or "",
-                "block_ids": c.block_ids,
-                "score": round(score, 3),
-                "rank_reasons": reasons,
-            }))
+            ranked.append(
+                (
+                    score,
+                    {
+                        "chunk_id": c.id,
+                        "doc_id": c.doc_id,
+                        "kind": c.kind,
+                        "page": c.page,
+                        "page_start": c.page_start or c.page,
+                        "page_end": c.page_end or c.page,
+                        "section_id": c.section_id,
+                        "section_node_id": c.section_node_id,
+                        "snippet": snip or "",
+                        "block_ids": c.block_ids,
+                        "score": round(score, 3),
+                        "rank_reasons": reasons,
+                    },
+                )
+            )
         ranked.sort(key=lambda item: item[0], reverse=True)
         pool_truncated = (
             text_pool_truncated
@@ -1096,7 +1161,7 @@ def _context_stats(stats: dict) -> dict:
 
 
 def _entity_enrichment(node: Node) -> dict:
-    item = _entity_summary(node)
+    item = entity_view(node)
     item.update(
         {
             "doc_id": node.doc_id,
@@ -1109,6 +1174,7 @@ def _entity_enrichment(node: Node) -> dict:
 
 def _tokenize_task(task: str) -> list[str]:
     import re
+
     # 大写下划线的标识符容易是 register/pin 名
     tokens = re.findall(r"[A-Z][A-Z0-9_]{2,}", task)
     return tokens[:6]
@@ -1154,6 +1220,7 @@ def _retrieval_terms(query: str, limit: int = 12) -> list[str]:
 
 def _score_chunk_hit(query: str, chunk, snippet: str) -> tuple[float, list[str]]:
     import re
+
     q = query.strip().lower()
     text = (chunk.text or "").lower()
     snippet_l = (snippet or "").lower()
@@ -1222,7 +1289,7 @@ def _score_chunk_hit(query: str, chunk, snippet: str) -> tuple[float, list[str]]
     return score, reasons
 
 
-def _entity_summary(node: Node) -> dict:
+def entity_view(node: Node) -> dict:
     """Lightweight entity summary for embedding in fetch/search_chunks results.
 
     Includes source_quality so the agent can decide whether to trust the
@@ -1235,6 +1302,7 @@ def _entity_summary(node: Node) -> dict:
         "kind": node.kind.value,
         "name": node.name,
         "qualified_name": node.qualified_name,
+        "doc_id": node.doc_id,
         "page": node.location.page,
         "summary": node.summary,
         "source_chunk_ids": source_chunk_ids,
@@ -1242,12 +1310,12 @@ def _entity_summary(node: Node) -> dict:
         "source_quality": {
             "source": node.attrs.get("source") or node.evidence.extractor,
             "extraction_confidence": node.attrs.get("extraction_confidence"),
-            "needs_source_check": _needs_source_check(node),
+            "needs_source_check": needs_source_check(node),
         },
     }
 
 
-def _needs_source_check(node: Node) -> bool:
+def needs_source_check(node: Node) -> bool:
     source = str(node.attrs.get("source") or node.evidence.extractor or "").lower()
     confidence = str(node.attrs.get("extraction_confidence") or "").lower()
     if confidence in {"deterministic", "verified"}:
@@ -1256,7 +1324,7 @@ def _needs_source_check(node: Node) -> bool:
     if any(tag in source for tag in ("figure@", "vlm", "llm")):
         return True
     # Missing both confidence and source → unknown origin, flag for safety
-    if not confidence and not source:
+    if not confidence and source in {"", "unknown"}:
         return True
     # Table normalizer / regex extractor without explicit confidence:
     # trust by default (deterministic extraction from structured data)

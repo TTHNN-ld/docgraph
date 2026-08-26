@@ -1,4 +1,5 @@
 """Query 模块入口。"""
+
 from docgraph.query.engine import (
     ContextBundle,
     FigureDetail,

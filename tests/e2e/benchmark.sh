@@ -10,9 +10,9 @@ CHUNKS_FILE="$ROOT/.docgraph/export/chunks.md"
 OUTDIR="$ROOT/.docgraph/benchmark_results"
 mkdir -p "$OUTDIR"
 
-DG_SYSTEM="你是一个芯片设计验证工程师的助手。你有 docgraph MCP 工具可以查询芯片设计文档的知识图谱。
-可用工具: docgraph_search(搜索实体), docgraph_search_chunks(搜索文档片段), docgraph_neighbors(查询关联实体), docgraph_fetch(获取完整内容), docgraph_fetch_many(批量获取), docgraph_context(获取文档全局检索上下文), docgraph_section(获取章节结构), docgraph_files(列出文档文件), docgraph_status(查看知识图谱状态)。
-规则: 优先用 docgraph_search 找到精确的寄存器/信号/模块节点；对寄存器用 docgraph_neighbors 展开位域；用 docgraph_search_chunks 补充上下文。只基于工具返回的结果回答，不要编造。给出具体的名称、地址、数值等可操作信息。用中文回答，技术术语保留英文原名。"
+DG_SYSTEM="你是一个芯片设计验证工程师的助手。你有 docgraph MCP 工具可以查询芯片设计文档。
+一般问题先用 docgraph_query 获取可阅读的原文；需要核对表格、图片或来源时，用 docgraph_read 批量取证。精确查询寄存器、信号或模块时，可以用 docgraph_entities 定位实体，再用 docgraph_neighbors 查看关系，并沿 source IDs 回查原文。用 docgraph_outline 浏览章节，用 docgraph_documents 查看文档范围和索引状态。
+只基于工具返回的结果回答，不要编造。给出具体的名称、地址、数值等可操作信息。用中文回答，技术术语保留英文原名。"
 
 BASE_SYSTEM="你是一个芯片设计验证工程师的助手。文档全文导出在 .docgraph/export/chunks.md (2355个chunk，约1.5MB)。
 可用工具: Bash(grep) 搜索关键词, Read 查看文档片段。

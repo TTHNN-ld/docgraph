@@ -1,474 +1,434 @@
-"""MCP server —— 按 L0/L1/L2 层次暴露透明文档视图。
+"""MCP v2 server for the Agent-facing DocGraph query contract."""
 
-默认入口：context (自适应完整 L1 / L1 检索视图)
-L1 发现层：search_chunks / section
-L0 原文层：fetch / fetch_many (chunk + blocks + entities)
-L2 提示层：search (带 source_quality 标注 + 验证路径)
-图谱浏览：neighbors
-元信息：status / files
-
-设计原则：
-- Agent 自己决定检索策略和验证深度，工具不替 Agent 总结或判断结论
-- L2 实体始终带 source_quality，agent 自行决定是否信任
-- 默认路径：context 透明文档视图 → 按需 fetch_many/fetch 取证 → L2 search/neighbors 加速
-"""
 from __future__ import annotations
 
-import json
-import sys
-from typing import Any
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated, Any, Literal
+
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
+from pydantic import BaseModel, ConfigDict, Field
 
 from docgraph.core.bootstrap import bootstrap
 from docgraph.core.config import docgraph_dir, load_config, project_root_from_cwd
 from docgraph.core.dotenv import autoload_env
+from docgraph.core.manifest import load_manifest
 from docgraph.embeddings.factory import build_encoder
 from docgraph.embeddings.vector_factory import build_vector_store
 from docgraph.graph.schema import EdgeKind, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
-from docgraph.query.engine import ContextRequestError, QueryEngine
+from docgraph.query.engine import ContextRequestError, QueryEngine, entity_view
 from docgraph.version import __version__
 
-# ---------------------------------------------------------------------------
-# Tool definitions
-# ---------------------------------------------------------------------------
+MCP_TOOL_NAMES = (
+    "docgraph_query",
+    "docgraph_read",
+    "docgraph_entities",
+    "docgraph_neighbors",
+    "docgraph_outline",
+    "docgraph_documents",
+)
 
-TOOLS = [
-    {
-        "name": "docgraph_status",
-        "description": (
-            "Graph statistics: total nodes/edges, docs, per-kind counts. "
-            "Use this to understand what entity types are available and "
-            "how much to trust L2 extraction coverage."
-        ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "docgraph_files",
-        "description": "List all indexed documents (doc_ids).",
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "docgraph_search_chunks",
-        "description": (
-            "PRIMARY DISCOVERY TOOL. Full-text + semantic search across L1 chunks. "
-            "Returns chunk IDs with snippets, page numbers, section paths, and "
-            "block_ids for one-hop fetch. Use this FIRST to locate relevant "
-            "sections, tables, and figures before reading original content."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "limit": {"type": "integer", "default": 20},
-                "doc_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional document scope; omit to search the whole index.",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "docgraph_fetch",
-        "description": (
-            "READ ORIGINAL CONTENT. Given a chunk_id from search_chunks, returns "
-            "the complete chunk text, all original L0 blocks (tables/figures/text "
-            "with full row data, NOT truncated), and any L2 entities that reference "
-            "these chunks/blocks. Each entity includes source_quality so you can "
-            "judge whether to trust it or verify against the original blocks. "
-            "This is the authoritative reading path — the chunk and blocks are "
-            "the ground truth (L0/L1); entities are extraction candidates (L2)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {"chunk_id": {"type": "string"}},
-            "required": ["chunk_id"],
-        },
-    },
-    {
-        "name": "docgraph_fetch_many",
-        "description": (
-            "READ MULTIPLE ORIGINAL CHUNKS. Given up to 20 chunk_ids from "
-            "docgraph_context or docgraph_search_chunks, returns complete L1 chunk "
-            "text, deduplicated L0 blocks, related L2 entities, and links from each "
-            "chunk to its blocks/entities. Prefer this over many docgraph_fetch calls "
-            "when validating broad cross-document evidence."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "chunk_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 1,
-                    "maxItems": 20,
-                }
-            },
-            "required": ["chunk_ids"],
-        },
-    },
-    {
-        "name": "docgraph_context",
-        "description": (
-            "DEFAULT DOCUMENT VIEW. Transparently chooses between complete L1 "
-            "and L1 retrieval according to the selected corpus size and response "
-            "budget. Returns original chunk text without summarizing it, reports "
-            "coverage/completeness, retrieval methods, candidate counts, omitted "
-            "content, rank reasons, and a continuation cursor. L2/VLM results are "
-            "returned separately as enrichments. The agent remains responsible "
-            "for deciding what is relevant and whether to continue or verify L0. "
-            "The returned chunks already contain complete L1 text; call fetch only "
-            "when table cells, image/layout evidence, or source verification is needed; "
-            "use fetch_many for several chunks."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "task": {"type": "string"},
-                "mode": {
-                    "type": "string",
-                    "enum": ["auto", "full", "search"],
-                    "default": "auto",
-                },
-                "doc_ids": {"type": "array", "items": {"type": "string"}},
-                "max_chars": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 80000,
-                    "default": 40000,
-                },
-                "max_chunks": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 160,
-                    "default": 80,
-                },
-                "include_enrichments": {"type": "boolean", "default": True},
-                "max_enrichment_chars": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 20000,
-                    "default": 8000,
-                },
-                "cursor": {
-                    "type": "string",
-                    "description": (
-                        "Opaque continuation cursor. A search cursor retains the original "
-                        "task, so follow-up calls do not need to repeat it."
-                    ),
-                },
-            },
-            "required": [],
-        },
-    },
-    {
-        "name": "docgraph_search",
-        "description": (
-            "Search L2 graph entities by name/alias/kind. Returns candidates with "
-            "source_quality metadata: deterministic/verified = reliable "
-            "(table-based extraction); vlm/llm or needs_source_check=true = "
-            "verify with the returned source_chunk_ids via docgraph_fetch "
-            "before using. This is an acceleration path — skip it and go "
-            "directly through search_chunks+fetch if entity coverage is low."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "kind": {"type": "string"},
-                "limit": {"type": "integer", "default": 20},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "docgraph_section",
-        "description": (
-            "Navigate document structure. Returns a section node with its immediate "
-            "child sections — useful for understanding document organization "
-            "and finding tables/figures by their chapter context."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {"path_or_id": {"type": "string"}},
-            "required": ["path_or_id"],
-        },
-    },
-    {
-        "name": "docgraph_neighbors",
-        "description": (
-            "Walk the graph from a node. Returns neighboring nodes and edges "
-            "up to depth N. Useful for exploring module hierarchies and signal/interface "
-            "connections. Treat returned nodes as candidates — verify important ones "
-            "through their source_chunk_ids."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string"},
-                "edge_kinds": {"type": "array", "items": {"type": "string"}},
-                "depth": {"type": "integer", "default": 1},
-            },
-            "required": ["id"],
-        },
-    },
-]
+_READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
 
-# ---------------------------------------------------------------------------
-# Engine context
-# ---------------------------------------------------------------------------
+class _ResultModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-def _open_engine() -> QueryEngine:
+class QueryResult(_ResultModel):
+    coverage: Literal["complete_l1", "paginated_l1", "retrieval_candidates"]
+    l1_complete: bool
+    truncated: bool
+    next_cursor: str | None = None
+    total_documents: int
+    total_chunks: int
+    returned_chunks: int
+    remaining_candidates: int
+    retrieval_methods: list[str] = Field(default_factory=list)
+    chunks: list[dict[str, Any]] = Field(default_factory=list)
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ReadResult(_ResultModel):
+    requested_chunk_ids: list[str]
+    missing_chunk_ids: list[str]
+    chunks: list[dict[str, Any]]
+    blocks: list[dict[str, Any]]
+    entities: list[dict[str, Any]]
+    links: dict[str, dict[str, list[str]]]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class EntitySearchResult(_ResultModel):
+    entities: list[dict[str, Any]]
+    returned_count: int
+    truncated: bool
+    warnings: list[str] = Field(default_factory=list)
+
+
+class NeighborResult(_ResultModel):
+    root_id: str
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+    truncated: bool
+    warnings: list[str] = Field(default_factory=list)
+
+
+class OutlineItem(_ResultModel):
+    id: str
+    name: str
+    page: int | None = None
+    section_path: str | None = None
+
+
+class OutlineResult(_ResultModel):
+    doc_id: str
+    section_id: str | None = None
+    sections: list[OutlineItem]
+    truncated: bool
+
+
+class DocumentInfo(_ResultModel):
+    doc_id: str
+    path: str | None = None
+    parser: str | None = None
+    status: str | None = None
+    quality_status: str | None = None
+    last_run: str | None = None
+    error: str | None = None
+    chunks: int
+    characters: int
+
+
+class GraphSummary(_ResultModel):
+    nodes: int
+    edges: int
+    by_node_kind: dict[str, int]
+    by_edge_kind: dict[str, int]
+    vectors: int
+
+
+class DocumentsResult(_ResultModel):
+    documents: list[DocumentInfo]
+    graph: GraphSummary
+
+
+@dataclass
+class AppContext:
+    root: Path
+    store: SQLiteGraphStore
+    engine: QueryEngine
+
+
+def _open_runtime() -> AppContext:
     root = project_root_from_cwd()
     if not docgraph_dir(root).is_dir():
-        raise RuntimeError("No .docgraph/ found in cwd or parents.")
+        raise RuntimeError("No .docgraph/ found in cwd or parents. Run docgraph init first.")
     autoload_env(root)
     cfg = load_config(root)
     bootstrap()
     store = SQLiteGraphStore(docgraph_dir(root) / "graph.db")
     store.init_schema()
 
-    vstore = None
-    encoder = None
     vstore = build_vector_store(cfg.storage, docgraph_dir(root), create=False)
+    encoder = None
     if vstore is not None:
         vstore.init_schema()
         encoder = build_encoder(cfg.embeddings)
-    return QueryEngine(store, vstore=vstore, encoder=encoder)
+    return AppContext(root=root, store=store, engine=QueryEngine(store, vstore, encoder))
 
 
-# ---------------------------------------------------------------------------
-# Tool handlers
-# ---------------------------------------------------------------------------
+def _engine(ctx: Context[AppContext]) -> QueryEngine:
+    return ctx.request_context.lifespan_context.engine
 
 
-def _tool_status(qe, args):
-    return qe.status().model_dump()
+def _as_tool_error(exc: ContextRequestError) -> ToolError:
+    return ToolError(f"{exc.code}: {exc}")
 
 
-def _tool_files(qe, args):
-    return {"docs": qe.store.list_docs()}
-
-
-def _tool_search_chunks(qe, args):
-    hits = qe.search_chunks(
-        args["query"],
-        limit=args.get("limit", 20),
-        doc_ids=args.get("doc_ids"),
-    )
-    return {
-        "hits": hits,
-        "usage_policy": (
-            "These are L1 chunk candidates with snippets, page numbers, and "
-            "block_ids. Use docgraph_fetch(chunk_id) to read one complete "
-            "original chunk, or docgraph_fetch_many(chunk_ids) to verify several "
-            "related chunks without repeating shared blocks/entities."
-        ),
-    }
-
-
-def _tool_fetch(qe, args):
-    return qe.fetch(args["chunk_id"])
-
-
-def _tool_fetch_many(qe, args):
-    return qe.fetch_many(args.get("chunk_ids", []))
-
-
-def _tool_context(qe, args):
-    return qe.document_context(
-        task=args.get("task"),
-        mode=args.get("mode", "auto"),
-        doc_ids=args.get("doc_ids"),
-        max_chars=args.get("max_chars", 40_000),
-        max_chunks=args.get("max_chunks", 80),
-        include_enrichments=args.get("include_enrichments", True),
-        max_enrichment_chars=args.get("max_enrichment_chars", 8_000),
-        cursor=args.get("cursor"),
+def _query_result(raw: dict[str, Any]) -> QueryResult:
+    selection = raw["selection"]
+    warnings: list[str] = []
+    if selection["coverage"] == "retrieval_candidates":
+        warnings.append("These are retrieval candidates; an empty result does not prove absence.")
+    if selection.get("enrichments_truncated"):
+        warnings.append("Some related entities were omitted by the entity budget.")
+    return QueryResult(
+        coverage=selection["coverage"],
+        l1_complete=selection["l1_complete"],
+        truncated=selection["truncated"],
+        next_cursor=selection.get("next_cursor"),
+        total_documents=selection["total_docs"],
+        total_chunks=selection["total_chunks"],
+        returned_chunks=selection["returned_chunks"],
+        remaining_candidates=selection["unreturned_candidates"],
+        retrieval_methods=selection.get("retrieval_methods", []),
+        chunks=raw["chunks"],
+        entities=raw.get("enrichments", []),
+        warnings=warnings,
     )
 
 
-def _tool_search(qe, args):
-    q = args["query"]
-    kind = NodeKind(args["kind"]) if args.get("kind") else None
-    limit = args.get("limit", 20)
-    nodes = qe.search(q, kind=kind, limit=limit)
-    results = []
-    for n in nodes:
-        source_block_ids = n.attrs.get("source_block_ids") or n.attrs.get("block_ids") or []
-        source_chunk_ids = n.attrs.get("source_chunk_ids") or n.evidence.chunk_ids or []
-        results.append({
-            "id": n.id,
-            "kind": n.kind.value,
-            "name": n.name,
-            "qualified_name": n.qualified_name,
-            "doc_id": n.doc_id,
-            "page": n.location.page,
-            "summary": n.summary,
-            "source_chunk_ids": source_chunk_ids,
-            "source_block_ids": source_block_ids,
-            "source_quality": {
-                "source": n.attrs.get("source") or n.evidence.extractor,
-                "extraction_confidence": n.attrs.get("extraction_confidence"),
-                "needs_source_check": _needs_source_check(n),
-            },
-        })
-    return {
-        "results": results,
-        "total": len(results),
-        "usage_policy": (
-            "L2 entities are extraction candidates, NOT authoritative facts. "
-            "Check source_quality.needs_source_check on each result: "
-            "false (deterministic) = reliable table-based extraction. "
-            "true (vlm/llm/empty) = verify via docgraph_fetch(source_chunk_ids[0]) "
-            "before using in engineering deliverables."
-        ),
-    }
-
-
-def _tool_section(qe, args):
-    d = qe.section(args["path_or_id"])
-    if d is None:
-        return {"error": "not_found"}
-    return {
-        "section": d.node.model_dump(),
-        "children": [c.model_dump() for c in d.children],
-    }
-
-
-def _tool_neighbors(qe, args):
-    edge_kinds = (
-        [EdgeKind(k) for k in args.get("edge_kinds", [])]
-        if args.get("edge_kinds")
-        else None
-    )
-    sub = qe.neighbors(args["id"], edge_kinds=edge_kinds, depth=args.get("depth", 1))
-    return {
-        "nodes": [n.model_dump() for n in sub.nodes],
-        "edges": [e.model_dump() for e in sub.edges],
-        "usage_policy": (
-            "Graph neighbors show structural/semantic relationships. "
-            "Verify important nodes by checking their source_quality and "
-            "following source_chunk_ids back to original text."
-        ),
-    }
-
-
-HANDLERS = {
-    "docgraph_status": _tool_status,
-    "docgraph_files": _tool_files,
-    "docgraph_search_chunks": _tool_search_chunks,
-    "docgraph_fetch": _tool_fetch,
-    "docgraph_fetch_many": _tool_fetch_many,
-    "docgraph_context": _tool_context,
-    "docgraph_search": _tool_search,
-    "docgraph_section": _tool_section,
-    "docgraph_neighbors": _tool_neighbors,
-}
-
-
-def _needs_source_check(node) -> bool:
-    source = str(node.attrs.get("source") or node.evidence.extractor or "").lower()
-    confidence = str(node.attrs.get("extraction_confidence") or "").lower()
-    if confidence in {"deterministic", "verified"}:
-        return False
-    # VLM/LLM/figure extraction always needs L0/L1 verification
-    if any(tag in source for tag in ("figure@", "vlm", "llm")):
-        return True
-    # Missing both confidence and source → unknown origin, flag for safety
-    if not confidence and not source:
-        return True
-    # Table normalizer / regex extractor without explicit confidence:
-    # trust by default (deterministic extraction from structured data)
-    return False
-
-
-# ---------------------------------------------------------------------------
-# JSON-RPC loop
-# ---------------------------------------------------------------------------
-
-
-def _send(msg: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
-
-
-def _handle_request(qe, req: dict[str, Any]) -> dict[str, Any]:
-    method = req.get("method")
-    rid = req.get("id")
-    params = req.get("params", {}) or {}
-
-    if method == "initialize":
-        return {
-            "jsonrpc": "2.0",
-            "id": rid,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "docgraph", "version": __version__},
-                "capabilities": {"tools": {}},
-            },
-        }
-    if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}}
-    if method == "tools/call":
-        tool_name = params.get("name")
-        args = params.get("arguments", {}) or {}
-        handler = HANDLERS.get(tool_name)
-        if handler is None:
-            return {
-                "jsonrpc": "2.0",
-                "id": rid,
-                "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"},
-            }
+def create_server(
+    runtime_factory: Callable[[], AppContext] = _open_runtime,
+) -> MCPServer[AppContext]:
+    @asynccontextmanager
+    async def lifespan(server: MCPServer[AppContext]) -> AsyncIterator[AppContext]:
+        runtime = runtime_factory()
         try:
-            result = handler(qe, args)
-            return {
-                "jsonrpc": "2.0",
-                "id": rid,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result, ensure_ascii=False, default=str),
-                        }
-                    ]
-                },
-            }
-        except ContextRequestError as e:
-            return {
-                "jsonrpc": "2.0",
-                "id": rid,
-                "error": {
-                    "code": -32010,
-                    "message": str(e),
-                    "data": {"context_error": e.code},
-                },
-            }
-        except Exception as e:
-            return {
-                "jsonrpc": "2.0",
-                "id": rid,
-                "error": {"code": -32000, "message": str(e)},
-            }
+            yield runtime
+        finally:
+            runtime.store.close()
 
-    return {
-        "jsonrpc": "2.0",
-        "id": rid,
-        "error": {"code": -32601, "message": f"Unknown method: {method}"},
-    }
+    server = MCPServer(
+        "DocGraph",
+        version=__version__,
+        instructions=(
+            "Use docgraph_query for document questions. Read returned chunks directly; "
+            "call docgraph_read only for table, image, layout, or source verification. "
+            "L2 entities are navigation aids and must follow source_quality."
+        ),
+        lifespan=lifespan,
+    )
+
+    @server.tool(title="Query documents", annotations=_READ_ONLY)
+    def docgraph_query(
+        task: Annotated[
+            str | None,
+            Field(description="Question or retrieval intent. Omit to browse in document order."),
+        ] = None,
+        doc_ids: Annotated[
+            list[str] | None,
+            Field(description="Optional document IDs from docgraph_documents."),
+        ] = None,
+        cursor: Annotated[
+            str | None,
+            Field(description="Opaque next_cursor from the previous call."),
+        ] = None,
+        include_entities: Annotated[
+            bool,
+            Field(description="Include L2 entities linked to the returned chunks."),
+        ] = False,
+        *,
+        ctx: Context[AppContext],
+    ) -> QueryResult:
+        """Find relevant source text, or browse documents when task is omitted."""
+        try:
+            raw = _engine(ctx).agent_query(
+                task=task,
+                doc_ids=doc_ids,
+                cursor=cursor,
+                include_entities=include_entities,
+            )
+        except ContextRequestError as exc:
+            raise _as_tool_error(exc) from exc
+        return _query_result(raw)
+
+    @server.tool(title="Read source evidence", annotations=_READ_ONLY)
+    def docgraph_read(
+        chunk_ids: Annotated[
+            list[str],
+            Field(
+                min_length=1,
+                max_length=20,
+                description="One to twenty chunk IDs returned by docgraph_query.",
+            ),
+        ],
+        *,
+        ctx: Context[AppContext],
+    ) -> ReadResult:
+        """Read complete chunks with deduplicated original blocks and related entities."""
+        try:
+            raw = _engine(ctx).fetch_many(chunk_ids)
+        except ContextRequestError as exc:
+            raise _as_tool_error(exc) from exc
+        if not raw["chunks"]:
+            raise ToolError("None of the requested chunk IDs exist. Run docgraph_query again.")
+        warnings = []
+        if raw["missing_chunk_ids"]:
+            warnings.append(
+                "Some requested chunk IDs were not found; the remaining evidence is complete."
+            )
+        return ReadResult(
+            requested_chunk_ids=raw["requested_chunk_ids"],
+            missing_chunk_ids=raw["missing_chunk_ids"],
+            chunks=raw["chunks"],
+            blocks=raw["blocks"],
+            entities=raw["entities"],
+            links=raw["links"],
+            warnings=warnings,
+        )
+
+    @server.tool(title="Search entities", annotations=_READ_ONLY)
+    def docgraph_entities(
+        query: Annotated[str, Field(min_length=1, description="Entity name or alias.")],
+        kind: Annotated[NodeKind | None, Field(description="Optional entity kind.")] = None,
+        doc_ids: Annotated[
+            list[str] | None,
+            Field(description="Optional document IDs from docgraph_documents."),
+        ] = None,
+        limit: Annotated[int, Field(ge=1, le=50)] = 20,
+        *,
+        ctx: Context[AppContext],
+    ) -> EntitySearchResult:
+        """Search L2 entities within an optional document scope."""
+        if not query.strip():
+            raise ToolError("query cannot be blank")
+        try:
+            nodes = _engine(ctx).search(
+                query.strip(),
+                kind=kind,
+                limit=limit + 1,
+                doc_ids=doc_ids,
+            )
+        except ContextRequestError as exc:
+            raise _as_tool_error(exc) from exc
+        truncated = len(nodes) > limit
+        entities = [entity_view(node) for node in nodes[:limit]]
+        warnings = []
+        if any(item["source_quality"]["needs_source_check"] for item in entities):
+            warnings.append("Some entities require verification through their source_chunk_ids.")
+        return EntitySearchResult(
+            entities=entities,
+            returned_count=len(entities),
+            truncated=truncated,
+            warnings=warnings,
+        )
+
+    @server.tool(title="Explore entity relationships", annotations=_READ_ONLY)
+    def docgraph_neighbors(
+        node_id: Annotated[str, Field(min_length=1, description="Starting L2 node ID.")],
+        edge_kinds: Annotated[
+            list[EdgeKind] | None,
+            Field(description="Optional relationship kinds to follow."),
+        ] = None,
+        depth: Annotated[int, Field(ge=1, le=3)] = 1,
+        max_nodes: Annotated[int, Field(ge=1, le=100)] = 50,
+        *,
+        ctx: Context[AppContext],
+    ) -> NeighborResult:
+        """Expand a bounded L2 neighborhood and preserve source references."""
+        qe = _engine(ctx)
+        if qe.node(node_id) is None:
+            raise ToolError(f"Unknown node_id: {node_id}")
+        subgraph = qe.neighbors(
+            node_id,
+            edge_kinds=edge_kinds,
+            depth=depth,
+            limit=max_nodes + 1,
+        )
+        truncated = len(subgraph.nodes) > max_nodes
+        nodes = subgraph.nodes[:max_nodes]
+        node_ids = {node.id for node in nodes}
+        edges = [
+            edge.model_dump(mode="json")
+            for edge in subgraph.edges
+            if edge.src in node_ids and edge.dst in node_ids
+        ]
+        node_views = [entity_view(node) for node in nodes]
+        warnings = []
+        if truncated:
+            warnings.append("The neighborhood reached max_nodes; narrow edge_kinds or depth.")
+        if any(item["source_quality"]["needs_source_check"] for item in node_views):
+            warnings.append("Some nodes require verification through their source_chunk_ids.")
+        return NeighborResult(
+            root_id=node_id,
+            nodes=node_views,
+            edges=edges,
+            truncated=truncated,
+            warnings=warnings,
+        )
+
+    @server.tool(title="Browse document outline", annotations=_READ_ONLY)
+    def docgraph_outline(
+        doc_id: Annotated[str, Field(min_length=1, description="Document ID.")],
+        section_id: Annotated[
+            str | None,
+            Field(description="Optional exact section node ID to expand."),
+        ] = None,
+        depth: Annotated[int, Field(ge=1, le=3)] = 1,
+        limit: Annotated[int, Field(ge=1, le=500)] = 200,
+        *,
+        ctx: Context[AppContext],
+    ) -> OutlineResult:
+        """List a document outline or expand one exact section node."""
+        try:
+            nodes = _engine(ctx).outline(
+                doc_id,
+                section_id=section_id,
+                depth=depth,
+                limit=limit + 1,
+            )
+        except ContextRequestError as exc:
+            raise _as_tool_error(exc) from exc
+        if section_id is not None and not nodes:
+            raise ToolError(f"Unknown section_id {section_id!r} in document {doc_id!r}.")
+        truncated = len(nodes) > limit
+        sections = [
+            OutlineItem(
+                id=node.id,
+                name=node.name,
+                page=node.location.page,
+                section_path=node.location.section_path,
+            )
+            for node in nodes[:limit]
+        ]
+        return OutlineResult(
+            doc_id=doc_id,
+            section_id=section_id,
+            sections=sections,
+            truncated=truncated,
+        )
+
+    @server.tool(title="List documents and index status", annotations=_READ_ONLY)
+    def docgraph_documents(*, ctx: Context[AppContext]) -> DocumentsResult:
+        """List indexed documents with build metadata and graph statistics."""
+        runtime = ctx.request_context.lifespan_context
+        status = runtime.engine.status()
+        manifest = load_manifest(runtime.root)
+        records = {
+            record.doc_id: record for record in manifest.files.values() if record.doc_id is not None
+        }
+        documents = []
+        for doc_id in status.docs:
+            stats = runtime.store.chunk_corpus_stats([doc_id])
+            record = records.get(doc_id)
+            documents.append(
+                DocumentInfo(
+                    doc_id=doc_id,
+                    path=record.path if record else None,
+                    parser=record.parser if record else None,
+                    status=record.status if record else None,
+                    quality_status=record.quality_status if record else None,
+                    last_run=record.last_run if record else None,
+                    error=record.error if record else None,
+                    chunks=stats["total_chunks"],
+                    characters=stats["total_chars"],
+                )
+            )
+        return DocumentsResult(
+            documents=documents,
+            graph=GraphSummary(
+                nodes=status.nodes_total,
+                edges=status.edges_total,
+                by_node_kind=status.by_kind,
+                by_edge_kind=status.by_edge_kind,
+                vectors=status.vector_count,
+            ),
+        )
+
+    return server
+
+
+mcp = create_server()
 
 
 def run_stdio() -> None:
-    qe = _open_engine()
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        _send(_handle_request(qe, req))
+    mcp.run()
