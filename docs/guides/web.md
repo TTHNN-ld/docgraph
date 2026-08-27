@@ -12,6 +12,8 @@ docgraph serve --web --port 8000
 
 主要页面包括概览、寄存器、管脚、参数、章节、图、术语、搜索、chunk、node、graph 和插件。JSON API 的精确路由以 [`docgraph/web/routes.py`](../../docgraph/web/routes.py) 为准。
 
+`/graph` 是 3D 力导向图：默认只勾选模块/寄存器骨架；相机用 Trackball（左键旋转、滚轮缩放、右键或 Shift+左键平移）。默认不显示节点名称，悬停可看 `kind: name`。
+
 ## 安全与离线边界
 
 - 服务没有内置认证。绑定 `0.0.0.0` 前必须在外层增加认证、授权和 TLS。

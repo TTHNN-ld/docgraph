@@ -17,8 +17,15 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+}
 body {
+  min-height: 100vh;
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
          "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: var(--fg);
@@ -46,9 +53,14 @@ header {
   background: var(--bg); border-bottom: 1px solid var(--border);
   padding: 10px 0; position: sticky; top: 0; z-index: 10;
 }
-.container { max-width: 1280px; margin: 0 auto; padding: 0 16px; }
+.container, .header-row, .layout {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+}
+.container { padding: 0 20px; }
 .header-row {
-  max-width: 1280px; margin: 0 auto; padding: 0 16px;
+  padding: 0 20px;
   display: flex; justify-content: space-between; align-items: center; gap: 24px;
 }
 .brand { font-weight: 700; font-size: 16px; color: var(--fg); }
@@ -56,8 +68,10 @@ header {
 .search-inline input { width: 320px; max-width: 50vw; }
 
 .layout {
-  max-width: 1280px; margin: 0 auto; padding: 16px;
-  display: grid; grid-template-columns: 200px 1fr; gap: 24px;
+  padding: 16px 20px;
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 24px;
 }
 .sidebar {
   background: var(--bg); border-radius: var(--radius);
@@ -71,7 +85,13 @@ header {
 .sidebar a:hover { background: var(--primary-soft); text-decoration: none; }
 .sidebar a.active { background: var(--primary); color: white; font-weight: 600; }
 
-.content { background: var(--bg); border-radius: var(--radius); padding: 20px; border: 1px solid var(--border); }
+.content {
+  min-width: 0;
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 20px;
+  border: 1px solid var(--border);
+}
 
 footer { margin: 32px 0 16px; text-align: center; }
 .muted { color: var(--fg-muted); font-size: 12px; }
@@ -215,18 +235,39 @@ button:hover { background: #4c7ee0; }
 .dot-term      { background: #64748b; }
 
 .graph-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 2px; }
-.graph-toolbar { display: inline-flex; align-items: center; gap: 6px; }
-.graph-toolbar button { white-space: nowrap; }
 .graph-label-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; cursor: pointer; }
 .graph-label-toggle input { margin: 0; }
-.graph-icon-button { min-width: 30px; padding: 3px 8px; font-size: 17px; line-height: 1.1; }
 .graph-help { margin: 0 0 8px; }
-#graph { position: relative; width: 100%; height: 720px; background: var(--bg-alt); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; cursor: grab; }
+#graph { position: relative; z-index: 1; isolation: isolate; contain: layout paint; width: 100%; min-width: 0; height: 720px; background: var(--bg-alt); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; cursor: grab; }
+#graph canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+}
 #graph:active { cursor: grabbing; }
-#graph.graph-panning { cursor: grabbing; }
 .graph-label-layer { position: absolute; inset: 0; z-index: 10; pointer-events: none; overflow: hidden; }
-.graph-node-label { position: absolute; top: 0; left: 0; display: block; max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 5px; border: 1px solid rgba(255,255,255,.86); border-radius: 4px; background: rgba(255,255,255,.78); box-shadow: 0 1px 2px rgba(15,23,42,.12); color: #334155; font: 11px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.graph-label-layer[hidden] { display: none !important; }
+.graph-node-label { position: absolute; top: 0; left: 0; display: block; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 6px 1px 5px; border: 1px solid rgba(255,255,255,.86); border-left-width: 3px; border-radius: 4px; background: rgba(255,255,255,.88); box-shadow: 0 1px 2px rgba(15,23,42,.12); color: #334155; font: 11px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; pointer-events: none; }
+.graph-hover-tip {
+  position: absolute; top: 0; left: 0; z-index: 40;
+  padding: 4px 8px; border-radius: 4px;
+  background: rgba(31, 41, 55, .92); color: #fff;
+  font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: none; white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, .28);
+}
+.graph-hover-tip[hidden] { display: none !important; }
+.graph-node-label[hidden] { display: none !important; }
 .graph-node-label-register, .graph-node-label-module, .graph-node-label-interface, .graph-node-label-memory_map { font-weight: 600; }
+.graph-node-label-register { border-left-color: #5b8def; }
+.graph-node-label-module { border-left-color: #a78bfa; }
+.graph-node-label-interface { border-left-color: #22c55e; }
+.graph-node-label-memory_map { border-left-color: #8b5cf6; }
+.graph-node-label-bitfield { border-left-color: #92c5fd; }
+.graph-node-label-signal { border-left-color: #fb7185; }
+.graph-node-label-pin { border-left-color: #f59e0b; }
+.graph-node-label-figure { border-left-color: #ec4899; }
 
 details summary { cursor: pointer; color: var(--fg-muted); margin: 8px 0; }
 

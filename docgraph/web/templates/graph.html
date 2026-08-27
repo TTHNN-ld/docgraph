@@ -4,7 +4,7 @@
 {% block content %}
 <h1>关系图</h1>
 
-{% set default_node_kinds = 'register,bitfield,module,interface,signal,figure'.split(',') %}
+{% set default_node_kinds = 'register,module,interface,memory_map'.split(',') %}
 {% set default_edge_kinds = 'has_bitfield,belongs_to,contained_in,connects_to,controls,depends_on,references'.split(',') %}
 <form class="filter-bar graph-filters" id="graph-controls">
   <div class="filter-group">
@@ -37,27 +37,22 @@
 
   <div class="filter-group filter-row">
     <span class="filter-label">数量上限</span>
-    <input type="number" name="limit" value="300" min="10" max="5000" class="limit-input">
+    <input type="number" name="limit" value="150" min="10" max="5000" class="limit-input">
     <button type="submit">刷新</button>
   </div>
 </form>
 
 <div class="graph-header">
   <div id="graph-status" class="muted">加载中…</div>
-  <div class="graph-toolbar" aria-label="关系图视图控制">
-    <label class="graph-label-toggle"><input type="checkbox" id="graph-labels-toggle" checked> 显示节点名称</label>
-    <button type="button" id="graph-fit" title="将全部可见节点置于视图中央">适配图谱</button>
-    <button type="button" id="graph-zoom-in" class="graph-icon-button" aria-label="放大关系图" title="放大">＋</button>
-    <button type="button" id="graph-zoom-out" class="graph-icon-button" aria-label="缩小关系图" title="缩小">−</button>
-  </div>
+  <label class="graph-label-toggle"><input type="checkbox" id="graph-labels-toggle"> 显示节点名称</label>
 </div>
-<p class="graph-help muted">左键拖拽可旋转；Shift + 左键拖拽可线性平移视图；滚轮以鼠标位置为中心缩放；点击“适配图谱”可重新居中。</p>
+<p class="graph-help muted">左键拖动旋转，滚轮缩放。平移：右键拖动，或 Shift+左键拖动（Mac / Windows 相同）。鼠标悬停节点可看名称；勾选「显示节点名称」后常显标签。</p>
 <div id="graph"></div>
 
 {% endblock %}
 {% block scripts %}
 <script>
-// 3D 力导向图（three.js + d3-force-3d）。多 CDN 回退以适应网络。
+// 3D 力导向图。相机交给 3d-force-graph / Trackball；页面只做悬停提示和可选名称层。
 const KIND_COLORS = {
   register: '#5b8def', bitfield: '#92c5fd',
   section:  '#9c8df0', pin:      '#f59e0b',
@@ -67,12 +62,10 @@ const KIND_COLORS = {
   interrupt:'#ef4444', clock:    '#06b6d4', memory_map:'#8b5cf6',
   power_domain:'#84cc16', requirement:'#f97316', errata: '#dc2626',
 };
-let currentGraph = null;
-let graphWheelAbort = null;
-let refreshGraphLabels = null;
-let graphLabelAnimationFrame = null;
-let graphResizeObserver = null;
-
+const ROTATE = 0, PAN = 2;
+const CLICK_SLOP_SQ = 36;
+const MAX_VISIBLE_LABELS = 250;
+const LABEL_GAP = 4;
 const LABEL_PRIORITY = {
   register: 6, module: 6, interface: 6, memory_map: 6,
   interrupt: 5, signal: 4, pin: 4, clock: 4,
@@ -80,200 +73,302 @@ const LABEL_PRIORITY = {
   section: 2, figure: 2,
 };
 
+let currentGraph = null;
+let graphSessionAbort = null;
+let refreshGraphLabels = null;
+let graphLabelFrame = null;
+let graphResizeObserver = null;
+let graphFetchGen = 0;
+let userMovedCamera = false;
+let pointerDownPos = null;
+let shiftKeyHeld = false;
+let altKeyHeld = false;
+
+function graphLabelsEnabled() {
+  return document.getElementById('graph-labels-toggle')?.checked === true;
+}
+
+function sizeGraphToContainer(graph, elem) {
+  const width = Math.max(1, Math.floor(elem.clientWidth));
+  const height = Math.max(1, Math.floor(elem.clientHeight));
+  graph.width(width).height(height);
+}
+
 function fitGraph(graph, duration = 500) {
-  if (graph) graph.zoomToFit(duration, 88);
+  if (!graph) return;
+  try {
+    graph.zoomToFit(duration, 72);
+  } catch (err) {
+    console.warn('zoomToFit failed', err);
+  }
 }
 
-function moveCameraAround(graph, anchor, scale, duration = 0) {
-  const camera = graph.camera();
-  const controls = graph.controls();
-  if (!camera || !controls || !controls.target) return;
-  const nextPosition = anchor.clone().add(
-    camera.position.clone().sub(anchor).multiplyScalar(scale)
-  );
-  graph.cameraPosition(nextPosition, anchor, duration);
-  controls.target.copy(anchor);
-  controls.update();
+function beginGraphSession() {
+  graphSessionAbort?.abort();
+  graphSessionAbort = new AbortController();
+  return graphSessionAbort.signal;
 }
 
-function installPointerZoom(graph, elem) {
-  graphWheelAbort?.abort();
-  graphWheelAbort = new AbortController();
-  elem.addEventListener('wheel', event => {
-    const camera = graph.camera();
-    const controls = graph.controls();
-    if (!camera || !controls || !controls.target) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    const rect = elem.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-    const Vector3 = camera.position.constructor;
-    const target = controls.target.clone();
-    const rayDirection = new Vector3(x, y, 0.5)
-      .unproject(camera)
-      .sub(camera.position)
-      .normalize();
-    const cameraDirection = new Vector3();
-    camera.getWorldDirection(cameraDirection);
-    const denominator = cameraDirection.dot(rayDirection);
-    if (Math.abs(denominator) < 0.0001) return;
-    const distance = target.clone().sub(camera.position).dot(cameraDirection) / denominator;
-    if (distance <= 0) return;
-
-    const anchor = camera.position.clone().add(rayDirection.multiplyScalar(distance));
-    const delta = Math.max(-120, Math.min(120, event.deltaY));
-    const scale = Math.exp(delta * 0.0015);
-    const nextTarget = anchor.clone().add(target.sub(anchor).multiplyScalar(scale));
-    const nextPosition = anchor.clone().add(
-      camera.position.clone().sub(anchor).multiplyScalar(scale)
-    );
-    graph.cameraPosition(nextPosition, nextTarget);
-    controls.target.copy(nextTarget);
-    controls.update();
-  }, { capture: true, passive: false, signal: graphWheelAbort.signal });
-
-}
-
-function configureNavigationControls(graph, elem) {
-  const controls = graph.controls();
+function syncLeftButton() {
+  const controls = currentGraph && typeof currentGraph.controls === 'function'
+    ? currentGraph.controls() : null;
   if (!controls || !controls.mouseButtons) return;
-  // three.js MOUSE enum: ROTATE=0, DOLLY=1, PAN=2.
-  const ROTATE = 0;
-  controls.mouseButtons.LEFT = ROTATE;
-  elem.addEventListener('contextmenu', event => event.preventDefault(), {
-    signal: graphWheelAbort.signal,
+  controls.mouseButtons.LEFT = (shiftKeyHeld || altKeyHeld) ? PAN : ROTATE;
+}
+
+function bindModifierKeyTracking() {
+  const onShift = (held, event) => {
+    if (event.key === 'Shift') shiftKeyHeld = held;
+    if (event.key === 'Alt') altKeyHeld = held;
+    syncLeftButton();
+  };
+  window.addEventListener('keydown', event => onShift(true, event));
+  window.addEventListener('keyup', event => onShift(false, event));
+  window.addEventListener('blur', () => {
+    shiftKeyHeld = false;
+    altKeyHeld = false;
+    syncLeftButton();
   });
 }
 
-function installLinearPan(graph, elem) {
-  let pan = null;
-
-  elem.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || !event.shiftKey) return;
-    const camera = graph.camera();
-    const controls = graph.controls();
-    if (!camera || !controls || !controls.target) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    camera.updateMatrixWorld();
-    const Vector3 = camera.position.constructor;
-    const distance = camera.position.distanceTo(controls.target);
-    const pixelsToWorld = (2 * Math.tan((camera.fov || 60) * Math.PI / 360) * distance)
-      / elem.getBoundingClientRect().height;
-    pan = {
-      pointerId: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
-      cameraPosition: camera.position.clone(),
-      target: controls.target.clone(),
-      right: new Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize(),
-      up: new Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize(),
-      pixelsToWorld,
-    };
-    controls.enabled = false;
-    elem.classList.add('graph-panning');
-    elem.setPointerCapture(event.pointerId);
-  }, { capture: true, signal: graphWheelAbort.signal });
-
-  elem.addEventListener('pointermove', event => {
-    if (!pan || event.pointerId !== pan.pointerId) return;
-    const camera = graph.camera();
-    const controls = graph.controls();
-    if (!camera || !controls) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    const offset = pan.right.clone().multiplyScalar(-(event.clientX - pan.x) * pan.pixelsToWorld)
-      .add(pan.up.clone().multiplyScalar((event.clientY - pan.y) * pan.pixelsToWorld));
-    camera.position.copy(pan.cameraPosition).add(offset);
-    controls.target.copy(pan.target).add(offset);
-    camera.lookAt(controls.target);
-  }, { capture: true, signal: graphWheelAbort.signal });
-
-  const finishPan = event => {
-    if (!pan || event.pointerId !== pan.pointerId) return;
-    const controls = graph.controls();
-    if (controls) controls.enabled = true;
-    if (elem.hasPointerCapture(event.pointerId)) elem.releasePointerCapture(event.pointerId);
-    pan = null;
-    elem.classList.remove('graph-panning');
-  };
-  elem.addEventListener('pointerup', finishPan, { capture: true, signal: graphWheelAbort.signal });
-  elem.addEventListener('pointercancel', finishPan, { capture: true, signal: graphWheelAbort.signal });
+function configureNavigationControls(graph, elem, signal) {
+  const controls = graph.controls();
+  if (!controls) return;
+  if (controls.mouseButtons) {
+    controls.mouseButtons.LEFT = ROTATE;
+    controls.mouseButtons.MIDDLE = PAN;
+    controls.mouseButtons.RIGHT = PAN;
+  }
+  if ('enablePan' in controls) controls.enablePan = true;
+  if ('screenSpacePanning' in controls) controls.screenSpacePanning = true;
+  if (typeof controls.addEventListener === 'function') {
+    controls.addEventListener('start', () => { userMovedCamera = true; });
+    controls.addEventListener('change', scheduleLabelUpdate);
+  }
+  elem.addEventListener('contextmenu', event => event.preventDefault(), { signal });
+  syncLeftButton();
 }
 
-function createGraphLabels(nodes, elem) {
+function panCameraByPixels(graph, elem, dx, dy) {
+  const camera = graph.camera();
+  const controls = graph.controls();
+  if (!camera || !controls || !controls.target) return;
+  userMovedCamera = true;
+  camera.updateMatrixWorld();
+  const Vector3 = camera.position.constructor;
+  const distance = camera.position.distanceTo(controls.target);
+  const pixelsToWorld = (2 * Math.tan((camera.fov || 60) * Math.PI / 360) * distance)
+    / Math.max(1, elem.getBoundingClientRect().height);
+  const offset = new Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize()
+    .multiplyScalar(-dx * pixelsToWorld)
+    .add(new Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize()
+      .multiplyScalar(dy * pixelsToWorld));
+  camera.position.add(offset);
+  controls.target.add(offset);
+  if (typeof controls.update === 'function') controls.update();
+}
+
+function installTrackpadPan(graph, elem, signal) {
+  // 仅拦截横向主导的滚轮（触控板侧滑）。竖向滚轮留给 Trackball 缩放。
+  elem.addEventListener('wheel', event => {
+    if (event.ctrlKey || event.metaKey) return;
+    if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    panCameraByPixels(graph, elem, event.deltaX, event.deltaY);
+    scheduleLabelUpdate();
+  }, { capture: true, passive: false, signal });
+}
+
+function boxesOverlap(a, b) {
+  return !(a.right + LABEL_GAP < b.left || a.left > b.right + LABEL_GAP
+    || a.bottom + LABEL_GAP < b.top || a.top > b.bottom + LABEL_GAP);
+}
+
+function labelIsolation(item, others) {
+  let best = Infinity;
+  for (const other of others) {
+    if (other.node.id === item.node.id) continue;
+    const dx = item.x - other.x;
+    const dy = item.y - other.y;
+    const dist = dx * dx + dy * dy;
+    if (dist < best) best = dist;
+  }
+  return best;
+}
+
+function nodeVisibleInView(graph, node) {
+  const camera = graph.camera();
+  if (!camera || !camera.position || typeof camera.getWorldDirection !== 'function') return true;
+  const z = Number.isFinite(node.z) ? node.z : 0;
+  const Vector3 = camera.position.constructor;
+  const dir = new Vector3();
+  camera.getWorldDirection(dir);
+  const depth = dir.x * (node.x - camera.position.x)
+    + dir.y * (node.y - camera.position.y)
+    + dir.z * (z - camera.position.z);
+  // 相机后面的点仍会投影到屏幕上，但 WebGL 不会画这个球。
+  return depth > 0.5;
+}
+
+function createGraphLabels(nodes, elem, graph) {
   const layer = document.createElement('div');
   layer.className = 'graph-label-layer';
-  layer.style.zIndex = '10';
+  layer.hidden = true;
   const labels = nodes.filter(node => node.name).map(node => {
     const label = document.createElement('span');
     label.className = `graph-node-label graph-node-label-${node.kind}`;
-    label.textContent = `${node.kind} · ${node.name}`;
+    label.textContent = node.name;
+    label.title = `${node.kind} · ${node.name}`;
     layer.appendChild(label);
     return { node, label, priority: LABEL_PRIORITY[node.kind] || 1 };
   });
   elem.appendChild(layer);
 
-  const update = () => {
-    const enabled = document.getElementById('graph-labels-toggle')?.checked;
+  return () => {
+    const enabled = graphLabelsEnabled();
     layer.hidden = !enabled;
     if (!enabled) return;
-    if (!currentGraph) return;
-    const layoutNodes = new Map(
-      (currentGraph.graphData()?.nodes || []).map(node => [node.id, node])
-    );
+    let layoutNodes;
+    try {
+      layoutNodes = new Map((graph.graphData()?.nodes || []).map(node => [node.id, node]));
+    } catch (_) {
+      return;
+    }
     const rect = elem.getBoundingClientRect();
     const visible = [];
     for (const item of labels) {
       const layoutNode = layoutNodes.get(item.node.id) || item.node;
-      if (!Number.isFinite(layoutNode.x) || !Number.isFinite(layoutNode.y)) continue;
-      const screen = currentGraph.graph2ScreenCoords(layoutNode.x, layoutNode.y, layoutNode.z || 0);
+      if (!Number.isFinite(layoutNode.x) || !Number.isFinite(layoutNode.y)) {
+        item.label.hidden = true;
+        continue;
+      }
+      if (typeof graph.graph2ScreenCoords !== 'function') {
+        item.label.hidden = true;
+        continue;
+      }
+      if (!nodeVisibleInView(graph, layoutNode)) {
+        item.label.hidden = true;
+        continue;
+      }
+      const screen = graph.graph2ScreenCoords(
+        layoutNode.x, layoutNode.y, Number.isFinite(layoutNode.z) ? layoutNode.z : 0
+      );
       const x = screen.x;
       const y = screen.y;
-      if (x < 0 || x > rect.width || y < 0 || y > rect.height) continue;
+      if (x < 2 || x > rect.width - 2 || y < 2 || y > rect.height - 2) {
+        item.label.hidden = true;
+        continue;
+      }
       visible.push({ ...item, x, y });
     }
 
-    visible.sort((a, b) => b.priority - a.priority || a.node.name.localeCompare(b.node.name));
-    const occupied = [];
+    for (const item of visible) item.isolation = labelIsolation(item, visible);
+    visible.sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return b.isolation - a.isolation;
+    });
     for (const item of visible) {
-      const width = Math.min(210, 18 + item.label.textContent.length * 6.5);
-      const box = { left: item.x - width / 2, right: item.x + width / 2, top: item.y - 22, bottom: item.y - 4 };
-      const overlaps = occupied.some(other => !(box.right < other.left || box.left > other.right || box.bottom < other.top || box.top > other.bottom));
-      item.label.hidden = overlaps;
-      if (!overlaps) {
-        item.label.style.transform = `translate(${item.x}px, ${item.y}px) translate(-50%, -125%)`;
-        occupied.push(box);
-      }
+      item.label.hidden = false;
+      item.label.style.transform = `translate(${item.x}px, ${item.y}px) translate(-50%, -125%)`;
     }
-    const rendered = new Set(visible.map(item => item.label));
-    for (const item of labels) {
-      if (!rendered.has(item.label)) item.label.hidden = true;
+    const occupied = [];
+    let shown = 0;
+    for (const item of visible) {
+      const r = item.label.getBoundingClientRect();
+      const box = { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+      if (shown >= MAX_VISIBLE_LABELS || occupied.some(other => boxesOverlap(box, other))) {
+        item.label.hidden = true;
+        continue;
+      }
+      occupied.push(box);
+      shown += 1;
     }
   };
-  return update;
 }
 
-function startGraphLabelRenderLoop(graph, update) {
-  if (graphLabelAnimationFrame !== null) {
-    cancelAnimationFrame(graphLabelAnimationFrame);
+function scheduleLabelUpdate() {
+  if (!graphLabelsEnabled()) return;
+  if (graphLabelFrame !== null) return;
+  graphLabelFrame = requestAnimationFrame(() => {
+    graphLabelFrame = null;
+    try { refreshGraphLabels?.(); } catch (err) {
+      console.warn('graph labels', err);
+    }
+  });
+}
+
+function syncGraphLabels() {
+  const layer = document.querySelector('#graph .graph-label-layer');
+  if (!graphLabelsEnabled()) {
+    if (layer) layer.hidden = true;
+    if (graphLabelFrame !== null) {
+      cancelAnimationFrame(graphLabelFrame);
+      graphLabelFrame = null;
+    }
+    return;
   }
-  const renderFrame = () => {
-    if (currentGraph !== graph) return;
-    update();
-    graphLabelAnimationFrame = requestAnimationFrame(renderFrame);
-  };
-  renderFrame();
+  refreshGraphLabels?.();
+}
+
+function clampHoverTip(tip, elem, event) {
+  const rect = elem.getBoundingClientRect();
+  const pad = 8;
+  let x = event.clientX - rect.left + 14;
+  let y = event.clientY - rect.top + 16;
+  const maxX = Math.max(pad, rect.width - tip.offsetWidth - pad);
+  const maxY = Math.max(pad, rect.height - tip.offsetHeight - pad);
+  x = Math.min(Math.max(pad, x), maxX);
+  y = Math.min(Math.max(pad, y), maxY);
+  tip.style.transform = `translate(${x}px, ${y}px)`;
+}
+
+function installHoverTip(graph, elem, signal) {
+  const tip = document.createElement('div');
+  tip.className = 'graph-hover-tip';
+  tip.hidden = true;
+  elem.appendChild(tip);
+  elem.addEventListener('pointermove', event => {
+    if (tip.hidden) return;
+    clampHoverTip(tip, elem, event);
+  }, { signal });
+  if (typeof graph.onNodeHover !== 'function') return;
+  graph.onNodeHover(node => {
+    if (!node) {
+      tip.hidden = true;
+      return;
+    }
+    tip.hidden = false;
+    tip.textContent = `${node.kind}: ${node.name}`;
+  });
+}
+
+function installClickGuard(elem, signal) {
+  pointerDownPos = null;
+  elem.addEventListener('pointerdown', event => {
+    pointerDownPos = { x: event.clientX, y: event.clientY };
+  }, { signal });
+}
+
+function isClickNotDrag(event) {
+  if (!pointerDownPos || !event || event.clientX == null) return true;
+  const dx = event.clientX - pointerDownPos.x;
+  const dy = event.clientY - pointerDownPos.y;
+  return dx * dx + dy * dy <= CLICK_SLOP_SQ;
 }
 
 function bindGraphViewport(graph, elem) {
+  let lastWidth = 0;
+  let lastHeight = 0;
   const resize = () => {
     if (currentGraph !== graph) return;
-    graph.width(elem.clientWidth).height(elem.clientHeight);
-    refreshGraphLabels?.();
+    const width = Math.max(1, Math.floor(elem.clientWidth));
+    const height = Math.max(1, Math.floor(elem.clientHeight));
+    if (width === lastWidth && height === lastHeight) return;
+    lastWidth = width;
+    lastHeight = height;
+    sizeGraphToContainer(graph, elem);
+    scheduleLabelUpdate();
   };
   graphResizeObserver?.disconnect();
   graphResizeObserver = new ResizeObserver(resize);
@@ -284,16 +379,20 @@ function bindGraphViewport(graph, elem) {
 function fetchGraph() {
   const nodeKinds = [...document.querySelectorAll('input[name=node_kind]:checked')].map(cb => cb.value).join(',');
   const edgeKinds = [...document.querySelectorAll('input[name=edge_kind]:checked')].map(cb => cb.value).join(',');
-  const limit = document.querySelector('input[name=limit]').value || '300';
+  const limit = document.querySelector('input[name=limit]').value || '150';
   const params = new URLSearchParams();
   if (nodeKinds) params.set('kinds', nodeKinds);
   if (edgeKinds) params.set('edge_kinds', edgeKinds);
   params.set('limit', limit);
   document.getElementById('graph-status').textContent = '加载中…';
-  return fetch('/api/graph?' + params.toString()).then(r => r.json());
+  const gen = ++graphFetchGen;
+  return fetch('/api/graph?' + params.toString())
+    .then(r => r.json())
+    .then(data => (gen === graphFetchGen ? data : null));
 }
 
 function render(data) {
+  if (!data) return;
   const status = document.getElementById('graph-status');
   status.textContent = `${data.nodes.length} 节点 · ${data.edges.length} 边`;
   if (!data.nodes.length) {
@@ -309,47 +408,60 @@ function render(data) {
 
   const elem = document.getElementById('graph');
   elem.innerHTML = '';
-
-  const graph = ForceGraph3D()(elem)
-    .graphData({ nodes: data.nodes, links })
+  if (currentGraph && typeof currentGraph.pauseAnimation === 'function') {
+    try { currentGraph.pauseAnimation(); } catch (_) { /* 旧实例可能已经拆掉 */ }
+  }
+  const signal = beginGraphSession();
+  const graph = ForceGraph3D()(elem);
+  currentGraph = graph;
+  userMovedCamera = false;
+  graph
     .backgroundColor('#fafafa')
+    .graphData({ nodes: data.nodes, links })
     .nodeRelSize(4)
-    .nodeVal(d => d.kind === 'register' ? 2 : d.kind === 'section' ? 1.2 : 1)
+    .nodeVal(d => d.kind === 'register' || d.kind === 'module' ? 2.4 : d.kind === 'section' ? 1.2 : 1)
     .nodeColor(d => KIND_COLORS[d.kind] || '#9ca3af')
     .nodeOpacity(0.9)
-    .nodeLabel(d => `<div style="padding:4px 8px;font:12px sans-serif">${d.kind}: ${d.name}</div>`)
+    .nodeLabel(() => null)
     .linkColor(() => '#9ca3af')
-    .linkOpacity(0.35)
+    .linkOpacity(0.28)
     .linkWidth(0.4)
-    .cooldownTicks(150)
-    .onNodeClick(d => {
+    .cooldownTicks(180)
+    .onNodeClick((d, event) => {
+      if (!isClickNotDrag(event)) return;
       if (d.kind === 'register') {
         window.location = '/registers/' + encodeURIComponent(d.id);
       } else {
         window.location = '/search?q=' + encodeURIComponent(d.name);
       }
     });
-  currentGraph = graph;
+  sizeGraphToContainer(graph, elem);
+  if (typeof graph.showNavInfo === 'function') {
+    try { graph.showNavInfo(false); } catch (_) { /* 旧版库可能没有该方法 */ }
+  }
+  const charge = graph.d3Force('charge');
+  if (charge && typeof charge.strength === 'function') charge.strength(-180);
+  const linkForce = graph.d3Force('link');
+  if (linkForce && typeof linkForce.distance === 'function') linkForce.distance(48);
+  if (typeof graph.enablePointerInteraction === 'function') {
+    graph.enablePointerInteraction(true);
+  }
   bindGraphViewport(graph, elem);
-  installPointerZoom(graph, elem);
-  configureNavigationControls(graph, elem);
-  installLinearPan(graph, elem);
-  refreshGraphLabels = createGraphLabels(data.nodes, elem);
+  configureNavigationControls(graph, elem, signal);
+  installTrackpadPan(graph, elem, signal);
+  installClickGuard(elem, signal);
+  installHoverTip(graph, elem, signal);
+  refreshGraphLabels = createGraphLabels(data.nodes, elem, graph);
   graph.onEngineStop(() => {
-    fitGraph(graph, 500);
+    if (!userMovedCamera) fitGraph(graph, 500);
+    scheduleLabelUpdate();
   });
-  startGraphLabelRenderLoop(graph, refreshGraphLabels);
+  syncGraphLabels();
 }
 
 function initGraphUI() {
-  document.getElementById('graph-labels-toggle').addEventListener('change', () => refreshGraphLabels?.());
-  document.getElementById('graph-fit').addEventListener('click', () => fitGraph(currentGraph));
-  document.getElementById('graph-zoom-in').addEventListener('click', () => {
-    if (currentGraph) moveCameraAround(currentGraph, currentGraph.controls().target.clone(), 0.8, 180);
-  });
-  document.getElementById('graph-zoom-out').addEventListener('click', () => {
-    if (currentGraph) moveCameraAround(currentGraph, currentGraph.controls().target.clone(), 1.25, 180);
-  });
+  bindModifierKeyTracking();
+  document.getElementById('graph-labels-toggle')?.addEventListener('change', syncGraphLabels);
   document.getElementById('graph-controls').addEventListener('submit', e => {
     e.preventDefault();
     fetchGraph().then(render);

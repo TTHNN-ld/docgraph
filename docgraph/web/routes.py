@@ -438,17 +438,38 @@ def register_routes(app: FastAPI) -> None:
         wanted_kinds = None
         if kinds:
             wanted_kinds = {NodeKind(k.strip()) for k in kinds.split(",") if k.strip()}
+        selected_kinds = [
+            kind for kind in NodeKind
+            if wanted_kinds is None or kind in wanted_kinds
+        ]
         nodes_list: list[Node] = []
-        for kind in NodeKind:
-            if wanted_kinds and kind not in wanted_kinds:
-                continue
-            ns = store.search_nodes(NodeQuery(kind=kind, doc_id=doc_id, limit=limit))
-            for n in ns:
-                if len(nodes_list) >= limit:
-                    break
-                nodes_list.append(n)
-            if len(nodes_list) >= limit:
-                break
+        if selected_kinds:
+            # 按类型均分名额，避免 enum 靠前的高基数 kind（如 signal）挤掉其余类型。
+            per_kind = max(1, limit // len(selected_kinds))
+            taken: dict[NodeKind, int] = {}
+            for kind in selected_kinds:
+                ns = store.search_nodes(
+                    NodeQuery(kind=kind, doc_id=doc_id, limit=per_kind)
+                )
+                nodes_list.extend(ns)
+                taken[kind] = len(ns)
+            leftover = limit - len(nodes_list)
+            if leftover > 0:
+                for kind in selected_kinds:
+                    ns = store.search_nodes(
+                        NodeQuery(
+                            kind=kind,
+                            doc_id=doc_id,
+                            limit=leftover,
+                            offset=taken.get(kind, 0),
+                        )
+                    )
+                    if not ns:
+                        continue
+                    nodes_list.extend(ns)
+                    leftover = limit - len(nodes_list)
+                    if leftover <= 0:
+                        break
 
         wanted_edges = None
         if edge_kinds:

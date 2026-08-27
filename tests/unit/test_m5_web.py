@@ -1,6 +1,7 @@
 """M5 Web UI 测试 —— 用 FastAPI TestClient 跑全部页面 + JSON API。"""
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 
@@ -156,15 +157,49 @@ def test_graph_page(client):
     r = client.get("/graph")
     assert r.status_code == 200
     assert "d3" in r.text.lower()
-    assert "适配图谱" in r.text
-    assert "installPointerZoom" in r.text
-    assert "Shift + 左键拖拽可线性平移视图" in r.text
-    assert "installLinearPan" in r.text
+    assert "Shift+左键" in r.text
+    assert "右键" in r.text
+    assert "Mac / Windows" in r.text
+    assert "configureNavigationControls" in r.text
+    assert "installTrackpadPan" in r.text
+    assert "installLinearPan" not in r.text
+    assert "installPointerZoom" not in r.text
+    assert "startGraphLabelRenderLoop" not in r.text
+    assert "docgraphFit" not in r.text
+    assert "适配图谱" not in r.text
+    assert "graph-toolbar" not in r.text
+    assert "sizeGraphToContainer" in r.text
     assert "显示节点名称" in r.text
+    assert 'id="graph-labels-toggle" checked' not in r.text
+    assert "onNodeHover" in r.text
+    assert "graph-hover-tip" in r.text
+    assert "clampHoverTip" in r.text
+    assert "isClickNotDrag" in r.text
+    assert "scheduleLabelUpdate" in r.text
     assert "createGraphLabels" in r.text
     assert "graph2ScreenCoords" in r.text
-    assert "startGraphLabelRenderLoop" in r.text
     assert "bindGraphViewport" in r.text
+    assert "nodeVisibleInView" in r.text
+    assert "labelIsolation" in r.text
+    assert "MAX_VISIBLE_LABELS" in r.text
+    assert ".linkDistance(" not in r.text
+    assert "graphFetchGen" in r.text
+    assert "userMovedCamera" in r.text
+    assert "syncLeftButton" in r.text
+    assert re.search(r'name="node_kind" value="register"\s+checked', r.text)
+    assert re.search(r'name="node_kind" value="bitfield"\s*>', r.text)
+
+
+def test_graph_label_css_keeps_hidden_labels_invisible():
+    css = (
+        Path(__file__).resolve().parents[2] / "docgraph" / "web" / "static" / "app.css"
+    ).read_text(encoding="utf-8")
+    assert ".graph-node-label[hidden]" in css
+    assert ".graph-label-layer[hidden]" in css
+    assert "display: none !important" in css
+    assert "minmax(0, 1fr)" in css
+    assert "overflow-x: clip" in css
+    assert ".graph-hover-tip" in css
 
 
 def test_plugins_page(client):
@@ -260,6 +295,46 @@ def test_api_graph(client):
     assert "FOO_CTRL" in names
     assert "EN" in names
     assert any(e["kind"] == "has_bitfield" for e in data["edges"])
+
+
+def test_api_graph_splits_limit_across_kinds(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from docgraph.graph.schema import Location, Node, NodeKind
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.web.server import create_app
+
+    root = tmp_path
+    (root / ".docgraph").mkdir()
+    (root / "docgraph.yaml").write_text(
+        "project:\n  name: t\n  family: testchip\n", encoding="utf-8"
+    )
+    store = SQLiteGraphStore(root / ".docgraph" / "graph.db")
+    store.init_schema()
+    for i in range(20):
+        store.upsert_node(Node(
+            id=f"testchip::sig:s{i}", kind=NodeKind.SIGNAL,
+            name=f"sig_{i}", qualified_name=f"sig_{i}",
+            doc_id="testchip::ds", location=Location(page=1),
+        ))
+    for i in range(5):
+        store.upsert_node(Node(
+            id=f"testchip::mod:m{i}", kind=NodeKind.MODULE,
+            name=f"mod_{i}", qualified_name=f"mod_{i}",
+            doc_id="testchip::ds", location=Location(page=1),
+        ))
+    store.close()
+    monkeypatch.chdir(root)
+    client = TestClient(create_app(root))
+
+    r = client.get("/api/graph?kinds=signal,module&limit=10")
+    assert r.status_code == 200
+    data = r.json()
+    by_kind = {}
+    for node in data["nodes"]:
+        by_kind[node["kind"]] = by_kind.get(node["kind"], 0) + 1
+    assert by_kind.get("signal") == 5
+    assert by_kind.get("module") == 5
 
 
 # ---------------------------------------------------------------------------
