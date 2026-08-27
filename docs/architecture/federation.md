@@ -6,7 +6,7 @@
 
 通过 `docs.metadata` 为 datasheet、TRM、errata 等声明 type、version、priority 和 chip model。Linker 当前只对同名 register、pin 和 parameter 按 priority 生成 alias/supersedes 关系。
 
-`supersedes` 表示来源优先级，不保证逐字段验证了勘误语义。`chip_model` 会写入解析元数据，但 EntityResolver 尚未完全使用显式值；多芯片实例需要检查实际合并结果。
+`chip_model` 是同名实体合并的硬边界：EntityResolver 和 FederationLinker 都只在同一显式实例内生成 alias/supersedes；未配置时退回 document ID 的 family 前缀。`supersedes` 目前只表达来源提示，不保证逐字段验证了勘误语义。
 
 ## 跨项目只读挂接
 

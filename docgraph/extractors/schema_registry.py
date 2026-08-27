@@ -665,7 +665,7 @@ PRESET_SCHEMAS: dict[str, EntitySchema] = {
 
 
 # ---------------------------------------------------------------------------
-# 文档类型 → 默认 schema 子集路由（layered-architecture.md ADR-012）
+# 文档类型 → 默认 schema 子集路由（docs/architecture/knowledge-graph.md）
 # ---------------------------------------------------------------------------
 
 # UNKNOWN 文档保守启用核心强 schema 子集，避免 9 schema 全扫每份文档。

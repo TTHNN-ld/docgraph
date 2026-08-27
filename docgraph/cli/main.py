@@ -12,7 +12,9 @@ from rich.markup import escape
 from rich.table import Table
 
 from docgraph.core.bootstrap import bootstrap
+from docgraph.core.build_lock import BuildLockedError
 from docgraph.core.config import (
+    DocGraphConfig,
     config_path,
     docgraph_dir,
     load_config,
@@ -24,7 +26,7 @@ from docgraph.core.dotenv import autoload_env
 from docgraph.core.logger import get_logger, set_level
 from docgraph.core.manifest import load_manifest
 from docgraph.core.pipeline import build as run_build
-from docgraph.embeddings.vector_factory import build_vector_store
+from docgraph.embeddings.factory import open_query_embeddings
 from docgraph.graph.schema import NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.quality.l2 import audit_l2_candidates
@@ -67,6 +69,13 @@ def _print_json(data: object) -> None:
 
 
 def _open_project() -> tuple[Path, SQLiteGraphStore, QueryEngine]:
+    root, store, cfg = _open_graph_store()
+    vstore, encoder = open_query_embeddings(cfg.embeddings, cfg.storage, docgraph_dir(root))
+    qe = QueryEngine(store, vstore=vstore, encoder=encoder)
+    return root, store, qe
+
+
+def _open_graph_store(*, init_schema: bool = True) -> tuple[Path, SQLiteGraphStore, DocGraphConfig]:
     root = project_root_from_cwd()
     if not docgraph_dir(root).is_dir():
         console.print("[red]No .docgraph/ found.[/red] Run docgraph init first.")
@@ -76,17 +85,9 @@ def _open_project() -> tuple[Path, SQLiteGraphStore, QueryEngine]:
     set_level(cfg.logging.level)
     bootstrap()
     store = SQLiteGraphStore(docgraph_dir(root) / "graph.db")
-    store.init_schema()
-    vstore = build_vector_store(cfg.storage, docgraph_dir(root), create=False)
-    encoder = None
-    if vstore:
-        vstore.init_schema()
-        # 与 pipeline 一致：从 config 解析 encoder
-        from docgraph.embeddings.factory import build_encoder
-
-        encoder = build_encoder(cfg.embeddings)
-    qe = QueryEngine(store, vstore=vstore, encoder=encoder)
-    return root, store, qe
+    if init_schema:
+        store.init_schema()
+    return root, store, cfg
 
 
 # ---------------------------------------------------------------------------
@@ -162,37 +163,48 @@ def build(
         "--strict-parsers",
         help="Fail instead of trying another parser",
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Return non-zero when an optional stage is degraded",
+    ),
 ) -> None:
-    root, store, _qe = _open_project()
-    cfg = load_config(root)
-    manifest = load_manifest(root)
-    r = run_build(
-        root,
-        cfg,
-        store,
-        manifest,
-        force=force,
-        file_filter=doc,
-        quality=quality,
-        dependency_policy="install" if install_missing else None,
-        parser_failure_policy="error" if strict_parsers else None,
-    )
-    store.close()
+    # Schema initialization is part of the build mutation and therefore runs
+    # inside the project lock acquired by the pipeline.
+    root, store, cfg = _open_graph_store(init_schema=False)
+    try:
+        try:
+            r = run_build(
+                root,
+                cfg,
+                store,
+                force=force,
+                file_filter=doc,
+                quality=quality,
+                dependency_policy="install" if install_missing else None,
+                parser_failure_policy="error" if strict_parsers else None,
+            )
+        except BuildLockedError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            raise typer.Exit(code=1) from exc
+    finally:
+        store.close()
     table = Table(title="Build summary", show_header=True, header_style="bold")
     for col in ("metric", "value"):
         table.add_column(col)
     for row in [
+        ("status", r.status),
         ("files", str(r.total_files)),
         ("quality", r.quality),
         ("parsed", str(r.parsed)),
-        ("degraded", str(r.degraded)),
+        ("parser_fallbacks", str(r.degraded)),
         ("skipped", str(r.skipped)),
         ("errors", str(r.errors)),
-        ("nodes_added", str(r.nodes_total)),
-        ("edges_added", str(r.edges_total)),
-        ("blocks_added", str(r.blocks_total)),
-        ("chunks_added", str(r.chunks_total)),
-        ("linker_edges", str(r.linker_edges)),
+        ("nodes_indexed", str(r.nodes_total)),
+        ("edges_indexed", str(r.edges_total)),
+        ("blocks_indexed", str(r.blocks_total)),
+        ("chunks_indexed", str(r.chunks_total)),
+        ("linker_edges_upserted", str(r.linker_edges)),
         ("embedded_nodes", str(r.embedded_nodes)),
         ("embedded_chunks", str(r.embedded_chunks)),
         ("llm_calls", str(r.llm_calls)),
@@ -201,7 +213,15 @@ def build(
     ]:
         table.add_row(row[0], row[1])
     console.print(table)
-    if r.errors:
+    for item in r.per_file:
+        if item.get("status") == "error":
+            console.print(
+                f"[red]error[/red] {escape(str(item.get('path', '-')))}: "
+                f"{escape(str(item.get('error', 'unknown error')))}"
+            )
+    for warning in r.warnings:
+        console.print(f"[yellow]degraded[/yellow] {warning['stage']}: {escape(warning['error'])}")
+    if r.errors or (strict and r.status == "degraded"):
         raise typer.Exit(code=1)
 
 
@@ -399,50 +419,55 @@ def _llm_setup_status(cfg) -> dict:
 
 def _vlm_setup_status(cfg) -> dict:
     vlm_cfg = cfg.llm.vlm
-    if not cfg.llm.enabled:
+    if not vlm_cfg.enabled:
         return {
             "enabled": False,
             "available": True,
             "provider": vlm_cfg.provider,
-            "model": vlm_cfg.model or cfg.llm.vlm_model,
+            "model": vlm_cfg.model,
             "reason": "disabled",
             "suggestion": None,
         }
-    provider_name = vlm_cfg.provider or cfg.llm.provider
-    model = vlm_cfg.model or cfg.llm.vlm_model or cfg.llm.tiers.accurate
-    if vlm_cfg.api_key or os.environ.get(vlm_cfg.api_key_env):
-        has_key = True
-        missing_reason = None
-    else:
-        provider = cfg.llm.providers.get(provider_name)
-        has_key = bool(provider and (provider.api_key or os.environ.get(provider.api_key_env)))
-        missing_reason = (
-            f"{vlm_cfg.api_key_env} and fallback provider key are not set" if not has_key else None
-        )
+    provider_name = vlm_cfg.provider
+    model = vlm_cfg.model
+    has_key = bool(vlm_cfg.api_key or os.environ.get(vlm_cfg.api_key_env))
+    missing: list[str] = []
+    if not model:
+        missing.append("llm.vlm.model is not configured")
+    if not has_key:
+        missing.append(f"{vlm_cfg.api_key_env} is not set")
+    missing_reason = "; ".join(missing) or None
     return {
         "enabled": True,
-        "available": has_key,
+        "available": not missing,
         "provider": provider_name,
         "model": model,
         "reason": missing_reason,
         "suggestion": (
             None
-            if has_key
+            if not missing
             else {
-                "message": "Set VLM_API_KEY, configure the LLM provider key, or disable llm.enabled.",
-                "commands": ["export VLM_API_KEY=..."],
+                "message": "Configure the independent VLM model/key or disable llm.vlm.enabled.",
+                "commands": [] if has_key else [f"export {vlm_cfg.api_key_env}=..."],
             }
         ),
     }
 
 
 def _embedding_setup_status(cfg) -> dict:
-    provider = (cfg.embeddings.provider or "hash").strip().lower()
+    provider = (cfg.embeddings.provider or "none").strip().lower()
+    if provider in {"none", "off", "disabled"}:
+        return {
+            "provider": "none",
+            "available": True,
+            "reason": "semantic retrieval is disabled; FTS/LIKE remains available",
+            "suggestion": None,
+        }
     if provider == "hash":
         return {
             "provider": provider,
             "available": True,
-            "reason": "built-in zero-dependency encoder",
+            "reason": "built-in lexical hash encoder; not a semantic model",
             "suggestion": None,
         }
     if provider == "bge_m3":
@@ -484,7 +509,7 @@ def _embedding_setup_status(cfg) -> dict:
         "available": False,
         "reason": "unknown embedding provider",
         "suggestion": {
-            "message": "Use embeddings.provider=hash or configure a supported provider.",
+            "message": "Use embeddings.provider=none or configure a supported provider.",
             "commands": [],
         },
     }
@@ -573,8 +598,17 @@ def status(
     root, store, qe = _open_project()
     s = qe.status()
     store.close()
+    manifest = load_manifest(root)
     console.print(f"[bold]Nodes:[/bold] {s.nodes_total}    [bold]Edges:[/bold] {s.edges_total}")
     console.print(f"[bold]Documents:[/bold] {len(s.docs)}")
+    if manifest.last_build is not None:
+        console.print(
+            f"[bold]Last build:[/bold] {manifest.last_build.status}"
+            f"    [bold]Completed:[/bold] {manifest.last_build.completed_at or '-'}"
+        )
+    for name, stage in sorted(manifest.derived.items()):
+        detail = f" — {stage.error}" if stage.error else ""
+        console.print(f"[bold]{name}:[/bold] {stage.status}{detail}")
     for d in s.docs:
         console.print(f"  · {d}")
     if s.vector_count:
@@ -594,12 +628,12 @@ def status(
             tbl.add_row(k, str(c))
         console.print(tbl)
     if cost:
-        m = load_manifest(root)
         total_cost = 0.0
-        for rec in m.files.values():
+        for rec in manifest.files.values():
             for sr in rec.stage_log.values():
                 total_cost += getattr(sr, "cost_usd", 0.0)
-        console.print(f"[bold]Estimated total cost:[/bold] ${total_cost:.4f}")
+        total_cost += sum(stage.cost_usd for stage in manifest.derived.values())
+        console.print(f"[bold]Recorded latest-stage model cost:[/bold] ${total_cost:.4f}")
 
 
 @app.command("doctor")

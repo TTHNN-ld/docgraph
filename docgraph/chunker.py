@@ -1,9 +1,9 @@
-"""L1 切块器 —— 把 L0 Block 切成可检索、可回溯的 Chunk。
+"""把 L0 Block 切成可检索、可回溯的 L1 Chunk。
 
-规则（layered-architecture.md §3.2）：
+规则（docs/architecture/data-layers.md）：
 - 每个 table block → 独立 chunk（整表不切碎）
 - 每个 figure block → 独立 chunk
-- 连续 paragraph/heading 按 section 归并，超 MAX_TOKENS 则滑窗切
+- 连续 paragraph/heading 按 section 归并，超字符预算则滑窗切
 - 每个 chunk 带 block_ids 反查 L0
 
 不依赖文档类型，完全通用。
@@ -12,26 +12,13 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 
 from docgraph.core.ids import content_hash, make_node_id, normalize_name
 from docgraph.graph.schema import Block, BlockKind, Chunk, NodeKind, ParsedDoc, TocEntry
 
-# token 粗估：4 char ≈ 1 token
-_CHARS_PER_TOKEN = 4
 MAX_CHUNK_CHARS = 2000  # ~500 tokens
-MIN_CHUNK_CHARS = 80
 _CHUNK_OVERLAP_CHARS = 200  # 句子级滑窗重叠，避免检索跨边界丢上下文
-
-
-@dataclass
-class ChunkReport:
-    total: int = 0
-    by_kind: dict[str, int] = None  # type: ignore[assignment]
-
-    def __post_init__(self):
-        if self.by_kind is None:
-            self.by_kind = {}
+CHUNKER_VERSION = "1"
 
 
 def chunk_doc(doc: ParsedDoc) -> list[Chunk]:
@@ -313,7 +300,7 @@ def _split_oversized_chunks(chunks: list[Chunk]) -> list[Chunk]:
     Runs after logical-table merging so a merged cross-page table is split as a
     whole. Prose is split sentence-aware with overlap; tables are split into
     header-preserving row batches. Every sub-chunk inherits the parent's
-    block_ids so L0 traceability (layered-architecture §3.2) is preserved.
+    block_ids so the L0 traceability contract is preserved.
     """
     out: list[Chunk] = []
     for chunk in chunks:

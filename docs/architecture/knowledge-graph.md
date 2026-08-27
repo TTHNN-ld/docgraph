@@ -60,9 +60,10 @@ L1 chunk + L0 blocks
 
 无法可靠恢复列结构时不强行物化。LLM/VLM 输出必须通过 Pydantic 和领域约束校验，默认保留为 candidate；模型置信分数本身不能把结果晋升为 fact。
 
-多来源命中同一实体时：
+多来源命中同一实体或同一关系时：
 
 - 合并 source IDs、evidence、aliases 和来源列表。
+- 同一 `(src, dst, kind)` 关系合并证据并保留较高置信度，不因执行顺序丢失强证据。
 - 保留表格 normalizer 已确认的字段。
 - 不允许后写入的图像或自由文本推断覆盖确定性值。
 
@@ -92,6 +93,8 @@ RelationInferLinker
 
 `supersedes` 当前只表达来源优先级，不代表逐字段验证了勘误覆盖。跨项目只读挂接属于 Query/Store 层，见[联邦机制](./federation.md)。
 
+Linker 根据图内容、实现版本、模型策略、`priority` 和 `chip_model` 独立失效。LLM IE 的读取和远程调用先完成；随后在一个短事务中替换完全由 Linker 产生的图项，任一步失败都会保留上一份完整关系结果。各 Linker 通过分页遍历全量节点和 chunk，不使用静默截断的固定总量上限。当前运行的 unresolved 和实体合并审计采用原子覆盖，不累积重复历史；审计文件写入失败会报告 degraded，但不会撤销已经提交的图。
+
 ## 失败、审计与质量
 
 - 单个 Extractor 失败只降低 L2，构建继续保留 L0/L1。
@@ -100,6 +103,6 @@ RelationInferLinker
 - `docgraph doctor --strict` 检查来源链、可信状态和强结构约束。
 - `docgraph l2 eval` 用版本化 golden set 衡量 precision/recall/F1。
 
-当前 linker/embedding warning 尚未统一进入构建失败计数，生产自动化还需检查日志；该缺口记录在 [Roadmap](../project/roadmap.md)。
+构建结果分为 success、degraded 和 failed。Extractor、Linker 或 Embedding 失败会形成可审计的 degraded；自动化需要完整能力时使用 `docgraph build --strict`。
 
 设计背景见 [RFC 0015](../decisions/0015-semantic-kg-hybrid-extraction.md)和 [RFC 0017](../decisions/0017-l2-candidate-fact-trust-model.md)。第三方扩展见[插件开发](../development/plugins.md)。

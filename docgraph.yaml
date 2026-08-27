@@ -7,3 +7,6 @@ docs:
   include:
     - "spec/**/*.pdf"
   exclude: []
+
+embeddings:
+  provider: none

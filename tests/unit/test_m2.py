@@ -1,4 +1,5 @@
 """M2 新组件测试：linker、向量、新 extractors、context、trace。"""
+
 from __future__ import annotations
 
 import tempfile
@@ -7,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from docgraph.embeddings.hash_encoder import HashEncoder
-from docgraph.embeddings.indexer import embed_graph, text_for_embedding
+from docgraph.embeddings.indexer import embed_graph
 from docgraph.embeddings.vector_store import VectorStore, _cosine
 from docgraph.extractors.base import ExtractContext
 from docgraph.extractors.glossary import GlossaryExtractor
@@ -48,8 +49,7 @@ def tmp_store():
 
 def test_table_entity_no_llm_returns_empty():
     """无 LLM 时 TableEntityExtractor 返回空（不崩溃、不阻塞 pipeline）。"""
-    parsed = ParsedDoc(doc_id="d", source_path="x.pdf",
-                        pages=[ParsedPage(page_no=1)])
+    parsed = ParsedDoc(doc_id="d", source_path="x.pdf", pages=[ParsedPage(page_no=1)])
     res = TableEntityExtractor().extract(parsed, ExtractContext(family="t"))
     assert res.nodes == []
     assert res.stats.nodes_emitted == 0
@@ -57,8 +57,7 @@ def test_table_entity_no_llm_returns_empty():
 
 def test_table_entity_no_table_blocks():
     """无 table block → 不走 LLM，不出错。"""
-    parsed = ParsedDoc(doc_id="d", source_path="x.pdf",
-                        pages=[ParsedPage(page_no=1)])
+    parsed = ParsedDoc(doc_id="d", source_path="x.pdf", pages=[ParsedPage(page_no=1)])
     ctx = ExtractContext(family="t", llm_client=None)
     res = TableEntityExtractor(schema_names=["register"]).extract(parsed, ctx)
     assert res.nodes == []
@@ -69,25 +68,30 @@ def test_table_entity_register_summary_table_without_bitfields():
     parsed = ParsedDoc(
         doc_id="d",
         source_path="x.pdf",
-        pages=[ParsedPage(page_no=1, blocks=[
-            Block(
-                id="d#p1#b0",
-                doc_id="d",
-                page=1,
-                kind=BlockKind.TABLE,
-                reading_order=0,
-                table=TableData(
-                    headers=["Register number", "Type", "Description"],
-                    rows=[
-                        ["0", "Read-only", "Identification Register"],
-                        ["1", "Read-only", "RAMDepth Register"],
-                        ["8", "Read/write", "Control Register"],
-                    ],
-                    n_rows=3,
-                    n_cols=3,
-                ),
-            ),
-        ])],
+        pages=[
+            ParsedPage(
+                page_no=1,
+                blocks=[
+                    Block(
+                        id="d#p1#b0",
+                        doc_id="d",
+                        page=1,
+                        kind=BlockKind.TABLE,
+                        reading_order=0,
+                        table=TableData(
+                            headers=["Register number", "Type", "Description"],
+                            rows=[
+                                ["0", "Read-only", "Identification Register"],
+                                ["1", "Read-only", "RAMDepth Register"],
+                                ["8", "Read/write", "Control Register"],
+                            ],
+                            n_rows=3,
+                            n_cols=3,
+                        ),
+                    ),
+                ],
+            )
+        ],
     )
     ctx = ExtractContext(family="t", llm_client=None)
     res = TableEntityExtractor(schema_names=["register"]).extract(parsed, ctx)
@@ -102,35 +106,45 @@ def test_table_entity_captionless_bitfield_table_uses_nearest_heading():
     parsed = ParsedDoc(
         doc_id="d",
         source_path="x.pdf",
-        pages=[ParsedPage(page_no=1, blocks=[
-            Block(
-                id="d#p1#b0",
-                doc_id="d",
-                page=1,
-                kind=BlockKind.HEADING,
-                reading_order=0,
-                text="3.3.8 Control Register, r8",
-                heading_level=2,
-                section_path="3.3.8",
-            ),
-            Block(
-                id="d#p1#b1",
-                doc_id="d",
-                page=1,
-                kind=BlockKind.TABLE,
-                reading_order=1,
-                table=TableData(
-                    headers=["Bit number", "Name", "Type", "Function"],
-                    rows=[
-                        ["[31:3]", "-", "-", "Reserved"],
-                        ["[2]", "SoftwareCntl", "Read/write", "Controls software register access"],
-                        ["[0]", "TraceCaptEn", "Read/write", "Trace capture enable"],
-                    ],
-                    n_rows=3,
-                    n_cols=4,
-                ),
-            ),
-        ])],
+        pages=[
+            ParsedPage(
+                page_no=1,
+                blocks=[
+                    Block(
+                        id="d#p1#b0",
+                        doc_id="d",
+                        page=1,
+                        kind=BlockKind.HEADING,
+                        reading_order=0,
+                        text="3.3.8 Control Register, r8",
+                        heading_level=2,
+                        section_path="3.3.8",
+                    ),
+                    Block(
+                        id="d#p1#b1",
+                        doc_id="d",
+                        page=1,
+                        kind=BlockKind.TABLE,
+                        reading_order=1,
+                        table=TableData(
+                            headers=["Bit number", "Name", "Type", "Function"],
+                            rows=[
+                                ["[31:3]", "-", "-", "Reserved"],
+                                [
+                                    "[2]",
+                                    "SoftwareCntl",
+                                    "Read/write",
+                                    "Controls software register access",
+                                ],
+                                ["[0]", "TraceCaptEn", "Read/write", "Trace capture enable"],
+                            ],
+                            n_rows=3,
+                            n_cols=4,
+                        ),
+                    ),
+                ],
+            )
+        ],
     )
     ctx = ExtractContext(family="t", llm_client=None)
     res = TableEntityExtractor(schema_names=["register"]).extract(parsed, ctx)
@@ -149,13 +163,24 @@ def test_glossary_extractor():
         "APB    Advanced Peripheral Bus\n"
     )
     parsed = ParsedDoc(
-        doc_id="d", source_path="x.pdf",
+        doc_id="d",
+        source_path="x.pdf",
         toc=toc,
         pages=[
             ParsedPage(page_no=1),
-            ParsedPage(page_no=2, blocks=[
-                Block(id="d#p2#b0", doc_id="d", page=2, kind=BlockKind.PARAGRAPH, reading_order=0, text=text),
-            ]),
+            ParsedPage(
+                page_no=2,
+                blocks=[
+                    Block(
+                        id="d#p2#b0",
+                        doc_id="d",
+                        page=2,
+                        kind=BlockKind.PARAGRAPH,
+                        reading_order=0,
+                        text=text,
+                    ),
+                ],
+            ),
         ],
     )
     res = GlossaryExtractor().extract(parsed, ExtractContext(family="t"))
@@ -174,7 +199,7 @@ def test_entity_resolver_normalize():
 
 def test_entity_resolver_runs(tmp_store):
     # 同 family 不同 doc 的同名寄存器
-    for i, doc_id in enumerate(["d1", "d2"]):
+    for doc_id in ["d1", "d2"]:
         tmp_store.upsert_node(
             Node(
                 id=f"f::reg:CR1#{doc_id}",
@@ -199,20 +224,46 @@ def test_federation_supersedes(tmp_store):
                 doc_id=doc_id,
             )
         )
-    r = FederationLinker().run(
-        tmp_store, doc_priorities={"d_main": 10, "d_errata": 100}
-    )
+    r = FederationLinker().run(tmp_store, doc_priorities={"d_main": 10, "d_errata": 100})
     assert r.supersedes_edges == 1
+
+
+def test_federation_does_not_merge_different_chip_instances(tmp_store):
+    for doc_id in ["main", "variant"]:
+        tmp_store.upsert_node(
+            Node(
+                id=f"f::reg:CR1#{doc_id}",
+                kind=NodeKind.REGISTER,
+                name="CR1",
+                qualified_name="CR1",
+                doc_id=doc_id,
+            )
+        )
+
+    result = FederationLinker().run(
+        tmp_store,
+        doc_priorities={"main": 10, "variant": 20},
+        doc_instances={"main": "chip-a", "variant": "chip-b"},
+    )
+
+    assert result.supersedes_edges == 0
+    assert result.alias_edges == 0
 
 
 def test_xref_linker(tmp_store):
     sec = Node(
-        id="f::sec:3.2", kind=NodeKind.SECTION, name="3.2 Title",
-        qualified_name="3.2", doc_id="d",
+        id="f::sec:3.2",
+        kind=NodeKind.SECTION,
+        name="3.2 Title",
+        qualified_name="3.2",
+        doc_id="d",
     )
     sec_ref = Node(
-        id="f::sec:5.1", kind=NodeKind.SECTION, name="5.1 Other",
-        qualified_name="5.1", doc_id="d",
+        id="f::sec:5.1",
+        kind=NodeKind.SECTION,
+        name="5.1 Other",
+        qualified_name="5.1",
+        doc_id="d",
         summary="See Section 3.2 for details.",
     )
     tmp_store.upsert_node(sec)
@@ -244,7 +295,11 @@ def test_embed_and_search(tmp_store):
     with tempfile.TemporaryDirectory() as d:
         vstore = VectorStore(Path(d) / "v.db")
         vstore.init_schema()
-        enc = HashEncoder(dim=128)
+
+        class SemanticTestEncoder(HashEncoder):
+            name = "semantic-test"
+
+        enc = SemanticTestEncoder(dim=128)
 
         for name, summary in [
             ("PWM_CTRL", "PWM control register, enable/disable timer"),
@@ -255,8 +310,10 @@ def test_embed_and_search(tmp_store):
                 Node(
                     id=f"f::reg:{name}",
                     kind=NodeKind.REGISTER,
-                    name=name, qualified_name=name,
-                    doc_id="d", summary=summary,
+                    name=name,
+                    qualified_name=name,
+                    doc_id="d",
+                    summary=summary,
                 )
             )
         embed_graph(tmp_store, vstore, enc)
@@ -295,14 +352,14 @@ def test_context_bundle(tmp_store):
 def test_trace_path(tmp_store):
     nodes = ["A", "B", "C", "D"]
     for n in nodes:
-        tmp_store.upsert_node(
-            Node(id=n, kind=NodeKind.SIGNAL, name=n, doc_id="d")
-        )
+        tmp_store.upsert_node(Node(id=n, kind=NodeKind.SIGNAL, name=n, doc_id="d"))
     chain = [("A", "B"), ("B", "C"), ("C", "D")]
     for src, dst in chain:
         tmp_store.upsert_edge(
             Edge(
-                src=src, dst=dst, kind=EdgeKind.CONNECTS_TO,
+                src=src,
+                dst=dst,
+                kind=EdgeKind.CONNECTS_TO,
                 evidence=Evidence(extractor="test"),
             )
         )
@@ -319,8 +376,7 @@ def test_impact_report(tmp_store):
         tmp_store.upsert_node(n)
     for src, dst in [("r", "bf"), ("bf", "sig")]:
         tmp_store.upsert_edge(
-            Edge(src=src, dst=dst, kind=EdgeKind.HAS_BITFIELD,
-                 evidence=Evidence(extractor="test"))
+            Edge(src=src, dst=dst, kind=EdgeKind.HAS_BITFIELD, evidence=Evidence(extractor="test"))
         )
     qe = QueryEngine(tmp_store)
     rep = qe.impact("r", depth=2)
@@ -336,6 +392,7 @@ def test_impact_report(tmp_store):
 
 def test_llm_extract_json_helpers():
     from docgraph.llm.client import _extract_json
+
     # plain
     assert _extract_json('{"a": 1}') == {"a": 1}
     # with fence
@@ -346,5 +403,6 @@ def test_llm_extract_json_helpers():
 
 def test_llm_null_provider_errors():
     from docgraph.llm.client import NullLLMProvider
+
     with pytest.raises(RuntimeError):
         NullLLMProvider().complete("test", model="x")

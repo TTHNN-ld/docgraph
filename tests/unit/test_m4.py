@@ -23,16 +23,15 @@ def test_embedding_factory_hash():
     assert enc.dim == 128
 
 
-def test_embedding_factory_openai_fallback(monkeypatch):
-    """OpenAI 没 API key → fallback 到 hash。"""
+def test_embedding_factory_openai_requires_configured_key(monkeypatch):
+    """A configured provider must not silently change retrieval semantics."""
     from docgraph.core.config import EmbeddingsConfig
     from docgraph.embeddings.factory import build_encoder
-    from docgraph.embeddings.hash_encoder import HashEncoder
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
-    enc = build_encoder(EmbeddingsConfig(provider="openai_compat"))
-    assert isinstance(enc, HashEncoder)
+    with pytest.raises(RuntimeError, match="requires an API key"):
+        build_encoder(EmbeddingsConfig(provider="openai_compat"))
 
 
 # ---------------------------------------------------------------------------

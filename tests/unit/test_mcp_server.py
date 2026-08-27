@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 from mcp import Client
 
-from docgraph.core.manifest import FileRecord, Manifest, save_manifest
+from docgraph.core.manifest import (
+    BuildRunRecord,
+    DerivedStageRecord,
+    FileRecord,
+    Manifest,
+    save_manifest,
+)
 from docgraph.graph.schema import (
     Block,
     BlockKind,
@@ -289,7 +295,9 @@ async def test_documents_combines_manifest_and_index_status(tmp_path) -> None:
                     parser="docling",
                     status="linked",
                 )
-            }
+            },
+            last_build=BuildRunRecord(status="degraded", files_failed=0),
+            derived={"linker": DerivedStageRecord(status="error", error="linker unavailable")},
         ),
     )
     server = create_server(lambda: runtime)
@@ -308,7 +316,10 @@ async def test_documents_combines_manifest_and_index_status(tmp_path) -> None:
             "quality_status": None,
             "last_run": None,
             "error": None,
+            "warnings": [],
             "chunks": 1,
             "characters": len("indexed text"),
         }
     ]
+    assert payload["build"]["status"] == "degraded"
+    assert payload["derived"]["linker"]["error"] == "linker unavailable"

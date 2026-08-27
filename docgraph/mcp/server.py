@@ -18,8 +18,7 @@ from docgraph.core.bootstrap import bootstrap
 from docgraph.core.config import docgraph_dir, load_config, project_root_from_cwd
 from docgraph.core.dotenv import autoload_env
 from docgraph.core.manifest import load_manifest
-from docgraph.embeddings.factory import build_encoder
-from docgraph.embeddings.vector_factory import build_vector_store
+from docgraph.embeddings.factory import open_query_embeddings
 from docgraph.graph.schema import EdgeKind, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.query.engine import ContextRequestError, QueryEngine, entity_view
@@ -103,6 +102,7 @@ class DocumentInfo(_ResultModel):
     quality_status: str | None = None
     last_run: str | None = None
     error: str | None = None
+    warnings: list[dict[str, str]] = Field(default_factory=list)
     chunks: int
     characters: int
 
@@ -115,9 +115,27 @@ class GraphSummary(_ResultModel):
     vectors: int
 
 
+class BuildInfo(_ResultModel):
+    status: str
+    completed_at: str | None = None
+    files_failed: int = 0
+    warnings: list[dict[str, str]] = Field(default_factory=list)
+    cost_usd: float = 0.0
+
+
+class DerivedIndexInfo(_ResultModel):
+    status: str
+    last_run: str | None = None
+    error: str | None = None
+    items: int = 0
+    cost_usd: float = 0.0
+
+
 class DocumentsResult(_ResultModel):
     documents: list[DocumentInfo]
     graph: GraphSummary
+    build: BuildInfo | None = None
+    derived: dict[str, DerivedIndexInfo] = Field(default_factory=dict)
 
 
 @dataclass
@@ -137,11 +155,7 @@ def _open_runtime() -> AppContext:
     store = SQLiteGraphStore(docgraph_dir(root) / "graph.db")
     store.init_schema()
 
-    vstore = build_vector_store(cfg.storage, docgraph_dir(root), create=False)
-    encoder = None
-    if vstore is not None:
-        vstore.init_schema()
-        encoder = build_encoder(cfg.embeddings)
+    vstore, encoder = open_query_embeddings(cfg.embeddings, cfg.storage, docgraph_dir(root))
     return AppContext(root=root, store=store, engine=QueryEngine(store, vstore, encoder))
 
 
@@ -409,6 +423,7 @@ def create_server(
                     quality_status=record.quality_status if record else None,
                     last_run=record.last_run if record else None,
                     error=record.error if record else None,
+                    warnings=record.warnings if record else [],
                     chunks=stats["total_chunks"],
                     characters=stats["total_chars"],
                 )
@@ -422,6 +437,27 @@ def create_server(
                 by_edge_kind=status.by_edge_kind,
                 vectors=status.vector_count,
             ),
+            build=(
+                BuildInfo(
+                    status=manifest.last_build.status,
+                    completed_at=manifest.last_build.completed_at,
+                    files_failed=manifest.last_build.files_failed,
+                    warnings=manifest.last_build.warnings,
+                    cost_usd=manifest.last_build.cost_usd,
+                )
+                if manifest.last_build is not None
+                else None
+            ),
+            derived={
+                name: DerivedIndexInfo(
+                    status=stage.status,
+                    last_run=stage.last_run,
+                    error=stage.error,
+                    items=stage.items,
+                    cost_usd=stage.cost_usd,
+                )
+                for name, stage in manifest.derived.items()
+            },
         )
 
     return server

@@ -24,9 +24,7 @@ def test_install_policy_uses_allowlisted_extra(monkeypatch):
 
     availability = iter([False, True])
     commands: list[list[str]] = []
-    monkeypatch.setattr(
-        dependencies, "_module_available", lambda _module: next(availability)
-    )
+    monkeypatch.setattr(dependencies, "_module_available", lambda _module: next(availability))
     monkeypatch.setattr(
         dependencies.subprocess,
         "run",
@@ -100,9 +98,7 @@ def test_runtime_config_defaults_are_safe():
     runtime = cfg.runtime
     assert runtime.dependency_policy == "prompt"
     assert runtime.parser_failure == "fallback"
-    assert SUPPORTED_DOCUMENT_SUFFIXES == {
-        ".pdf", ".docx", ".xlsx", ".xlsm", ".md", ".markdown"
-    }
+    assert SUPPORTED_DOCUMENT_SUFFIXES == {".pdf", ".docx", ".xlsx", ".xlsm", ".md", ".markdown"}
     assert all(
         any(pattern.endswith(suffix) for pattern in cfg.docs.include)
         for suffix in SUPPORTED_DOCUMENT_SUFFIXES
@@ -119,7 +115,7 @@ def test_default_user_config_validates():
     cfg = DocGraphConfig.model_validate(yaml.safe_load(DEFAULT_USER_CONFIG_YAML))
 
     assert cfg.llm.vlm is not None
-    assert cfg.embeddings.provider == "hash"
+    assert cfg.embeddings.provider == "none"
 
 
 def test_setup_command_reports_missing_core_parser_as_not_ready(monkeypatch, tmp_path):
@@ -154,10 +150,7 @@ def test_setup_command_reports_missing_core_parser_as_not_ready(monkeypatch, tmp
     assert payload["project"]["initialized"] is False
     assert payload["next_steps"][0]["commands"] == ["docgraph init"]
     assert payload["next_steps"][1]["commands"] == ["docgraph build"]
-    assert any(
-        row["parser"] == "docx" and row["role"] == "required"
-        for row in payload["parsers"]
-    )
+    assert any(row["parser"] == "docx" and row["role"] == "required" for row in payload["parsers"])
     assert any(row["parser"] == "docling" and not row["available"] for row in payload["parsers"])
 
 
@@ -176,6 +169,12 @@ def test_setup_command_reports_llm_and_vlm_configuration(monkeypatch, tmp_path):
                         "api_key_env": "MISSING_TEST_LLM_KEY",
                         "base_url_env": "OPENAI_BASE_URL",
                     }
+                },
+                "vlm": {
+                    "enabled": True,
+                    "provider": "openai_compat",
+                    "model": "vision-model",
+                    "api_key_env": "VLM_API_KEY",
                 },
             }
         }
@@ -198,8 +197,38 @@ def test_setup_command_reports_llm_and_vlm_configuration(monkeypatch, tmp_path):
     assert payload["llm"]["available"] is False
     assert payload["vlm"]["enabled"] is True
     assert payload["vlm"]["available"] is False
-    assert any("export MISSING_TEST_LLM_KEY=..." in step["commands"] for step in payload["next_steps"])
+    assert any(
+        "export MISSING_TEST_LLM_KEY=..." in step["commands"] for step in payload["next_steps"]
+    )
     assert any("export VLM_API_KEY=..." in step["commands"] for step in payload["next_steps"])
+
+
+def test_vlm_can_be_enabled_without_text_llm(monkeypatch, tmp_path) -> None:
+    from docgraph.core import pipeline
+    from docgraph.core.config import DocGraphConfig
+
+    cfg = DocGraphConfig.model_validate(
+        {
+            "llm": {
+                "enabled": False,
+                "vlm": {
+                    "enabled": True,
+                    "provider": "openai_compat",
+                    "model": "vision-model",
+                    "api_key": "vision-key",
+                    "base_url": "https://vision.example/v1",
+                },
+            }
+        }
+    )
+    provider = object()
+    monkeypatch.setattr(pipeline, "make_vlm_provider", lambda *_args, **_kwargs: provider)
+
+    client = pipeline._build_vlm_client(tmp_path, cfg, tmp_path / "cache")
+
+    assert client is not None
+    assert client.provider is provider
+    assert client.model == "vision-model"
 
 
 def test_setup_command_gives_copyable_embedding_install_command(monkeypatch, tmp_path):

@@ -7,7 +7,7 @@
 - 升级前自动备份 graph.db → graph.db.bak.<ts>
 - 失败回滚到 backup
 
-M3 阶段：v1 (M1/M2 当前 schema) 作为 baseline；预留 v2 升级钩子。
+版本按顺序升级；历史 migration 一经发布只修复执行错误，不改变既有语义。
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _migration_001_baseline(conn: sqlite3.Connection) -> None:
 
 
 def _migration_002_l0_l1(conn: sqlite3.Connection) -> None:
-    """v2: M7 分层架构 —— blocks 表 + chunks.block_ids 列 + chunks_fts。
+    """v2: 增加 L0 blocks、chunk 来源和全文索引。
 
     对全新 db，store.init_schema 已经建好这些；本 migration 处理"从 v1 升级"的旧 db。
     """
@@ -152,12 +152,12 @@ def _migration_004_node_evidence(conn: sqlite3.Connection) -> None:
 MIGRATIONS: list[Migration] = [
     Migration(
         version=1,
-        description="Baseline schema (M1/M2)",
+        description="Baseline graph schema",
         upgrade=_migration_001_baseline,
     ),
     Migration(
         version=2,
-        description="M7 L0/L1: blocks table + chunks.block_ids + chunks_fts",
+        description="L0 blocks, chunk sources, and full-text index",
         upgrade=_migration_002_l0_l1,
     ),
     Migration(

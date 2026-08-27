@@ -1,10 +1,10 @@
-"""通用 TableEntityExtractor（M7-P3）—— L2 唯一入口。
+"""通用 TableEntityExtractor —— 表格型 L2 实体的统一入口。
 
 替代旧 register.py / pin.py / timing.py 的三个专用 extractor。
 所有实体抽取统一走 schema registry + 通用 LLM 抽取引擎。
-VLM 整页兜底也集成在此（M6 能力迁移至此）。
+VLM 整页兜底也集成在此。
 
-分层契约（layered-architecture.md §2）：
+分层契约（docs/architecture/data-layers.md）：
 - L2 是可选增强，不得成为唯一入口
 - 所有产出节点带 evidence（源页/extractor/confidence）
 - L2 抽取失败不影响 L0/L1 完整性
@@ -118,7 +118,7 @@ class TableEntityExtractor:
         """解析当前应启用的 schema 列表。
 
         若构造时未显式指定 schema_names/doc_type，则按文档自身的
-        metadata.type 路由（layered-architecture.md ADR-012 文档类型路由）。
+        metadata.type 路由（docs/architecture/knowledge-graph.md）。
         """
         if not self._explicit_schemas:
             dt = getattr(getattr(doc, "metadata", None), "type", None)

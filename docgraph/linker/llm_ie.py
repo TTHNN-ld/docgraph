@@ -18,6 +18,7 @@ import re
 import time
 from dataclasses import dataclass
 from functools import partial
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -27,8 +28,10 @@ from docgraph.core.logger import get_logger
 from docgraph.graph.schema import Edge, EdgeKind, Evidence, Location, Node, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.graph.store import NodeQuery
+from docgraph.graph.traversal import iter_chunks, iter_node_query
 
 log = get_logger(__name__)
+LLM_IE_VERSION = "0.2"
 
 
 # 本体约束：LLM 只能输出这些关系类型（IP-XACT 对齐，ADR-015）。
@@ -145,6 +148,12 @@ def _tokens(name: str) -> set[str]:
     return out
 
 
+def _owned_only_by_llm_ie(node: Node) -> bool:
+    value = node.evidence.extractor if node.evidence else ""
+    owners = {part.split("@", 1)[0].split(":", 1)[0] for part in value.split("+") if part}
+    return bool(owners) and owners <= {"llm_ie"}
+
+
 _ENTITY_TYPE_NAMES = ", ".join(sorted(_KIND_MAP))
 
 
@@ -176,7 +185,7 @@ def _make_ie_node(
 ) -> Node:
     """LLM IE 发现的新实体节点。pending=True 时标记待人工校验。"""
     attrs: dict = {
-        "source": "llm_ie@0.1",
+        "source": f"llm_ie@{LLM_IE_VERSION}",
         "inferred_from": "llm_ie",
         "llm_confidence": confidence,
         "source_chunk_ids": [chunk.id],
@@ -201,7 +210,7 @@ def _make_ie_node(
         evidence=Evidence(
             chunk_ids=[chunk.id],
             pages=[chunk.page] if chunk.page else [],
-            extractor="llm_ie@0.1",
+            extractor=f"llm_ie@{LLM_IE_VERSION}",
             raw_snippet=name,
         ),
         attrs=attrs,
@@ -223,9 +232,17 @@ class LLMIEReport:
     duration_s: float = 0.0
 
 
+@dataclass
+class LLMIEPlanItem:
+    chunk: Any
+    result: LLMIEResult
+    name_index: dict[str, list]
+    doc_id: str
+
+
 class LLMIELinker:
     name = "llm_ie"
-    version = "0.1"
+    version = LLM_IE_VERSION
 
     MAX_CHUNKS_PER_DOC = 30
     MIN_CHUNK_CHARS = 80
@@ -238,38 +255,42 @@ class LLMIELinker:
     _REQ_RE = re.compile(r"REQ_[A-Z0-9_]*\d+", re.I)
 
     def run(self, store: SQLiteGraphStore, llm_client=None) -> LLMIEReport:
+        rep, plan = self.prepare(store, llm_client=llm_client)
+        if rep.failed:
+            return rep
+        self.apply(store, rep, plan)
+        self._log_report(rep)
+        return rep
+
+    def prepare(
+        self,
+        store: SQLiteGraphStore,
+        *,
+        llm_client=None,
+    ) -> tuple[LLMIEReport, list[LLMIEPlanItem]]:
+        """Perform read-only candidate selection and remote calls before the write transaction."""
         t0 = time.time()
         rep = LLMIEReport()
+        plan: list[LLMIEPlanItem] = []
         if os.environ.get("DOCGRAPH_LLM_IE", "").lower() in ("off", "0", "false", "no"):
             log.info("[llm_ie] skipped (DOCGRAPH_LLM_IE=off)")
-            return rep
+            return rep, plan
         if llm_client is None or getattr(llm_client, "disabled", False):
             log.info("[llm_ie] skipped (no LLM configured)")
-            return rep
-
-        name_index = self._build_name_index(store)
-        all_chunks = store.list_chunks(limit=1000000)
+            return rep, plan
 
         for doc_id in store.list_docs():
-            doc_chunks = [
-                c
-                for c in all_chunks
-                if c.doc_id == doc_id
-                and (c.kind == "section")
-                and len(c.text or "") >= self.MIN_CHUNK_CHARS
-            ]
-            if not doc_chunks:
-                continue
-            idx = name_index.get(doc_id, {})
+            idx = self._build_name_index(store, doc_id).get(doc_id, {})
             if not idx:
                 continue
-            n_calls = 0
             max_chunks = _env_int("DOCGRAPH_LLM_IE_MAX_CHUNKS_PER_DOC", self.MAX_CHUNKS_PER_DOC)
             # Phase 1: 过滤 + 收集要调 LLM 的 chunk（顺序，无 store 写）
             tasks: list = []  # (chunk, entity_names)
-            for chunk in doc_chunks:
+            for chunk in iter_chunks(store, doc_ids=[doc_id]):
                 if len(tasks) >= max_chunks:
                     break
+                if chunk.kind != "section" or len(chunk.text or "") < self.MIN_CHUNK_CHARS:
+                    continue
                 rep.chunks_scanned += 1
                 if self._is_requirement_heavy(chunk.text or ""):
                     rep.skipped_req += 1
@@ -287,7 +308,7 @@ class LLMIELinker:
             )
             # Phase 2: 并发调 LLM（不同 chunk 互相独立，不碰 store）
             results = map_concurrent(partial(self._run_extract, llm_client=llm_client), tasks)
-            # Phase 3: 顺序建边/建实体（store 写入不并发，避免 sqlite 锁冲突）
+            # Save successful results; graph writes happen later in one short transaction.
             for (chunk, _names), res in zip(tasks, results, strict=True):
                 result, err = res
                 if err is not None:
@@ -296,23 +317,42 @@ class LLMIELinker:
                     continue
                 rep.llm_calls += 1
                 rep.fallback_calls += getattr(result, "_fallback_calls", 0)
-                for rel in result.relations:
-                    ok, created, pending = self._create_edge(
-                        store,
-                        rel,
-                        chunk,
-                        idx,
-                        doc_id,
+                plan.append(
+                    LLMIEPlanItem(
+                        chunk=chunk,
+                        result=result,
+                        name_index=idx,
+                        doc_id=doc_id,
                     )
-                    if ok:
-                        rep.edges_created += 1
-                    else:
-                        rep.skipped_no_match += 1
-                    rep.entities_created += created
-                    rep.entities_pending += pending
-                n_calls += 1
+                )
 
         rep.duration_s = round(time.time() - t0, 3)
+        return rep, plan
+
+    def apply(
+        self,
+        store: SQLiteGraphStore,
+        rep: LLMIEReport,
+        plan: list[LLMIEPlanItem],
+    ) -> None:
+        for item in plan:
+            for rel in item.result.relations:
+                ok, created, pending = self._create_edge(
+                    store,
+                    rel,
+                    item.chunk,
+                    item.name_index,
+                    item.doc_id,
+                )
+                if ok:
+                    rep.edges_created += 1
+                else:
+                    rep.skipped_no_match += 1
+                rep.entities_created += created
+                rep.entities_pending += pending
+
+    @staticmethod
+    def _log_report(rep: LLMIEReport) -> None:
         log.info(
             f"[llm_ie] done in {rep.duration_s}s — llm_calls={rep.llm_calls} "
             f"fallback_calls={rep.fallback_calls} "
@@ -320,7 +360,6 @@ class LLMIELinker:
             f"entities_pending={rep.entities_pending} "
             f"skipped={rep.skipped_no_match} skipped_req={rep.skipped_req} failed={rep.failed}"
         )
-        return rep
 
     @classmethod
     def _is_requirement_heavy(cls, text: str) -> bool:
@@ -341,12 +380,16 @@ class LLMIELinker:
             return (None, e)
 
     @staticmethod
-    def _build_name_index(store: SQLiteGraphStore) -> dict[str, dict[str, list]]:
+    def _build_name_index(
+        store: SQLiteGraphStore, doc_id: str | None = None
+    ) -> dict[str, dict[str, list]]:
         """{doc_id: {normalize(name): [node, ...]}}。只索引名字像真实实体的节点。"""
         out: dict[str, dict[str, list]] = {}
         for kind in _ENTITY_KINDS:
-            nodes = store.search_nodes(NodeQuery(kind=kind, limit=1000000))
+            nodes = iter_node_query(store, NodeQuery(kind=kind, doc_id=doc_id))
             for n in nodes:
+                if _owned_only_by_llm_ie(n):
+                    continue
                 raw = n.qualified_name or n.name or ""
                 if not _is_matchable_name(raw):
                     continue

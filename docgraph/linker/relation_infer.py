@@ -9,7 +9,7 @@
 - ``contained_in``：memory_map → register。按地址前缀匹配（memory_map.base 是
   register.address 的前缀）。
 
-设计原则（layered-architecture §3.5 / RFC 0015）：
+设计原则（docs/architecture/knowledge-graph.md / RFC 0015）：
 - 零 LLM 成本，高精度，补大半语义边。
 - 失败不影响已有图谱；evidence 非空（ADR-008）。
 - 幂等：upsert_edge 对 (src, dst, kind) 去重。
@@ -24,7 +24,7 @@ from docgraph.core.ids import normalize_name
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import Edge, EdgeKind, Evidence, Node, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
-from docgraph.graph.store import NodeQuery
+from docgraph.graph.traversal import iter_nodes
 
 log = get_logger(__name__)
 
@@ -56,14 +56,14 @@ class RelationInferReport:
 
 class RelationInferLinker:
     name = "relation_infer"
-    version = "0.1"
+    version = "0.2"
 
     def run(self, store: SQLiteGraphStore) -> RelationInferReport:
         t0 = time.time()
         rep = RelationInferReport()
 
         # 1. 建 section 索引：(doc_id, section_path) -> section_node
-        sections = store.search_nodes(NodeQuery(kind=NodeKind.SECTION, limit=100000))
+        sections = iter_nodes(store, NodeKind.SECTION)
         section_by_key: dict[tuple[str, str], Node] = {}
         section_name_by_key: dict[tuple[str, str], str] = {}
         for s in sections:
@@ -75,7 +75,7 @@ class RelationInferLinker:
             section_name_by_key[key] = s.name or ""
 
         # 2. 建 module 索引（来自 figure VLM）：(doc_id, normalize(name)) -> module_node
-        modules = store.search_nodes(NodeQuery(kind=NodeKind.MODULE, limit=100000))
+        modules = iter_nodes(store, NodeKind.MODULE)
         module_by_doc_name: dict[tuple[str, str], Node] = {}
         for m in modules:
             nm = normalize_name(m.qualified_name or m.name or "")
@@ -84,7 +84,7 @@ class RelationInferLinker:
 
         # 3. 对每个实体推断 belongs_to
         for kind in _ENTITY_KINDS:
-            entities = store.search_nodes(NodeQuery(kind=kind, limit=100000))
+            entities = iter_nodes(store, kind)
             for ent in entities:
                 sp = _section_path_of(ent) or _recover_section_path(store, ent)
                 if not sp:
@@ -148,8 +148,8 @@ class RelationInferLinker:
 
     def _infer_contained_in(self, store: SQLiteGraphStore) -> int:
         """memory_map.base 是 register.address 的前缀 → contained_in。"""
-        maps = store.search_nodes(NodeQuery(kind=NodeKind.MEMORY_MAP, limit=100000))
-        regs = store.search_nodes(NodeQuery(kind=NodeKind.REGISTER, limit=100000))
+        maps = iter_nodes(store, NodeKind.MEMORY_MAP)
+        regs = iter_nodes(store, NodeKind.REGISTER)
         # 按文档分组 register 地址，避免 O(n*m)
         reg_addr_by_doc: dict[str, list[tuple[Node, str]]] = {}
         for r in regs:

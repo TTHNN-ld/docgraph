@@ -5,16 +5,17 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from docgraph.core.bootstrap import bootstrap
 from docgraph.core.config import docgraph_dir, load_config, project_root_from_cwd
 from docgraph.core.dotenv import autoload_env
 from docgraph.core.logger import get_logger
-from docgraph.embeddings.factory import build_encoder
-from docgraph.embeddings.vector_factory import build_vector_store
+from docgraph.embeddings.factory import open_query_embeddings
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.query.engine import QueryEngine
+from docgraph.version import __version__
 
 log = get_logger(__name__)
 
@@ -25,11 +26,7 @@ def _build_engine(root: Path):
     bootstrap()
     store = SQLiteGraphStore(docgraph_dir(root) / "graph.db")
     store.init_schema()
-    vstore = build_vector_store(cfg.storage, docgraph_dir(root), create=False)
-    encoder = None
-    if vstore is not None:
-        vstore.init_schema()
-        encoder = build_encoder(cfg.embeddings)
+    vstore, encoder = open_query_embeddings(cfg.embeddings, cfg.storage, docgraph_dir(root))
     return store, vstore, QueryEngine(store, vstore=vstore, encoder=encoder), cfg
 
 
@@ -51,10 +48,20 @@ def create_app(root: Path | None = None):
 
     store, vstore, qe, cfg = _build_engine(root)
 
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            store.close()
+            if vstore is not None:
+                vstore.close()
+
     app = FastAPI(
         title="DocGraph",
-        version="0.1.0",
+        version=__version__,
         description="Document Knowledge Graph for chip specs",
+        lifespan=lifespan,
     )
     app.state.root = root
     app.state.cfg = cfg

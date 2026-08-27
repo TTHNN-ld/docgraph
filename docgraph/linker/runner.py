@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from docgraph.core.config import DocGraphConfig
@@ -30,7 +30,31 @@ class LinkReport:
     merge_groups: int = 0
     supersedes_edges: int = 0
     fed_alias_edges: int = 0
+    llm_ie_calls: int = 0
     duration_s: float = 0.0
+    warnings: list[str] = field(default_factory=list)
+
+
+LINKER_PRODUCERS = {
+    RelationInferLinker.name,
+    LLMIELinker.name,
+    XRefLinker.name,
+    EntityResolver.name,
+    FederationLinker.name,
+}
+
+
+def linker_versions() -> dict[str, str]:
+    return {
+        cls.name: cls.version
+        for cls in (
+            RelationInferLinker,
+            LLMIELinker,
+            XRefLinker,
+            EntityResolver,
+            FederationLinker,
+        )
+    }
 
 
 def run_linker(
@@ -44,26 +68,51 @@ def run_linker(
     """跑全套 linker：relation_infer → llm_ie → xref → entity_resolver → federation。"""
     t0 = time.time()
 
-    # 0. 确定性关系推断（ADR-015 B 层）：章节归属 + 地址 join
-    ri = RelationInferLinker().run(store)
+    doc_priorities = {
+        rec.doc_id: int((cfg.docs.metadata.get(path_str) or {}).get("priority", 10))
+        for path_str, rec in manifest.files.items()
+        if rec.doc_id
+    }
+    doc_instances = {
+        rec.doc_id: str((cfg.docs.metadata.get(path_str) or {}).get("chip_model"))
+        for path_str, rec in manifest.files.items()
+        if rec.doc_id and (cfg.docs.metadata.get(path_str) or {}).get("chip_model")
+    }
+    llm_ie = LLMIELinker()
+    ie, ie_plan = llm_ie.prepare(store, llm_client=llm_client)
+    if ie.failed:
+        raise RuntimeError(f"LLM IE failed for {ie.failed} chunk(s)")
 
-    # 1. LLM 开放 IE（ADR-015 C 层）：补 B 未覆盖的语义关系
-    ie = LLMIELinker().run(store, llm_client=llm_client)
+    with store.transaction():
+        store.clear_derived_graph_items(LINKER_PRODUCERS)
+        ri = RelationInferLinker().run(store)
+        llm_ie.apply(store, ie, ie_plan)
+        xref = XRefLinker().run(store, root=None)
+        er = EntityResolver().run(
+            store,
+            root=None,
+            doc_instances=doc_instances,
+            doc_priorities=doc_priorities,
+        )
+        fed = FederationLinker().run(
+            store,
+            doc_priorities=doc_priorities,
+            doc_instances=doc_instances,
+        )
 
-    # 2. xref
-    xref = XRefLinker().run(store, root=root)
+    llm_ie._log_report(ie)
 
-    # 3. entity resolve
-    er = EntityResolver().run(store, root=root)
-
-    # 4. federation
-    doc_priorities: dict[str, int] = {}
-    for path_str, rec in manifest.files.items():
-        if not rec.doc_id:
-            continue
-        meta = cfg.docs.metadata.get(path_str) or {}
-        doc_priorities[rec.doc_id] = int(meta.get("priority", 10))
-    fed = FederationLinker().run(store, doc_priorities=doc_priorities)
+    audit_warnings: list[str] = []
+    for label, writer, records in (
+        ("xref", XRefLinker._write_unresolved, xref.unresolved_records or []),
+        ("entity_resolver", EntityResolver._write_audit, er.audit_records or []),
+    ):
+        try:
+            writer(root, records)
+        except Exception as exc:
+            warning = f"{label} audit write failed: {exc}"
+            audit_warnings.append(warning)
+            log.warning(f"[link] {warning}")
 
     rep = LinkReport(
         belongs_to_edges=ri.belongs_to_edges,
@@ -75,7 +124,9 @@ def run_linker(
         merge_groups=er.groups,
         supersedes_edges=fed.supersedes_edges,
         fed_alias_edges=fed.alias_edges,
+        llm_ie_calls=ie.llm_calls,
         duration_s=round(time.time() - t0, 2),
+        warnings=audit_warnings,
     )
     log.info(
         f"[link] done in {rep.duration_s}s — "

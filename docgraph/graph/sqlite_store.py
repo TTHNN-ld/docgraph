@@ -1,7 +1,7 @@
 """SQLite 实现 —— DocGraph 的默认存储后端。
 
 设计要点：
-- 一个文件搞定图 + 索引；后期再加 sqlite-vec 装向量。
+- 一个文件保存图、L0/L1 与全文索引；向量使用独立可重建后端。
 - 所有 JSON 字段用 TEXT，进出走 json 模块。
 - 用 UPSERT (ON CONFLICT) 实现幂等。
 - 邻居/路径用递归 CTE。
@@ -30,7 +30,7 @@ from docgraph.graph.schema import (
     NodeKind,
     TableData,
 )
-from docgraph.graph.store import NodeQuery, Subgraph
+from docgraph.graph.store import EdgeQuery, NodeQuery, Subgraph
 
 # ---------------------------------------------------------------------------
 # Migration 表（最小启动）
@@ -114,7 +114,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
   chunk_id UNINDEXED, text, tokenize='unicode61'
 );
 
--- L0 版面块（layered-architecture.md §3.1）
+-- L0 版面块（docs/architecture/data-layers.md）
 CREATE TABLE IF NOT EXISTS blocks (
   id            TEXT PRIMARY KEY,
   doc_id        TEXT NOT NULL,
@@ -321,7 +321,7 @@ class SQLiteGraphStore:
             params.extend([f"%{query.fuzzy}%", f"%{query.fuzzy}%"])
 
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT * FROM nodes {where} ORDER BY name LIMIT ? OFFSET ?"
+        sql = f"SELECT * FROM nodes {where} ORDER BY name, id LIMIT ? OFFSET ?"
         params.extend([query.limit, query.offset])
         rows = conn.execute(sql, params).fetchall()
         return [self._row_to_node(r) for r in rows]
@@ -330,6 +330,16 @@ class SQLiteGraphStore:
 
     def upsert_edge(self, edge: Edge) -> None:
         conn = self._connect()
+        existing = self.get_edge(edge.src, edge.dst, edge.kind)
+        if existing is not None:
+            edge = existing.model_copy(
+                update={
+                    "confidence": max(existing.confidence, edge.confidence),
+                    "evidence": _merge_evidence(existing.evidence, edge.evidence),
+                    "attrs": _merge_attrs(existing.attrs, edge.attrs),
+                    "schema_version": max(existing.schema_version, edge.schema_version),
+                }
+            )
         conn.execute(
             """
             INSERT INTO edges (src, dst, kind, confidence, evidence, attrs,
@@ -353,6 +363,107 @@ class SQLiteGraphStore:
         )
         self._commit_if_autonomous()
 
+    def get_edge(self, src: str, dst: str, kind: EdgeKind) -> Edge | None:
+        row = (
+            self._connect()
+            .execute(
+                "SELECT * FROM edges WHERE src = ? AND dst = ? AND kind = ?",
+                (src, dst, kind.value),
+            )
+            .fetchone()
+        )
+        return self._row_to_edge(row) if row is not None else None
+
+    def search_edges(self, query: EdgeQuery) -> list[Edge]:
+        """Search edges without exposing the SQLite connection to callers."""
+        conn = self._connect()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if query.node_ids is not None:
+            node_ids = list(dict.fromkeys(query.node_ids))
+            if not node_ids:
+                return []
+            placeholders = ",".join("?" for _ in node_ids)
+            clauses.append(f"src IN ({placeholders}) AND dst IN ({placeholders})")
+            params.extend([*node_ids, *node_ids])
+        if query.kinds is not None:
+            if not query.kinds:
+                return []
+            placeholders = ",".join("?" for _ in query.kinds)
+            clauses.append(f"kind IN ({placeholders})")
+            params.extend(kind.value for kind in query.kinds)
+        if query.confidence_lt is not None:
+            clauses.append("confidence IS NOT NULL AND confidence < ?")
+            params.append(query.confidence_lt)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            f"""
+            SELECT * FROM edges
+            {where}
+            ORDER BY COALESCE(confidence, 1.0), src, dst, kind
+            LIMIT ?
+            """,
+            [*params, query.limit],
+        ).fetchall()
+        return [self._row_to_edge(row) for row in rows]
+
+    def delete_edge(self, src: str, dst: str, kind: EdgeKind) -> None:
+        conn = self._connect()
+        conn.execute(
+            "DELETE FROM edges WHERE src = ? AND dst = ? AND kind = ?",
+            (src, dst, kind.value),
+        )
+        self._commit_if_autonomous()
+
+    def clear_derived_graph_items(self, producers: set[str]) -> tuple[int, int]:
+        """Remove graph items owned only by the selected reproducible producers."""
+        conn = self._connect()
+        edge_keys: list[tuple[str, str, str]] = []
+        for row in conn.execute("SELECT src, dst, kind, evidence FROM edges").fetchall():
+            evidence = json.loads(row["evidence"]) if row["evidence"] else {}
+            if _owned_only_by(evidence.get("extractor"), producers):
+                edge_keys.append((row["src"], row["dst"], row["kind"]))
+        conn.executemany(
+            "DELETE FROM edges WHERE src = ? AND dst = ? AND kind = ?",
+            edge_keys,
+        )
+
+        node_ids: list[tuple[str]] = []
+        for row in conn.execute("SELECT id, evidence FROM nodes").fetchall():
+            evidence = json.loads(row["evidence"]) if row["evidence"] else {}
+            if _owned_only_by(evidence.get("extractor"), producers):
+                node_ids.append((row["id"],))
+        conn.executemany("DELETE FROM nodes WHERE id = ?", node_ids)
+        self._commit_if_autonomous()
+        return len(node_ids), len(edge_keys)
+
+    def graph_content_fingerprint(self) -> str:
+        """Hash the stable node and chunk inputs consumed by corpus-wide linkers."""
+        conn = self._connect()
+        digest = hashlib.sha256()
+        for row in conn.execute(
+            """
+            SELECT id, kind, name, qualified_name, doc_id, page, bbox,
+                   section_path, evidence, attrs, summary, hash, schema_version
+            FROM nodes ORDER BY id
+            """
+        ):
+            for value in row:
+                digest.update(str(value or "").encode("utf-8"))
+                digest.update(b"\0")
+            digest.update(b"\n")
+        for row in conn.execute(
+            """
+            SELECT id, doc_id, COALESCE(source_hash, hash, ''), text
+            FROM chunks ORDER BY id
+            """
+        ):
+            for value in row:
+                digest.update(str(value or "").encode("utf-8"))
+                digest.update(b"\0")
+            digest.update(b"\n")
+        return digest.hexdigest()
+
     def neighbors(
         self,
         id: str,
@@ -360,14 +471,14 @@ class SQLiteGraphStore:
         depth: int = 1,
         limit: int = 50,
     ) -> Subgraph:
-        """简单 BFS 实现（小图够用）。生产可换成递归 CTE。"""
+        """使用有界 BFS 返回节点、去重关系及完整端点。"""
         if depth < 1:
             return Subgraph()
         kind_filter = [k.value for k in edge_kinds] if edge_kinds else None
 
         conn = self._connect()
         visited_nodes: dict[str, Node] = {}
-        edges_collected: list[Edge] = []
+        edges_collected: dict[tuple[str, str, EdgeKind], Edge] = {}
         queue: deque[tuple[str, int]] = deque([(id, 0)])
         seen: set[str] = {id}
 
@@ -388,7 +499,8 @@ class SQLiteGraphStore:
                 sql += f" AND kind IN ({placeholders})"
                 params.extend(kind_filter)
             for row in conn.execute(sql, params).fetchall():
-                edges_collected.append(self._row_to_edge(row))
+                edge = self._row_to_edge(row)
+                edges_collected.setdefault((edge.src, edge.dst, edge.kind), edge)
                 if row["dst"] not in seen:
                     seen.add(row["dst"])
                     queue.append((row["dst"], cur_depth + 1))
@@ -401,14 +513,20 @@ class SQLiteGraphStore:
                 sql += f" AND kind IN ({placeholders})"
                 params.extend(kind_filter)
             for row in conn.execute(sql, params).fetchall():
-                edges_collected.append(self._row_to_edge(row))
+                edge = self._row_to_edge(row)
+                edges_collected.setdefault((edge.src, edge.dst, edge.kind), edge)
                 if row["src"] not in seen:
                     seen.add(row["src"])
                     queue.append((row["src"], cur_depth + 1))
 
+        returned_ids = set(visited_nodes)
         return Subgraph(
             nodes=list(visited_nodes.values()),
-            edges=edges_collected,
+            edges=[
+                edge
+                for edge in edges_collected.values()
+                if edge.src in returned_ids and edge.dst in returned_ids
+            ],
         )
 
     # ------- doc-level -------
@@ -583,6 +701,14 @@ class SQLiteGraphStore:
             (limit,),
         ).fetchall()
         return [self._row_to_chunk(r) for r in rows]
+
+    def list_chunk_ids(self, doc_ids: list[str] | None = None) -> set[str]:
+        conn = self._connect()
+        where, params = self._chunk_scope(doc_ids)
+        return {
+            str(row["id"])
+            for row in conn.execute(f"SELECT id FROM chunks {where}", params).fetchall()
+        }
 
     def _row_to_chunk(self, row):
         from docgraph.graph.schema import Chunk
@@ -792,8 +918,17 @@ class SQLiteGraphStore:
         """
         conn = self._connect()
         rows = conn.execute(
-            "SELECT * FROM nodes WHERE json_extract(attrs, '$.source_chunk_ids') LIKE ?",
-            (f"%{chunk_id}%",),
+            """
+            SELECT * FROM nodes
+            WHERE EXISTS (
+                SELECT 1 FROM json_each(nodes.attrs, '$.source_chunk_ids')
+                WHERE json_each.value = ?
+            ) OR EXISTS (
+                SELECT 1 FROM json_each(nodes.evidence, '$.chunk_ids')
+                WHERE json_each.value = ?
+            )
+            """,
+            (chunk_id, chunk_id),
         ).fetchall()
         return [self._row_to_node(r) for r in rows]
 
@@ -801,8 +936,14 @@ class SQLiteGraphStore:
         """Find L2 entities whose source_block_ids include this block_id."""
         conn = self._connect()
         rows = conn.execute(
-            "SELECT * FROM nodes WHERE json_extract(attrs, '$.source_block_ids') LIKE ?",
-            (f"%{block_id}%",),
+            """
+            SELECT * FROM nodes
+            WHERE EXISTS (
+                SELECT 1 FROM json_each(nodes.attrs, '$.source_block_ids')
+                WHERE json_each.value = ?
+            )
+            """,
+            (block_id,),
         ).fetchall()
         return [self._row_to_node(r) for r in rows]
 
@@ -884,7 +1025,7 @@ class SQLiteGraphStore:
             src=row["src"],
             dst=row["dst"],
             kind=EdgeKind(row["kind"]),
-            confidence=row["confidence"] or 1.0,
+            confidence=row["confidence"] if row["confidence"] is not None else 1.0,
             evidence=Evidence(**evidence_data) if evidence_data else Evidence(extractor="unknown"),
             attrs=json.loads(row["attrs"]) if row["attrs"] else {},
             created_at=row["created_at"] or "",
@@ -1042,6 +1183,11 @@ def _split_extractors(value: str | None) -> list[str]:
     if not value:
         return []
     return [part for part in value.split("+") if part]
+
+
+def _owned_only_by(value: str | None, producers: set[str]) -> bool:
+    owners = {part.split("@", 1)[0].split(":", 1)[0] for part in _split_extractors(value)}
+    return bool(owners) and owners <= producers
 
 
 def _as_list(value: Any) -> list[Any]:

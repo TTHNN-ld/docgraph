@@ -14,15 +14,17 @@ DocGraph 是面向芯片规格书的本地知识底座，不是通用文档协�
 
 ```text
 PDF / DOCX / XLSX / Markdown
-  → discover + source identity
+  → discover + source/build fingerprint
   → Parser → ParsedDoc / L0 Blocks
-  → Chunker → L1 Chunks + FTS/vector index
+  → Chunker → L1 Chunks + FTS
   → Extractor → L2 Nodes/Edges
-  → Linker → relations/aliases
-  → atomic per-document persistence + manifest
+  → atomic per-document L0/L1/L2 replacement
+  → Linker → atomic relations/aliases replacement
+  → optional vector index
+  → manifest outcome
 ```
 
-每个文件是一个错误和事务边界。完整构建还会清理已经离开 `docs.include` 的文档；局部构建只替换指定文档。
+每个文件是一个错误和事务边界。完整构建还会清理已经离开 `docs.include` 的文档；局部构建只替换指定文档。Linker 与向量是拥有独立失效条件的全局派生阶段，状态模型见 [RFC 0020](../decisions/0020-stage-aware-index-build.md)。
 
 ## 查询链路
 
@@ -30,7 +32,7 @@ PDF / DOCX / XLSX / Markdown
 Agent task
   → L1 规模判断
   ├─ 预算内：按稳定顺序提供完整 L1
-  └─ 超预算：混合检索定位 L1
+  └─ 超预算：全文检索，可选融合语义候选定位 L1
        → 按 block_ids 读取 L0 证据
        → 按需附加 L2 实体和关系
 ```

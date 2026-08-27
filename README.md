@@ -10,7 +10,7 @@ DocGraph 将 PDF、DOCX、XLSX/XLSM 和 Markdown 归一为可追溯的版面块�
 |---|---|---|
 | 文档导入 | 扫描 `docs/`、`spec/` | 支持 PDF、DOCX、XLSX/XLSM、MD/Markdown |
 | PDF 解析 | `auto` 路由，PyMuPDF 兜底 | Docling、MinerU、Marker 是按需安装的质量增强后端 |
-| 本地检索 | FTS5 + 本地 hash embedding | 可配置真实 embedding provider |
+| 本地检索 | FTS5 + LIKE | 可配置 BGE-M3 或 OpenAI-compatible 语义检索 |
 | 实体图谱 | `section`、`table_entity` 默认启用 | L2 是增强层，失败不阻断 L0/L1 |
 | Agent 接入 | MCP stdio | 6 个只读工具，提供 L1 查询、L0 取证和 L2 图谱浏览 |
 | 人工浏览 | 可选 Web UI | 需要安装 `web` extra |
@@ -33,6 +33,7 @@ uv sync                                      # 仅核心功能
 uv sync --extra web                          # 核心 + Web UI
 uv sync --extra docling                      # 核心 + Docling
 uv sync --extra mineru                       # 核心 + MinerU
+uv sync --extra embeddings                   # 核心 + 本地 BGE-M3 语义检索
 uv sync --group dev                          # 核心 + 测试/检查工具 + Web 测试依赖
 uv sync --extra web --extra docling          # 核心 + Web UI + Docling
 ```
@@ -85,7 +86,7 @@ uv run docgraph serve --web --port 8000
 ```text
 输入文档
   └─ L0 Block：段落、标题、表格、图片、公式及版面证据
-       └─ L1 Chunk：稳定 ID、block_ids、全文/向量检索
+       └─ L1 Chunk：稳定 ID、block_ids、全文检索和可选语义检索
             └─ L2 Node/Edge：带来源和可信状态的可选实体增强
 ```
 

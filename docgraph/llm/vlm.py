@@ -1,6 +1,6 @@
-"""VLM 适配 —— 让 LLMClient 能调用多模态模型分析图片。
+"""让 LLMClient 通过多模态模型分析图片。
 
-M4 升级：
+支持能力：
 - 接入 OpenAI 兼容视觉模型（Qwen-VL / GLM-4V / GPT-4o / Doubao Vision 等）
 - 保留 Anthropic Claude vision
 - 统一 base64 + image_url 两种 payload 编码
@@ -18,10 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from docgraph.core.ids import file_hash
+from docgraph.core.ids import content_hash, file_hash
 from docgraph.core.logger import get_logger
 from docgraph.llm.client import (
     AnthropicProvider,
+    BudgetExceeded,
+    CostTracker,
     LLMResponse,
     OpenAICompatProvider,
     _llm_deadline,
@@ -323,13 +325,15 @@ class VLMClient:
         model: str,
         cache_dir: Path | None = None,
         tracker=None,
+        budget_usd: float | None = None,
         max_retries: int = 1,
         disable_after_failures: int = 2,
     ) -> None:
         self.provider = provider
         self.model = model
         self.cache_dir = cache_dir
-        self.tracker = tracker
+        self.tracker = tracker or CostTracker()
+        self.budget_usd = budget_usd
         self.max_retries = max_retries
         self.disable_after_failures = disable_after_failures
         self._consecutive_failures = 0
@@ -351,63 +355,97 @@ class VLMClient:
         cache_key_extra: str = "",
         extractor: str = "figure",
     ) -> LLMResponse:
+        img_hash = file_hash(image_path).split(":", 1)[-1][:32]
+        model_key = _safe_key(self.model)
+        provider_name = getattr(self.provider, "name", type(self.provider).__name__)
+        provider_endpoint = getattr(self.provider, "base_url", None)
+        request_hash = content_hash(
+            json.dumps(
+                {
+                    "provider": provider_name,
+                    "endpoint": provider_endpoint,
+                    "model": self.model,
+                    "prompt": prompt,
+                    "system": system,
+                    "max_tokens": max_tokens,
+                    "extra": cache_key_extra,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        ).split(":", 1)[-1][:32]
+        cache_p = (
+            self.cache_dir / f"{img_hash}.{model_key}.{request_hash}.json"
+            if self.cache_dir
+            else None
+        )
+        if cache_p and cache_p.is_file():
+            try:
+                cached = json.loads(cache_p.read_text("utf-8"))
+            except (OSError, json.JSONDecodeError):
+                cached = None
+            if cached and (cached.get("text") or "").strip():
+                resp = LLMResponse(
+                    text=cached["text"],
+                    model=cached.get("model", self.model),
+                    tokens_in=cached.get("tokens_in", 0),
+                    tokens_out=cached.get("tokens_out", 0),
+                    cost_usd=0.0,
+                    cache_hit=True,
+                )
+                self.tracker.record(resp, extractor=extractor)
+                return resp
+
         if self._disabled:
             raise RuntimeError(
                 "VLM client disabled after repeated failures. "
                 "Provider likely doesn't support vision (e.g. DeepSeek)."
             )
-        img_hash = file_hash(image_path).split(":", 1)[-1][:32]
-        model_key = _safe_key(self.model)
-        extra_key = _safe_key(cache_key_extra)
-        cache_p = (
-            self.cache_dir / f"{img_hash}.{model_key}.{extra_key}.json" if self.cache_dir else None
-        )
-        if cache_p and cache_p.is_file():
-            cached = json.loads(cache_p.read_text("utf-8"))
-            resp = LLMResponse(
-                text=cached["text"],
-                model=cached.get("model", self.model),
-                tokens_in=cached.get("tokens_in", 0),
-                tokens_out=cached.get("tokens_out", 0),
-                cost_usd=0.0,
-                cache_hit=True,
+
+        estimated_tokens_in = max(1, len(prompt) // 4) + 1000
+        estimated_usd = estimate_cost(self.model, estimated_tokens_in, max_tokens)
+        reservation = self.tracker.reserve(self.budget_usd, estimated_usd)
+        if reservation is None:
+            raise BudgetExceeded(
+                f"Build model budget {self.budget_usd:.2f} USD is exhausted for this request "
+                f"(spent {self.tracker.cost_usd:.4f}, reserved {self.tracker.reserved_usd:.4f})."
             )
-            if self.tracker is not None:
-                self.tracker.record(resp, extractor=extractor)
-            return resp
 
         last_err: Exception | None = None
-        for _ in range(self.max_retries + 1):
-            try:
-                with _llm_deadline(_vlm_timeout_s()):
-                    resp = self.provider.describe(
-                        image_path,
-                        prompt,
-                        model=self.model,
-                        max_tokens=max_tokens,
-                        system=system,
-                    )
-                # 成功 → 重置失败计数
-                self._consecutive_failures = 0
-                if cache_p:
-                    cache_p.write_text(
-                        json.dumps(
-                            {
-                                "text": resp.text,
-                                "model": resp.model,
-                                "tokens_in": resp.tokens_in,
-                                "tokens_out": resp.tokens_out,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        encoding="utf-8",
-                    )
-                if self.tracker is not None:
-                    self.tracker.record(resp, extractor=extractor)
-                return resp
-            except Exception as e:
-                last_err = e
-                continue
+        try:
+            for _ in range(self.max_retries + 1):
+                try:
+                    with _llm_deadline(_vlm_timeout_s()):
+                        resp = self.provider.describe(
+                            image_path,
+                            prompt,
+                            model=self.model,
+                            max_tokens=max_tokens,
+                            system=system,
+                        )
+                    # 成功 → 重置失败计数
+                    self._consecutive_failures = 0
+                    if cache_p and (resp.text or "").strip():
+                        cache_p.write_text(
+                            json.dumps(
+                                {
+                                    "text": resp.text,
+                                    "model": resp.model,
+                                    "tokens_in": resp.tokens_in,
+                                    "tokens_out": resp.tokens_out,
+                                },
+                                ensure_ascii=False,
+                            ),
+                            encoding="utf-8",
+                        )
+                    self.tracker.record(resp, extractor=extractor, reserved_usd=reservation)
+                    reservation = 0.0
+                    return resp
+                except Exception as e:
+                    last_err = e
+                    continue
+        finally:
+            self.tracker.release(reservation)
         # 全部重试都失败
         self._consecutive_failures += 1
         if self._consecutive_failures >= self.disable_after_failures:

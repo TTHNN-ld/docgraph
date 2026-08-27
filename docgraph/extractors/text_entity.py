@@ -7,7 +7,7 @@
 这两类实体结构清晰、有强标识符（编号），适合纯规则确定性抽取，不依赖 LLM。
 抽出的节点带 source_block_ids 回溯到 L0 原文段落。
 
-设计原则（layered-architecture.md）：
+设计原则（docs/architecture/data-layers.md）：
 - L2 是可选增强，失败不影响 L0/L1
 - 节点必须带 evidence + source_block_ids
 - 不写死特定项目，正则覆盖通用编号格式

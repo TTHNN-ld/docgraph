@@ -1,7 +1,7 @@
-"""人工审核 TUI —— 列出低置信节点/边，交互式 accept/reject/edit。
+"""低置信关系的人工审核 TUI。
 
-M4 简化实现：用 rich.prompt 做选择式审核。
-审核结果写到 `.docgraph/entities/reviewed.jsonl`，下次 build 自动保留。
+审核决定写入 ``.docgraph/entities/reviewed.jsonl`` 作为审计记录。拒绝会
+立即删除当前索引中的关系，但决定尚不会在后续重建时自动重放。
 """
 
 from __future__ import annotations
@@ -15,17 +15,17 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from docgraph.core.config import docgraph_dir
+from docgraph.graph.schema import EdgeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
+from docgraph.graph.store import EdgeQuery
 
 console = Console()
 
 
 @dataclass
 class ReviewItem:
-    kind: str  # "node" | "edge"
-    target: dict  # 完整 dump
+    target: dict
     confidence: float
-    reason: str = ""
 
 
 def gather_low_confidence(
@@ -34,34 +34,15 @@ def gather_low_confidence(
     min_confidence: float = 0.85,
     limit: int = 50,
 ) -> list[ReviewItem]:
-    """边的 confidence 显式存了；节点没有，所以只过边。"""
-    conn = store._connect()  # type: ignore[attr-defined]
-    rows = conn.execute(
-        """
-        SELECT src, dst, kind, confidence, evidence, attrs, created_at, schema_version
-        FROM edges
-        WHERE confidence IS NOT NULL AND confidence < ?
-        ORDER BY confidence ASC
-        LIMIT ?
-        """,
-        (min_confidence, limit),
-    ).fetchall()
-    out: list[ReviewItem] = []
-    for r in rows:
-        out.append(
-            ReviewItem(
-                kind="edge",
-                target={
-                    "src": r["src"],
-                    "dst": r["dst"],
-                    "kind": r["kind"],
-                    "confidence": r["confidence"],
-                    "evidence": json.loads(r["evidence"]) if r["evidence"] else {},
-                },
-                confidence=r["confidence"] or 0.0,
-            )
+    """Return reviewable edges ordered from lowest confidence upward."""
+    edges = store.search_edges(EdgeQuery(confidence_lt=min_confidence, limit=limit))
+    return [
+        ReviewItem(
+            target=edge.model_dump(mode="json"),
+            confidence=edge.confidence,
         )
-    return out
+        for edge in edges
+    ]
 
 
 def review_path(root: Path) -> Path:
@@ -114,14 +95,12 @@ def run_review_tui(
             )
         elif choice == "r":
             stats["rejected"] += 1
-            # 同时从图中删除这条边
             try:
-                conn = store._connect()  # type: ignore[attr-defined]
-                conn.execute(
-                    "DELETE FROM edges WHERE src=? AND dst=? AND kind=?",
-                    (it.target["src"], it.target["dst"], it.target["kind"]),
+                store.delete_edge(
+                    it.target["src"],
+                    it.target["dst"],
+                    EdgeKind(it.target["kind"]),
                 )
-                conn.commit()
             except Exception as e:
                 console.print(f"[red]Delete failed:[/red] {e}")
             append_review(

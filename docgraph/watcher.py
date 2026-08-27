@@ -4,7 +4,7 @@
 - 轮询配置选中的文档文件
 - debounce 0.5s
 - 排队 + 串行处理（避免 LLM 并发风暴）
-- 只触发变化文件的增量 build
+- 同一窗口的变化合并为一次增量 build
 - 删除文件时触发全量文档集对账
 """
 
@@ -13,15 +13,16 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from docgraph.core.build_lock import BuildLockedError
 from docgraph.core.config import (
     SUPPORTED_DOCUMENT_SUFFIXES,
     DocGraphConfig,
     load_config,
     project_root_from_cwd,
 )
+from docgraph.core.dotenv import autoload_env
 from docgraph.core.logger import get_logger
-from docgraph.core.manifest import load_manifest, save_manifest
-from docgraph.core.pipeline import build, discover_files
+from docgraph.core.pipeline import BuildReport, build, discover_files
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 
 log = get_logger(__name__)
@@ -66,6 +67,7 @@ def run_watch_loop(
 ) -> None:
     """基于轮询的 watch，避免引入平台特定的文件事件依赖。"""
     root = project_root_from_cwd()
+    autoload_env(root)
     cfg = load_config(root)
     dg = root / ".docgraph"
 
@@ -74,25 +76,29 @@ def run_watch_loop(
         return
 
     store = SQLiteGraphStore(dg / "graph.db")
-    store.init_schema()
-    manifest = load_manifest(root)
     queue = DebounceQueue(delay_s=0.5)
-
-    # 初始构建
-    log.info("[watch] Initial build...")
-    build(root, cfg, store, manifest)
-    log.info("[watch] Watching for changes...")
-
-    # 跟踪文件 mtime
-    prev_mtimes: dict[str, float] = {}
-    for f in _watched_files(root, cfg, paths):
-        prev_mtimes[str(f)] = f.stat().st_mtime
+    config_snapshot = cfg.model_dump_json()
 
     try:
+        log.info("[watch] Initial build...")
+        try:
+            initial_report = build(root, cfg, store)
+            _log_build_result("initial build", initial_report)
+        except BuildLockedError as e:
+            queue.add("<initial>")
+            log.info(f"[watch] initial build busy; queued for retry: {e}")
+        log.info("[watch] Watching for changes...")
+
+        prev_mtimes = _snapshot_mtimes(_watched_files(root, cfg, paths))
         while True:
             # Reload project/user configuration so include/exclude changes alter
             # the watched source set without restarting the process.
             cfg = load_config(root)
+            next_config_snapshot = cfg.model_dump_json()
+            if next_config_snapshot != config_snapshot:
+                queue.add("<configuration>")
+                config_snapshot = next_config_snapshot
+                log.info("[watch] configuration changed")
             changed = _detect_changes(_watched_files(root, cfg, paths), prev_mtimes)
             if changed:
                 for c in changed:
@@ -102,30 +108,20 @@ def run_watch_loop(
             ready = queue.ready()
             if ready:
                 try:
-                    if any(not Path(p).is_file() for p in ready):
-                        log.info("[watch] source removed; reconciling the full document set")
-                        report = build(root, cfg, store, manifest)
-                        log.info(
-                            f"[watch] reconciled: {report.nodes_total} nodes, "
-                            f"{report.edges_total} edges, {report.duration_s}s"
-                        )
-                    else:
-                        for p in ready:
-                            log.info(f"[watch] building: {p}")
-                            report = build(
-                                root,
-                                cfg,
-                                store,
-                                manifest,
-                                file_filter=Path(p),
-                            )
-                            log.info(
-                                f"[watch] done: {report.nodes_total} nodes, "
-                                f"{report.edges_total} edges, {report.duration_s}s"
-                            )
+                    log.info(f"[watch] reconciling {len(ready)} changed source(s)")
+                    report = build(root, cfg, store)
+                    _log_build_result("incremental build", report)
+                except BuildLockedError as e:
+                    # Another process owns the mutation lock. Keep the events;
+                    # otherwise their mtimes have already been acknowledged and
+                    # the watcher would silently lose this rebuild.
+                    for path in ready:
+                        queue.add(path)
+                    log.info(f"[watch] build busy; queued for retry: {e}")
                 except Exception as e:
+                    for path in ready:
+                        queue.add(path)
                     log.error(f"[watch] build failed: {e}")
-                save_manifest(root, manifest)
 
             time.sleep(interval_s)
 
@@ -164,7 +160,10 @@ def _detect_changes(files: list[Path], prev: dict[str, float]) -> list[str]:
     current: dict[str, float] = {}
     for f in files:
         fp = str(f)
-        cur = f.stat().st_mtime
+        try:
+            cur = f.stat().st_mtime
+        except FileNotFoundError:
+            continue
         current[fp] = cur
         if fp not in prev or abs(cur - prev[fp]) > 0.001:
             changed.append(fp)
@@ -172,3 +171,25 @@ def _detect_changes(files: list[Path], prev: dict[str, float]) -> list[str]:
     prev.clear()
     prev.update(current)
     return sorted(set(changed))
+
+
+def _snapshot_mtimes(files: list[Path]) -> dict[str, float]:
+    snapshot: dict[str, float] = {}
+    for path in files:
+        try:
+            snapshot[str(path)] = path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+    return snapshot
+
+
+def _log_build_result(action: str, report: BuildReport) -> None:
+    message = (
+        f"[watch] {action}: parsed={report.parsed} skipped={report.skipped} "
+        f"errors={report.errors} nodes={report.nodes_total} "
+        f"edges={report.edges_total} duration={report.duration_s}s"
+    )
+    if report.errors:
+        log.error(message)
+    else:
+        log.info(message)

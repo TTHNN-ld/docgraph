@@ -90,8 +90,17 @@ class LanceDBVectorStore:
         vector: list[float],
         content_hash: str | None = None,
     ) -> None:
+        self.upsert_many([(node_id, model, vector, content_hash)])
+
+    def upsert_many(
+        self,
+        entries: list[tuple[str, str, list[float], str | None]],
+    ) -> None:
+        if not entries:
+            return
         table = self._table("vec_nodes")
-        table.delete(f"node_id = '{_sql_quote(node_id)}'")
+        ids = ", ".join(f"'{_sql_quote(node_id)}'" for node_id, _model, _vec, _hash in entries)
+        table.delete(f"node_id IN ({ids})")
         table.add(
             [
                 {
@@ -101,6 +110,7 @@ class LanceDBVectorStore:
                     "vector": _float32(vector),
                     "content_hash": content_hash,
                 }
+                for node_id, model, vector, content_hash in entries
             ]
         )
 
@@ -112,8 +122,18 @@ class LanceDBVectorStore:
         vector: list[float],
         content_hash: str | None = None,
     ) -> None:
+        self.upsert_items_many(namespace, [(item_id, model, vector, content_hash)])
+
+    def upsert_items_many(
+        self,
+        namespace: str,
+        entries: list[tuple[str, str, list[float], str | None]],
+    ) -> None:
+        if not entries:
+            return
         table = self._table("vec_items")
-        table.delete(f"namespace = '{_sql_quote(namespace)}' AND item_id = '{_sql_quote(item_id)}'")
+        ids = ", ".join(f"'{_sql_quote(item_id)}'" for item_id, _model, _vec, _hash in entries)
+        table.delete(f"namespace = '{_sql_quote(namespace)}' AND item_id IN ({ids})")
         table.add(
             [
                 {
@@ -124,6 +144,7 @@ class LanceDBVectorStore:
                     "vector": _float32(vector),
                     "content_hash": content_hash,
                 }
+                for item_id, model, vector, content_hash in entries
             ]
         )
 
@@ -226,7 +247,13 @@ class LanceDBVectorStore:
         query_vec: list[float],
         model: str,
         top_k: int = 10,
+        allowed_ids: set[str] | None = None,
     ) -> list[tuple[str, float]]:
+        if allowed_ids is not None:
+            rows = [
+                row for row in self.all_items_for_model(namespace, model) if row[0] in allowed_ids
+            ]
+            return _cosine_top_k(rows, query_vec, top_k)
         native = self._native_search(
             "vec_items",
             query_vec,
@@ -263,7 +290,7 @@ class LanceDBVectorStore:
     ) -> list[dict[str, Any]] | None:
         try:
             table = self._table(table_name)
-            q = table.search(_float32(query_vec))
+            q = table.search(_float32(query_vec)).distance_type("cosine")
             if where is None:
                 where = f"model = '{_sql_quote(model)}'"
             q = q.where(where, prefilter=True).limit(top_k)
@@ -290,9 +317,9 @@ def _distance_to_score(row: dict[str, Any]) -> float:
             pass
     if "_distance" in row:
         try:
-            distance = max(0.0, float(row["_distance"]))
+            distance = float(row["_distance"])
             if math.isfinite(distance):
-                return 1.0 / (1.0 + distance)
+                return max(-1.0, min(1.0, 1.0 - distance))
         except Exception:
             pass
     return 0.0

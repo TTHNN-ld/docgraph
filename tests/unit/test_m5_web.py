@@ -1,4 +1,5 @@
 """M5 Web UI 测试 —— 用 FastAPI TestClient 跑全部页面 + JSON API。"""
+
 from __future__ import annotations
 
 import re
@@ -11,9 +12,7 @@ import pytest
 @pytest.fixture()
 def project_with_data():
     """构造一份带有 register / bitfield / section 的临时项目。"""
-    from docgraph.graph.schema import (
-        DocMetadata, Edge, EdgeKind, Evidence, Location, Node, NodeKind,
-    )
+    from docgraph.graph.schema import Edge, EdgeKind, Evidence, Location, Node, NodeKind
     from docgraph.graph.sqlite_store import SQLiteGraphStore
 
     with tempfile.TemporaryDirectory() as d:
@@ -27,40 +26,72 @@ def project_with_data():
 
         # 节点
         reg = Node(
-            id="testchip::reg:FOO_CTRL", kind=NodeKind.REGISTER,
-            name="FOO_CTRL", qualified_name="FOO_CTRL",
-            doc_id="testchip::ds", location=Location(page=42),
+            id="testchip::reg:FOO_CTRL",
+            kind=NodeKind.REGISTER,
+            name="FOO_CTRL",
+            qualified_name="FOO_CTRL",
+            doc_id="testchip::ds",
+            location=Location(page=42),
             summary="FOO control register.",
-            attrs={"address": "0x40000000", "offset": "0x00",
-                   "width": 32, "access": "RW", "reset_value": "0x0",
-                   "source": "llm:title"},
+            attrs={
+                "address": "0x40000000",
+                "offset": "0x00",
+                "width": 32,
+                "access": "RW",
+                "reset_value": "0x0",
+                "source": "llm:title",
+            },
         )
         bf0 = Node(
-            id="testchip::bf:FOO_CTRL.EN", kind=NodeKind.BITFIELD,
-            name="EN", qualified_name="FOO_CTRL.EN", doc_id="testchip::ds",
-            attrs={"bit_high": 0, "bit_low": 0, "access": "RW",
-                   "reset": "0", "description": "Enable.", "register_id": reg.id},
+            id="testchip::bf:FOO_CTRL.EN",
+            kind=NodeKind.BITFIELD,
+            name="EN",
+            qualified_name="FOO_CTRL.EN",
+            doc_id="testchip::ds",
+            attrs={
+                "bit_high": 0,
+                "bit_low": 0,
+                "access": "RW",
+                "reset": "0",
+                "description": "Enable.",
+                "register_id": reg.id,
+            },
         )
         bf1 = Node(
-            id="testchip::bf:FOO_CTRL.MODE", kind=NodeKind.BITFIELD,
-            name="MODE", qualified_name="FOO_CTRL.MODE", doc_id="testchip::ds",
-            attrs={"bit_high": 3, "bit_low": 1, "access": "RW",
-                   "reset": "0b000", "description": "Mode select.",
-                   "register_id": reg.id},
+            id="testchip::bf:FOO_CTRL.MODE",
+            kind=NodeKind.BITFIELD,
+            name="MODE",
+            qualified_name="FOO_CTRL.MODE",
+            doc_id="testchip::ds",
+            attrs={
+                "bit_high": 3,
+                "bit_low": 1,
+                "access": "RW",
+                "reset": "0b000",
+                "description": "Mode select.",
+                "register_id": reg.id,
+            },
         )
         sec = Node(
-            id="testchip::sec:1.2", kind=NodeKind.SECTION,
-            name="1.2 Overview", qualified_name="1.2",
+            id="testchip::sec:1.2",
+            kind=NodeKind.SECTION,
+            name="1.2 Overview",
+            qualified_name="1.2",
             doc_id="testchip::ds",
             location=Location(page=10, section_path="1.2"),
         )
         pin = Node(
-            id="testchip::pin:PA0", kind=NodeKind.PIN, name="PA0",
-            qualified_name="PA0", doc_id="testchip::ds",
+            id="testchip::pin:PA0",
+            kind=NodeKind.PIN,
+            name="PA0",
+            qualified_name="PA0",
+            doc_id="testchip::ds",
             attrs={"direction": "IO", "description": "GPIO A0"},
         )
         term = Node(
-            id="testchip::term:AHB", kind=NodeKind.TERM, name="AHB",
+            id="testchip::term:AHB",
+            kind=NodeKind.TERM,
+            name="AHB",
             doc_id="testchip::ds",
             aliases=["Advanced High-performance Bus"],
             attrs={"full": "Advanced High-performance Bus"},
@@ -69,10 +100,15 @@ def project_with_data():
             store.upsert_node(n)
         # 边
         for bf in (bf0, bf1):
-            store.upsert_edge(Edge(
-                src=reg.id, dst=bf.id, kind=EdgeKind.HAS_BITFIELD,
-                confidence=0.9, evidence=Evidence(extractor="test"),
-            ))
+            store.upsert_edge(
+                Edge(
+                    src=reg.id,
+                    dst=bf.id,
+                    kind=EdgeKind.HAS_BITFIELD,
+                    confidence=0.9,
+                    evidence=Evidence(extractor="test"),
+                )
+            )
         store.close()
         yield root
 
@@ -80,11 +116,14 @@ def project_with_data():
 @pytest.fixture()
 def client(project_with_data, monkeypatch):
     from fastapi.testclient import TestClient
+
     from docgraph.web.server import create_app
+
     # 让 _open_project 找到项目
     monkeypatch.chdir(project_with_data)
     app = create_app(project_with_data)
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +136,23 @@ def test_index_page(client):
     assert r.status_code == 200
     assert "DocGraph" in r.text
     assert "testchip" in r.text or "节点" in r.text
+
+
+def test_app_uses_installed_package_version(client):
+    from docgraph import __version__
+
+    assert client.app.version == __version__
+
+
+def test_app_lifespan_closes_store(project_with_data):
+    from fastapi.testclient import TestClient
+
+    from docgraph.web.server import create_app
+
+    app = create_app(project_with_data)
+    with TestClient(app):
+        assert app.state.store._conn is not None
+    assert app.state.store._conn is None
 
 
 def test_registers_page(client):
@@ -244,16 +300,36 @@ def test_api_sections_tree_falls_back_to_l1_chunks(tmp_path, monkeypatch):
     )
     store = SQLiteGraphStore(root / ".docgraph" / "graph.db")
     store.init_schema()
-    store.upsert_blocks([
-        Block(id="d#p6#b0", doc_id="d", page=6, kind=BlockKind.HEADING,
-              reading_order=0, text="1.5 AXI", section_path="1.5"),
-    ])
-    store.upsert_chunks([
-        Chunk(id="d#c1", doc_id="d", page=6, page_start=6, page_end=7,
-              section_id="1.5", text="1.5AXI\nAXI slave interface",
-              block_ids=["d#p6#b0"], kind="section", chunk_type="section",
-              source_hash="h"),
-    ])
+    store.upsert_blocks(
+        [
+            Block(
+                id="d#p6#b0",
+                doc_id="d",
+                page=6,
+                kind=BlockKind.HEADING,
+                reading_order=0,
+                text="1.5 AXI",
+                section_path="1.5",
+            ),
+        ]
+    )
+    store.upsert_chunks(
+        [
+            Chunk(
+                id="d#c1",
+                doc_id="d",
+                page=6,
+                page_start=6,
+                page_end=7,
+                section_id="1.5",
+                text="1.5AXI\nAXI slave interface",
+                block_ids=["d#p6#b0"],
+                kind="section",
+                chunk_type="section",
+                source_hash="h",
+            ),
+        ]
+    )
     store.close()
     monkeypatch.chdir(root)
     client = TestClient(create_app(root))
@@ -283,7 +359,7 @@ def test_api_neighbors(client):
     r = client.get("/api/neighbors/testchip::reg:FOO_CTRL?depth=1")
     assert r.status_code == 200
     data = r.json()
-    assert len(data["nodes"]) >= 3   # 自身 + 2 个 bitfield
+    assert len(data["nodes"]) >= 3  # 自身 + 2 个 bitfield
     assert any(e["kind"] == "has_bitfield" for e in data["edges"])
 
 
@@ -295,6 +371,21 @@ def test_api_graph(client):
     assert "FOO_CTRL" in names
     assert "EN" in names
     assert any(e["kind"] == "has_bitfield" for e in data["edges"])
+    assert data["edges_truncated"] is False
+
+
+@pytest.mark.parametrize(
+    ("query", "error"),
+    [
+        ("kinds=not-a-node-kind", "invalid_node_kind"),
+        ("edge_kinds=not-an-edge-kind", "invalid_edge_kind"),
+    ],
+)
+def test_api_graph_rejects_unknown_kind_filters(client, query, error):
+    response = client.get(f"/api/graph?{query}")
+
+    assert response.status_code == 400
+    assert response.json()["error"] == error
 
 
 def test_api_graph_splits_limit_across_kinds(tmp_path, monkeypatch):
@@ -312,17 +403,27 @@ def test_api_graph_splits_limit_across_kinds(tmp_path, monkeypatch):
     store = SQLiteGraphStore(root / ".docgraph" / "graph.db")
     store.init_schema()
     for i in range(20):
-        store.upsert_node(Node(
-            id=f"testchip::sig:s{i}", kind=NodeKind.SIGNAL,
-            name=f"sig_{i}", qualified_name=f"sig_{i}",
-            doc_id="testchip::ds", location=Location(page=1),
-        ))
+        store.upsert_node(
+            Node(
+                id=f"testchip::sig:s{i}",
+                kind=NodeKind.SIGNAL,
+                name=f"sig_{i}",
+                qualified_name=f"sig_{i}",
+                doc_id="testchip::ds",
+                location=Location(page=1),
+            )
+        )
     for i in range(5):
-        store.upsert_node(Node(
-            id=f"testchip::mod:m{i}", kind=NodeKind.MODULE,
-            name=f"mod_{i}", qualified_name=f"mod_{i}",
-            doc_id="testchip::ds", location=Location(page=1),
-        ))
+        store.upsert_node(
+            Node(
+                id=f"testchip::mod:m{i}",
+                kind=NodeKind.MODULE,
+                name=f"mod_{i}",
+                qualified_name=f"mod_{i}",
+                doc_id="testchip::ds",
+                location=Location(page=1),
+            )
+        )
     store.close()
     monkeypatch.chdir(root)
     client = TestClient(create_app(root))

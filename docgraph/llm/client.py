@@ -304,6 +304,7 @@ class CostTracker:
     tokens_out: int = 0
     cost_usd: float = 0.0
     by_extractor: dict[str, dict[str, float]] = field(default_factory=dict)
+    reserved_usd: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def check_budget_exceeded(self, budget_usd: float | None) -> bool:
@@ -312,9 +313,33 @@ class CostTracker:
         with self._lock:
             return self.cost_usd >= budget_usd
 
-    def record(self, resp: LLMResponse, extractor: str = "_") -> None:
+    def reserve(self, budget_usd: float | None, estimated_usd: float) -> float | None:
+        """Atomically admit one estimated-cost request across concurrent clients."""
+        if budget_usd is None:
+            return 0.0
+        reservation = max(0.0, estimated_usd)
+        with self._lock:
+            if self.cost_usd + self.reserved_usd + reservation > budget_usd:
+                return None
+            self.reserved_usd += reservation
+            return reservation
+
+    def release(self, reserved_usd: float) -> None:
+        if reserved_usd <= 0:
+            return
+        with self._lock:
+            self.reserved_usd = max(0.0, self.reserved_usd - reserved_usd)
+
+    def record(
+        self,
+        resp: LLMResponse,
+        extractor: str = "_",
+        *,
+        reserved_usd: float = 0.0,
+    ) -> None:
         # 并发安全：LLM/VLM 调用并发时多线程会同时 record
         with self._lock:
+            self.reserved_usd = max(0.0, self.reserved_usd - reserved_usd)
             self.total_calls += 1
             if resp.cache_hit:
                 self.cache_hits += 1
@@ -443,19 +468,16 @@ class LLMClient:
         extractor: str = "_",
         extra_body: dict | None = None,
     ) -> LLMResponse:
-        if self.tracker.check_budget_exceeded(self.budget_usd):
-            raise BudgetExceeded(
-                f"LLM budget {self.budget_usd:.2f} USD already exhausted "
-                f"(spent {self.tracker.cost_usd:.4f})."
-            )
-
         model = self.resolve_model(tier)
         # extra_body 影响推理模式等行为，必须进 cache_key，否则不同 thinking 配置会撞缓存。
         extra_key = ""
         if extra_body:
             extra_key = "|" + json.dumps(extra_body, sort_keys=True, ensure_ascii=False)
+        provider_name = getattr(self.provider, "name", type(self.provider).__name__)
+        provider_endpoint = getattr(self.provider, "base_url", None)
         cache_key = content_hash(
-            f"{self.prompt_version}|{model}|{temperature}|{system or ''}|{prompt}{extra_key}"
+            f"{self.prompt_version}|{provider_name}|{provider_endpoint or ''}|"
+            f"{model}|{temperature}|{system or ''}|{prompt}{extra_key}"
         ).split(":", 1)[-1][:32]
 
         cached = self._read_cache(cache_key)
@@ -472,40 +494,53 @@ class LLMClient:
             self.tracker.record(resp, extractor=extractor)
             return resp
 
+        estimated_tokens_in = max(1, (len(prompt) + len(system or "")) // 4)
+        estimated_usd = estimate_cost(model, estimated_tokens_in, max_tokens)
+        reservation = self.tracker.reserve(self.budget_usd, estimated_usd)
+        if reservation is None:
+            raise BudgetExceeded(
+                f"LLM budget {self.budget_usd:.2f} USD is exhausted for this request "
+                f"(spent {self.tracker.cost_usd:.4f}, reserved {self.tracker.reserved_usd:.4f})."
+            )
+
         last_err: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                with _llm_deadline(_llm_timeout_s()):
-                    resp = self.provider.complete(
-                        prompt,
-                        model=model,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        system=system,
-                        extra_body=extra_body,
-                    )
-                # 只缓存非空响应，避免空返回毒化缓存
-                if (resp.text or "").strip():
-                    self._write_cache(
-                        cache_key,
-                        {
-                            "text": resp.text,
-                            "tokens_in": resp.tokens_in,
-                            "tokens_out": resp.tokens_out,
-                            "model": resp.model,
-                        },
-                    )
-                self.tracker.record(resp, extractor=extractor)
-                return resp
-            except Exception as e:
-                last_err = e
-                if isinstance(e, TimeoutError):
+        try:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    with _llm_deadline(_llm_timeout_s()):
+                        resp = self.provider.complete(
+                            prompt,
+                            model=model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            system=system,
+                            extra_body=extra_body,
+                        )
+                    # 只缓存非空响应，避免空返回毒化缓存
+                    if (resp.text or "").strip():
+                        self._write_cache(
+                            cache_key,
+                            {
+                                "text": resp.text,
+                                "tokens_in": resp.tokens_in,
+                                "tokens_out": resp.tokens_out,
+                                "model": resp.model,
+                            },
+                        )
+                    self.tracker.record(resp, extractor=extractor, reserved_usd=reservation)
+                    reservation = 0.0
+                    return resp
+                except Exception as e:
+                    last_err = e
+                    if isinstance(e, TimeoutError):
+                        raise
+                    if attempt < self.max_retries:
+                        time.sleep(self.retry_backoff_s * (2**attempt))
+                        continue
                     raise
-                if attempt < self.max_retries:
-                    time.sleep(self.retry_backoff_s * (2**attempt))
-                    continue
-                raise
-        raise last_err  # type: ignore
+            raise last_err  # type: ignore
+        finally:
+            self.tracker.release(reservation)
 
     def json(
         self,

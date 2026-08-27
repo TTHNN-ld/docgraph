@@ -1,6 +1,6 @@
-"""Query Engine —— Graph + 向量混合检索 + Agent 友好的高层 API。
+"""Graph、全文检索、可选语义检索及 Agent 高层查询 API。
 
-M2 升级：
+主要能力：
 - search：图谱命中 → 别名 → fuzzy → 向量语义
 - context：组合"按 task 找相关节点"
 - trace：path finding（BFS）
@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 from collections import deque
 
 from pydantic import BaseModel, Field
@@ -99,6 +100,8 @@ _CONTEXT_MAX_ENRICHMENT_CHARS = 20_000
 _CONTEXT_CANDIDATE_LIMIT = 300
 _CONTEXT_SEARCH_PAGE_CHUNKS = 20
 _FETCH_MANY_MAX_CHUNKS = 20
+_RRF_K = 60
+_MIN_SEMANTIC_SCORE = 0.20
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +185,7 @@ class QueryEngine:
         if fuzzy:
             return fuzzy
         # 5. 向量语义
-        if use_semantic and self.vstore is not None and self.encoder is not None:
+        if use_semantic and self._semantic_retrieval_enabled():
             semantic = self._semantic_search(query, kind=kind, top_k=max(limit * 4, limit))
             if scope is not None:
                 allowed = set(scope)
@@ -305,9 +308,10 @@ class QueryEngine:
             providers.append("name-hit")
 
         # 2. 向量检索
-        if self.vstore is not None and self.encoder is not None:
+        if self._semantic_retrieval_enabled():
             hits = self._semantic_search_raw(task, top_k=max_nodes)
-            providers.append("semantic")
+            if hits:
+                providers.append("semantic")
             for nid, score in hits:
                 if nid in nodes_map:
                     continue
@@ -425,12 +429,26 @@ class QueryEngine:
         return out
 
     def _semantic_search_raw(self, query: str, top_k: int = 20) -> list[tuple[str, float]]:
-        if self.vstore is None or self.encoder is None:
+        if not self._semantic_retrieval_enabled():
             return []
-        vec = self.encoder.encode([query])[0]
-        return self.vstore.search(vec, self.encoder.model, top_k=top_k)
+        try:
+            assert self.encoder is not None
+            assert self.vstore is not None
+            vec = self.encoder.encode([query])[0]
+            return [
+                (item_id, score)
+                for item_id, score in self.vstore.search(vec, self.encoder.model, top_k=top_k)
+                if math.isfinite(score) and score >= _MIN_SEMANTIC_SCORE
+            ]
+        except Exception:
+            return []
 
-    # ------- L0/L1 回溯接口（M7-P4） -------
+    def _semantic_retrieval_enabled(self) -> bool:
+        if self.vstore is None or self.encoder is None:
+            return False
+        return str(getattr(self.encoder, "name", "")).strip().lower() != "hash"
+
+    # ------- L0/L1 回溯接口 -------
 
     def blocks(self, block_ids: list[str]) -> list[Block]:
         """按 ID 取 L0 Block（原文无损回溯）。"""
@@ -971,10 +989,10 @@ class QueryEngine:
         limit: int = 20,
         doc_ids: list[str] | None = None,
     ) -> list[dict]:
-        """混合检索 L1 chunk。
+        """检索 L1 chunk。
 
-        FTS5/LIKE 是确定性入口；若已配置 encoder 且 chunk 向量存在，则补充
-        semantic 候选。两路候选统一交给 `_score_chunk_hit` 排序。
+        FTS5/LIKE 是确定性入口；配置真实语义 encoder 后补充向量候选。
+        HashEncoder 不作为独立召回通道。候选经过排名融合和结构特征重排。
         """
         return self.search_chunks_with_meta(
             query,
@@ -1008,15 +1026,41 @@ class QueryEngine:
             )
             text_methods.update(text_result["methods"])
             text_pool_truncated = text_pool_truncated or text_result["pool_truncated"]
-            for cid, snip in text_result["hits"]:
-                candidates.setdefault(
+            rank_field = "primary_text_rank" if index == 0 else "term_text_rank"
+            for rank, (cid, snip) in enumerate(text_result["hits"], start=1):
+                candidate = candidates.setdefault(
                     cid,
-                    {"snippet": snip or "", "semantic_score": None},
+                    {
+                        "snippet": "",
+                        "primary_text_rank": None,
+                        "term_text_rank": None,
+                        "semantic_rank": None,
+                        "semantic_score": None,
+                    },
                 )
-        semantic_hits = self._semantic_chunk_search_raw(query, top_k=candidate_limit)
-        for cid, semantic_score in semantic_hits:
-            candidates.setdefault(cid, {"snippet": "", "semantic_score": semantic_score})
-            candidates[cid]["semantic_score"] = semantic_score
+                if snip and (not candidate["snippet"] or index == 0):
+                    candidate["snippet"] = snip
+                current_rank = candidate[rank_field]
+                candidate[rank_field] = rank if current_rank is None else min(current_rank, rank)
+        allowed_chunk_ids = self.store.list_chunk_ids(doc_ids) if doc_ids is not None else None
+        semantic_hits = self._semantic_chunk_search_raw(
+            query,
+            top_k=candidate_limit,
+            allowed_ids=allowed_chunk_ids,
+        )
+        for rank, (cid, semantic_score) in enumerate(semantic_hits, start=1):
+            candidate = candidates.setdefault(
+                cid,
+                {
+                    "snippet": "",
+                    "primary_text_rank": None,
+                    "term_text_rank": None,
+                    "semantic_rank": None,
+                    "semantic_score": None,
+                },
+            )
+            candidate["semantic_rank"] = rank
+            candidate["semantic_score"] = semantic_score
 
         ranked: list[tuple[float, dict]] = []
         for cid, meta in candidates.items():
@@ -1027,10 +1071,21 @@ class QueryEngine:
                 continue
             snip = meta.get("snippet") or ""
             score, reasons = _score_chunk_hit(query, c, snip)
+            primary_text_rank = meta.get("primary_text_rank")
+            if primary_text_rank is not None:
+                score += _rrf_score(primary_text_rank, weight=1.0)
+                reasons.append(f"text-rank:{primary_text_rank}")
+            term_text_rank = meta.get("term_text_rank")
+            if term_text_rank is not None:
+                score += _rrf_score(term_text_rank, weight=0.5)
+                reasons.append(f"term-rank:{term_text_rank}")
             stored_semantic_score = meta.get("semantic_score")
             if stored_semantic_score is not None:
-                score += max(0.0, float(stored_semantic_score)) * 2.0
+                semantic_rank = int(meta["semantic_rank"])
+                score += _rrf_score(semantic_rank, weight=0.8)
+                score += _normalized_semantic_confidence(float(stored_semantic_score)) * 0.5
                 reasons.append(f"semantic:{float(stored_semantic_score):.3f}")
+                reasons.append(f"semantic-rank:{semantic_rank}")
                 if not snip:
                     snip = (c.text or "")[:240]
             ranked.append(
@@ -1069,12 +1124,30 @@ class QueryEngine:
             "candidate_pool_truncated": pool_truncated,
         }
 
-    def _semantic_chunk_search_raw(self, query: str, top_k: int = 20) -> list[tuple[str, float]]:
-        if self.vstore is None or self.encoder is None:
+    def _semantic_chunk_search_raw(
+        self,
+        query: str,
+        top_k: int = 20,
+        allowed_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
+        if not self._semantic_retrieval_enabled():
             return []
         try:
+            assert self.encoder is not None
+            assert self.vstore is not None
             vec = self.encoder.encode([query])[0]
-            return self.vstore.search_items("chunk", vec, self.encoder.model, top_k=top_k)
+            hits = self.vstore.search_items(
+                "chunk",
+                vec,
+                self.encoder.model,
+                top_k=top_k,
+                allowed_ids=allowed_ids,
+            )
+            return [
+                (item_id, score)
+                for item_id, score in hits
+                if math.isfinite(score) and score >= _MIN_SEMANTIC_SCORE
+            ]
         except Exception:
             return []
 
@@ -1082,6 +1155,16 @@ class QueryEngine:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _rrf_score(rank: int, *, weight: float) -> float:
+    return weight * (_RRF_K + 1) / (_RRF_K + max(1, rank))
+
+
+def _normalized_semantic_confidence(score: float) -> float:
+    if score <= _MIN_SEMANTIC_SCORE:
+        return 0.0
+    return min(1.0, (score - _MIN_SEMANTIC_SCORE) / (1.0 - _MIN_SEMANTIC_SCORE))
 
 
 def _bounded_int(name: str, value: int, *, minimum: int, maximum: int) -> int:
@@ -1207,14 +1290,38 @@ def _retrieval_terms(query: str, limit: int = 12) -> list[str]:
         "with",
     }
     terms: list[str] = []
-    for token in re.findall(r"[A-Za-z][A-Za-z0-9_]{1,}|[\u3400-\u9fff]{2,}", query):
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_]{1,}", query):
         normalized = token.lower()
         if normalized in stopwords or normalized.isdigit():
             continue
         if normalized not in terms:
             terms.append(normalized)
         if len(terms) >= limit:
-            break
+            return terms
+    cjk_stop_phrases = {
+        "一下",
+        "什么",
+        "介绍",
+        "哪些",
+        "如何",
+        "怎么",
+        "是否",
+        "有关",
+        "相关",
+        "说明",
+    }
+    for run in re.findall(r"[\u3400-\u9fff]{2,}", query):
+        cleaned = run
+        for phrase in cjk_stop_phrases:
+            cleaned = cleaned.replace(phrase, " ")
+        for segment in cleaned.split():
+            probes = [segment] if 2 <= len(segment) <= 8 else []
+            probes.extend(segment[index : index + 2] for index in range(len(segment) - 1))
+            for probe in probes:
+                if probe not in terms:
+                    terms.append(probe)
+                if len(terms) >= limit:
+                    return terms
     return terms
 
 

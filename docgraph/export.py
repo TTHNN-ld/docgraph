@@ -1,6 +1,6 @@
 """IP-XACT / SystemRDL 导出器。
 
-M4 实现简化版：
+当前稳定子集：
 - IP-XACT：register/bitfield → SPIRIT/IP-XACT XML 1685-2014 子集
 - SystemRDL：register/bitfield → SystemRDL 2.0 子集
 

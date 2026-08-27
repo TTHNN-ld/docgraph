@@ -51,12 +51,13 @@ L0/L1 的字段与回溯要求见[分层数据契约](./data-layers.md)。
 
 ```text
 discover files
-  → compare source hash + parser identity with manifest
+  → compare source and document build fingerprint with manifest
   → skip unchanged success records
   → parse/chunk/extract changed documents
   → atomically replace each successful document
-  → refresh linker/vector derivatives
   → reconcile deleted documents on full build
+  → refresh dirty linker/vector derivatives
+  → record success/degraded/failed
 ```
 
 - `docgraph build` 构建变化文件并执行完整文档集删除对账。
@@ -64,20 +65,23 @@ discover files
 - `docgraph build --force` 忽略 manifest 的跳过判断。
 - 任一输入文件失败时命令最终返回非零；已成功文件保留。
 - 当前增量单位是文件，不是页面、chunk 或 extractor stage。
+- 文件指纹包含来源、文档元数据、Parser/Chunker/Extractor 版本及影响结果的模型配置；`--quality`、Parser 可用性或配置改变时，不需要手动 `--force`。
+- Linker 和 Embedding 有独立指纹与状态；全局派生阶段失败不回滚已完成的 L0/L1，但构建结果为 degraded。
+- 同一项目只允许一个构建修改 schema、图、向量和 manifest；并发命令快速失败，避免两个进程根据不同快照交错提交。
 
 ## Manifest、缓存与 Watch
 
-`.docgraph/manifest.json` 记录来源路径、hash、mtime、size、doc ID、请求/实际 parser、fallback、状态、错误和阶段统计。它是审计与跳过账本，不替代数据库。
+`.docgraph/manifest.json` 记录来源路径、本次尝试 hash、最后成功 `indexed_hash`、构建指纹、请求/实际 parser、fallback、错误、最近整体构建和全局派生阶段状态。它使用原子替换写入，是审计与跳过账本，不替代数据库。
 
 | 派生数据 | 默认位置 | 失效依据 |
 |---|---|---|
 | Parser 中间产物 | `.docgraph/cache/<source-hash>/` | 内容和 parser 行为 |
 | LLM/VLM 响应 | `.docgraph/cache/llm/`、`vlm/` | 输入、模型、参数和 prompt 版本 |
-| 向量 | `.docgraph/vectors.db` 或 `vectors.lance/` | 内容、provider 和模型 |
+| 向量 | `.docgraph/vectors.db` 或 `vectors.lance/` | 内容、provider、模型、维度、端点和存储后端 |
 
 缓存都必须可重建，不能充当 L0 权威存储。
 
-`docgraph admin watch` 复用 `docs.include/exclude`，监听所有默认支持格式的新增、修改和删除。删除或重命名会触发完整对账；变化文件串行构建，避免模型调用风暴。
+`docgraph admin watch` 复用 `docs.include/exclude`，监听所有默认支持格式的新增、修改和删除。同一去抖窗口内的变化合并成一次增量构建；删除、重命名和配置变化都通过完整文档集对账处理。若其他进程正在构建，事件会保留并稍后重试。
 
 ## 新增 Parser
 

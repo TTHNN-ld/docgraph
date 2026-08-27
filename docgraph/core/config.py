@@ -54,8 +54,6 @@ class ParserFormatConfig(BaseModel):
     primary: str
     fallback: list[str] = Field(default_factory=list)
     quality: str = "balanced"
-    per_page_timeout: int = 60
-    page_failure_strategy: str = "skip"
     device: str = "cpu"
     ocr_device: str | None = None
     mineru: MinerUConfig = Field(default_factory=MinerUConfig)
@@ -98,21 +96,10 @@ class ParsersConfig(BaseModel):
     md: ParserFormatConfig = ParserFormatConfig(primary="markdown")
 
 
-class ExtractorEntry(BaseModel):
-    model_tier: str = "balanced"
-    retry_on_fail: int = 2
-    schema_strict: bool = True
-    extra: dict[str, Any] = Field(default_factory=dict)
-
-
 class ExtractorsConfig(BaseModel):
-    """已启用的 extractor 列表 + 每个 extractor 的专属选项。"""
+    """Enabled extractors in dependency-resolved execution order."""
 
     enabled: list[str] = Field(default_factory=lambda: ["section", "table_entity"])
-    options: dict[str, ExtractorEntry] = Field(default_factory=dict)
-
-    def get_entry(self, name: str) -> ExtractorEntry:
-        return self.options.get(name) or ExtractorEntry()
 
 
 class LLMTiers(BaseModel):
@@ -153,7 +140,8 @@ class VLMConfig(BaseModel):
     DOCGRAPH_VLM_FIGURE_LIMIT 环境变量仍可单次覆盖本值.
     """
 
-    provider: str | None = None
+    enabled: bool = False
+    provider: str = "openai_compat"
     model: str | None = None
     api_key: str | None = None
     api_key_env: str = "VLM_API_KEY"
@@ -181,7 +169,10 @@ class LLMConfig(BaseModel):
             fast: doubao-1-5-pro-32k
             balanced: doubao-1-5-pro-32k
             accurate: doubao-1-5-pro-32k
-          vlm_model: qwen-vl-max  # 视觉模型可选；不设则用 accurate
+          vlm:
+            enabled: true
+            provider: openai_compat
+            model: qwen-vl-max
     """
 
     enabled: bool = False
@@ -196,7 +187,6 @@ class LLMConfig(BaseModel):
         }
     )
     tiers: LLMTiers = Field(default_factory=LLMTiers)
-    vlm_model: str | None = None
     vlm: VLMConfig = Field(default_factory=VLMConfig)
 
 
@@ -208,10 +198,10 @@ class StorageConfig(BaseModel):
 class EmbeddingsConfig(BaseModel):
     """Embedding provider 配置。
 
-    provider 可选值：hash / bge_m3 / openai_compat / openai
+    provider 可选值：none / hash / bge_m3 / openai_compat / openai
     """
 
-    provider: str = "hash"
+    provider: str = "none"
     model: str | None = None  # bge_m3 默认 "BAAI/bge-m3"；openai 默认 "text-embedding-3-small"
     dim: int | None = None  # 不设则用 provider 默认
     api_key: str | None = None
@@ -235,7 +225,6 @@ class LoggingConfig(BaseModel):
 
 class CostConfig(BaseModel):
     budget_per_build_usd: float = 5.0
-    vlm_max_calls_per_doc: int = 500
 
 
 class RuntimeConfig(BaseModel):
@@ -326,7 +315,8 @@ llm:
     fast: claude-haiku-4-5-20251001
     balanced: claude-sonnet-4-6
     accurate: claude-opus-4-8
-  vlm: {}
+  vlm:
+    enabled: false
     # provider: openai_compat
     # model: GLM-4.6V-Flash
     # api_key: sk-...
@@ -334,7 +324,7 @@ llm:
     # figure_limit: 8   # 每文档送 VLM 的图数上限; 调大 (如 200) 近似全量. 环境变量 DOCGRAPH_VLM_FIGURE_LIMIT 可覆盖
 
 embeddings:
-  provider: hash        # hash | bge_m3 | openai_compat | openai
+  provider: none        # none | hash | bge_m3 | openai_compat | openai
   # model: text-embedding-3-small
   # dim: 1536
   # api_key: sk-...

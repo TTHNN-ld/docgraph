@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -9,8 +12,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, overload
 
+from docgraph.chunker import CHUNKER_VERSION
+from docgraph.core.build_lock import project_build_lock
 from docgraph.core.config import DocGraphConfig
 from docgraph.core.dependencies import (
+    PARSER_DEPENDENCIES,
     DependencyPolicy,
     DependencyResult,
     ensure_parser_dependency,
@@ -19,15 +25,23 @@ from docgraph.core.dependencies import (
 from docgraph.core.dotenv import autoload_env
 from docgraph.core.ids import file_hash, infer_chip_model, make_doc_id, source_path_token
 from docgraph.core.logger import get_logger
-from docgraph.core.manifest import FileRecord, Manifest, StageRecord, save_manifest
-from docgraph.embeddings.factory import build_encoder
-from docgraph.embeddings.indexer import embed_graph
+from docgraph.core.manifest import (
+    BuildRunRecord,
+    DerivedStageRecord,
+    FileRecord,
+    Manifest,
+    StageRecord,
+    load_manifest,
+    save_manifest,
+)
+from docgraph.embeddings.factory import build_encoder, embeddings_enabled
+from docgraph.embeddings.indexer import desired_chunk_hashes, desired_node_hashes, embed_graph
 from docgraph.embeddings.vector_factory import build_vector_store
 from docgraph.extractors.base import ExtractContext
 from docgraph.extractors.base import registry as extractor_registry
 from docgraph.graph.schema import DocMetadata, DocType, ExtractResult, ParsedDoc
 from docgraph.graph.sqlite_store import SQLiteGraphStore
-from docgraph.linker.runner import run_linker
+from docgraph.linker.runner import linker_versions, run_linker
 from docgraph.llm.client import CostTracker, LLMClient, make_provider
 from docgraph.llm.vlm import VLMClient, make_vlm_provider
 from docgraph.parsers.base import ParseContext
@@ -35,10 +49,13 @@ from docgraph.parsers.base import registry as parser_registry
 from docgraph.parsers.pdf_router import assess_pdf_parse, inspect_pdf, pdf_parser_chain
 
 log = get_logger(__name__)
+BUILD_PIPELINE_VERSION = "2"
+EMBEDDING_PIPELINE_VERSION = "2"
 
 
 @dataclass
 class BuildReport:
+    status: str = "success"  # success|degraded|failed
     quality: str = "balanced"
     total_files: int = 0
     skipped: int = 0
@@ -57,6 +74,7 @@ class BuildReport:
     llm_cost_usd: float = 0.0
     duration_s: float = 0.0
     per_file: list[dict] = field(default_factory=list)
+    warnings: list[dict[str, str]] = field(default_factory=list)
 
 
 class ParserExhaustedError(RuntimeError):
@@ -67,6 +85,222 @@ class ParserExhaustedError(RuntimeError):
 
 def _utcnow() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _fingerprint(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _class_signature(cls: Any | None) -> str:
+    if cls is None:
+        return "unregistered"
+    return f"{cls.__module__}.{cls.__qualname__}@{getattr(cls, 'version', '0')}"
+
+
+def _file_build_fingerprint(
+    path: Path,
+    root: Path,
+    cfg: DocGraphConfig,
+    *,
+    source_hash: str,
+    quality: str | None,
+    parser_failure_policy: str,
+) -> str:
+    ext = path.suffix.lower()
+    parser_cfg = {
+        ".pdf": cfg.parsers.pdf,
+        ".docx": cfg.parsers.docx,
+        ".xlsx": cfg.parsers.xlsx,
+        ".xlsm": cfg.parsers.xlsx,
+        ".md": cfg.parsers.md,
+        ".markdown": cfg.parsers.md,
+    }[ext]
+    effective_quality = _normalize_quality(quality or parser_cfg.quality)
+    parser_names = [parser_cfg.primary, *parser_cfg.fallback]
+    if parser_cfg.primary == "auto":
+        parser_names.extend(["docling", "mineru", "pymupdf"])
+    parser_names = list(dict.fromkeys(parser_names))
+    parser_runtime = {}
+    for name in parser_names:
+        dependency = PARSER_DEPENDENCIES.get(name)
+        available = True
+        if dependency is not None:
+            try:
+                available = importlib.util.find_spec(dependency.module) is not None
+            except (ImportError, ModuleNotFoundError, ValueError):
+                available = False
+        parser_runtime[name] = {
+            "adapter": _class_signature(parser_registry.get(name)),
+            "available": available,
+        }
+
+    extractors = {
+        name: _class_signature(extractor_registry.get(name)) for name in cfg.extractors.enabled
+    }
+    llm_provider = cfg.llm.providers.get(cfg.llm.provider)
+    llm_semantics: dict[str, Any] = {"enabled": cfg.llm.enabled}
+    if cfg.llm.enabled:
+        llm_semantics.update(
+            {
+                "provider": cfg.llm.provider,
+                "tiers": cfg.llm.tiers.model_dump(mode="json"),
+                "provider_endpoint": (
+                    llm_provider.base_url
+                    or (
+                        os.environ.get(llm_provider.base_url_env)
+                        if llm_provider.base_url_env
+                        else None
+                    )
+                    if llm_provider is not None
+                    else None
+                ),
+                "credential_available": bool(
+                    llm_provider
+                    and (llm_provider.api_key or os.environ.get(llm_provider.api_key_env))
+                ),
+            }
+        )
+    vlm_semantics: dict[str, Any] = {"enabled": cfg.llm.vlm.enabled}
+    if cfg.llm.vlm.enabled:
+        vlm_semantics.update(
+            {
+                "provider": cfg.llm.vlm.provider,
+                "model": cfg.llm.vlm.model or os.environ.get("VLM_MODEL_NAME"),
+                "endpoint": cfg.llm.vlm.base_url or os.environ.get(cfg.llm.vlm.base_url_env),
+                "credential_available": bool(
+                    cfg.llm.vlm.api_key or os.environ.get(cfg.llm.vlm.api_key_env)
+                ),
+                "figure_limit": cfg.llm.vlm.figure_limit,
+            }
+        )
+    llm_semantics["vlm"] = vlm_semantics
+    return _fingerprint(
+        {
+            "pipeline": BUILD_PIPELINE_VERSION,
+            "source_hash": source_hash,
+            "metadata": _infer_doc_metadata(path, cfg, root).model_dump(mode="json"),
+            "parser": parser_cfg.model_dump(
+                mode="json",
+                exclude={
+                    "mineru": {
+                        "api_key",
+                        "api_key_env",
+                        "model_server_url_env",
+                        "model_env",
+                    }
+                },
+            ),
+            "quality": effective_quality,
+            "parser_failure_policy": parser_failure_policy,
+            "parser_runtime": parser_runtime,
+            "chunker": CHUNKER_VERSION,
+            "extractors": extractors,
+            "llm": llm_semantics,
+            "runtime_overrides": (
+                {
+                    key: os.environ.get(key)
+                    for key in (
+                        "DOCGRAPH_VLM_PAGE_LIMIT",
+                        "DOCGRAPH_VLM_FIGURE_LIMIT",
+                    )
+                }
+                if cfg.llm.vlm.enabled
+                else {}
+            ),
+        }
+    )
+
+
+def _linker_fingerprint(
+    store: SQLiteGraphStore,
+    cfg: DocGraphConfig,
+    manifest: Manifest,
+) -> str:
+    llm_provider = cfg.llm.providers.get(cfg.llm.provider)
+    document_policy = {
+        rec.doc_id: {
+            "priority": int((cfg.docs.metadata.get(path) or {}).get("priority", 10)),
+            "chip_model": (cfg.docs.metadata.get(path) or {}).get("chip_model"),
+        }
+        for path, rec in manifest.files.items()
+        if rec.doc_id
+    }
+    llm_semantics: dict[str, Any] = {"enabled": cfg.llm.enabled}
+    if cfg.llm.enabled:
+        llm_semantics.update(
+            {
+                "provider": cfg.llm.provider,
+                "tiers": cfg.llm.tiers.model_dump(mode="json"),
+                "endpoint": (
+                    llm_provider.base_url
+                    or (
+                        os.environ.get(llm_provider.base_url_env)
+                        if llm_provider.base_url_env
+                        else None
+                    )
+                    if llm_provider is not None
+                    else None
+                ),
+                "credential_available": bool(
+                    llm_provider
+                    and (llm_provider.api_key or os.environ.get(llm_provider.api_key_env))
+                ),
+            }
+        )
+    return _fingerprint(
+        {
+            "graph": store.graph_content_fingerprint(),
+            "versions": linker_versions(),
+            "document_policy": document_policy,
+            "llm": llm_semantics,
+            "runtime_overrides": (
+                {
+                    key: os.environ.get(key)
+                    for key in (
+                        "DOCGRAPH_LLM_IE",
+                        "DOCGRAPH_LLM_IE_MAX_CHUNKS_PER_DOC",
+                        "DOCGRAPH_LLM_IE_MAX_TOKENS",
+                        "DOCGRAPH_LLM_IE_FALLBACK_MAX_TOKENS",
+                    )
+                }
+                if cfg.llm.enabled
+                else {}
+            ),
+        }
+    )
+
+
+def _degrade(report: BuildReport, stage: str, error: Exception | str) -> None:
+    report.status = "degraded" if report.status != "failed" else report.status
+    warning = {"stage": stage, "error": str(error)}
+    if warning not in report.warnings:
+        report.warnings.append(warning)
+
+
+def _finalize_build(
+    root: Path,
+    manifest: Manifest,
+    report: BuildReport,
+    *,
+    started_at: str,
+    started_monotonic: float,
+) -> None:
+    if report.errors:
+        report.status = "failed"
+    elif report.warnings:
+        report.status = "degraded"
+    report.duration_s = round(time.time() - started_monotonic, 2)
+    manifest.last_build = BuildRunRecord(
+        status=report.status,
+        started_at=started_at,
+        completed_at=_utcnow(),
+        files_total=report.total_files,
+        files_failed=report.errors,
+        warnings=report.warnings,
+        cost_usd=report.llm_cost_usd,
+    )
+    save_manifest(root, manifest)
 
 
 def discover_files(root: Path, cfg: DocGraphConfig) -> list[Path]:
@@ -181,61 +415,27 @@ def _build_llm_client(root: Path, cfg: DocGraphConfig, cache_dir: Path) -> LLMCl
 def _build_vlm_client(
     root: Path, cfg: DocGraphConfig, cache_dir: Path, tracker: CostTracker | None = None
 ) -> Any | None:
-    """构造 VLM 客户端。
-
-    优先级：
-    1. config 中的 llm.vlm（推荐，允许和文本 LLM 使用不同 provider/model）
-    2. `.env` 中的 VLM_API_KEY / VLM_BASE_URL / VLM_MODEL_NAME（兼容）
-    3. config 中的 llm.vlm_model + 当前 llm provider
-    4. config 中的 llm.tiers.accurate
-
-    这样用户可以同时用 DeepSeek 做文本抽取、用 Doubao/Qwen/GLM/GPT-4o 做视觉。
-    """
-    if not cfg.llm.enabled:
+    """Build the explicitly configured VLM client without text-provider fallback."""
+    vlm_cfg = cfg.llm.vlm
+    if not vlm_cfg.enabled:
+        return None
+    autoload_env(root)
+    model = vlm_cfg.model or os.environ.get("VLM_MODEL_NAME")
+    if not model:
+        log.warning("[pipeline] VLM enabled but no llm.vlm.model is configured")
+        return None
+    if not (vlm_cfg.api_key or os.environ.get(vlm_cfg.api_key_env)):
+        log.warning(f"[pipeline] VLM enabled but {vlm_cfg.api_key_env} is not set")
         return None
 
-    if cfg.llm.vlm.api_key and cfg.llm.vlm.base_url and cfg.llm.vlm.model:
-        provider_name = cfg.llm.vlm.provider or "openai_compat"
-        kwargs: dict[str, Any] = {
-            "api_key_env": cfg.llm.vlm.api_key_env,
-            "api_key": cfg.llm.vlm.api_key,
-            "base_url_env": cfg.llm.vlm.base_url_env,
-            "base_url": cfg.llm.vlm.base_url,
-        }
-        model = cfg.llm.vlm.model
-    else:
-        # .env 专用 VLM 配置兼容旧用法，不污染文本 LLM 的 OPENAI_* 配置
-        vlm_api_key = os.environ.get("VLM_API_KEY")
-        vlm_base_url = os.environ.get("VLM_BASE_URL")
-        vlm_model = os.environ.get("VLM_MODEL_NAME")
-        if vlm_api_key and vlm_base_url and vlm_model:
-            provider_name = "openai_compat"
-            kwargs = {
-                "api_key_env": "VLM_API_KEY",
-                "base_url_env": "VLM_BASE_URL",
-                "base_url": vlm_base_url,
-            }
-            model = vlm_model
-        else:
-            provider_name = cfg.llm.provider
-            provider_cfg = cfg.llm.providers.get(provider_name)
-            if provider_cfg is None:
-                log.info(f"[pipeline] VLM skipped: no provider config for {provider_name}")
-                return None
-            if not (provider_cfg.api_key or os.environ.get(provider_cfg.api_key_env)):
-                log.info(
-                    f"[pipeline] VLM skipped: {provider_cfg.api_key_env} not set "
-                    "and provider api_key is empty"
-                )
-                return None
-            kwargs = {
-                "api_key_env": provider_cfg.api_key_env,
-                "api_key": provider_cfg.api_key,
-            }
-            if provider_name in ("openai", "openai_compat", "volces", "deepseek", "qwen", "glm"):
-                kwargs["base_url_env"] = provider_cfg.base_url_env
-                kwargs["base_url"] = provider_cfg.base_url
-            model = getattr(cfg.llm, "vlm_model", None) or cfg.llm.tiers.accurate
+    provider_name = vlm_cfg.provider
+    kwargs: dict[str, Any] = {
+        "api_key_env": vlm_cfg.api_key_env,
+        "api_key": vlm_cfg.api_key,
+    }
+    if provider_name in ("openai", "openai_compat", "volces", "deepseek", "qwen", "glm"):
+        kwargs["base_url_env"] = vlm_cfg.base_url_env
+        kwargs["base_url"] = vlm_cfg.base_url
 
     try:
         provider = make_vlm_provider(provider_name, **kwargs)
@@ -249,6 +449,7 @@ def _build_vlm_client(
         model=model,
         cache_dir=cache_dir / "vlm",
         tracker=tracker,
+        budget_usd=cfg.cost.budget_per_build_usd if cfg.cost.budget_per_build_usd > 0 else None,
     )
 
 
@@ -261,6 +462,33 @@ def build(
     root: Path,
     cfg: DocGraphConfig,
     store: SQLiteGraphStore,
+    *,
+    force: bool = False,
+    file_filter: Path | None = None,
+    quality: str | None = None,
+    dependency_policy: DependencyPolicy | None = None,
+    parser_failure_policy: str | None = None,
+) -> BuildReport:
+    """Build one project while serializing every index and manifest mutation."""
+    with project_build_lock(root):
+        manifest = load_manifest(root)
+        return _build_locked(
+            root,
+            cfg,
+            store,
+            manifest,
+            force=force,
+            file_filter=file_filter,
+            quality=quality,
+            dependency_policy=dependency_policy,
+            parser_failure_policy=parser_failure_policy,
+        )
+
+
+def _build_locked(
+    root: Path,
+    cfg: DocGraphConfig,
+    store: SQLiteGraphStore,
     manifest: Manifest,
     *,
     force: bool = False,
@@ -270,6 +498,7 @@ def build(
     parser_failure_policy: str | None = None,
 ) -> BuildReport:
     t0 = time.time()
+    started_at = _utcnow()
     report = BuildReport()
     store.init_schema()
     report.quality = _normalize_quality(quality or cfg.parsers.pdf.quality)
@@ -278,7 +507,29 @@ def build(
 
     files = discover_files(root, cfg)
     if file_filter is not None:
-        files = [f for f in files if f.resolve() == file_filter.resolve()]
+        target = file_filter if file_filter.is_absolute() else root / file_filter
+        target = target.resolve()
+        if not target.is_file():
+            report.status = "failed"
+            report.errors = 1
+            report.per_file.append(
+                {"path": str(file_filter), "status": "error", "error": "file does not exist"}
+            )
+            _finalize_build(root, manifest, report, started_at=started_at, started_monotonic=t0)
+            return report
+        if target not in files:
+            report.status = "failed"
+            report.errors = 1
+            report.per_file.append(
+                {
+                    "path": str(file_filter),
+                    "status": "error",
+                    "error": "file is not matched by docs.include or is excluded",
+                }
+            )
+            _finalize_build(root, manifest, report, started_at=started_at, started_monotonic=t0)
+            return report
+        files = [target]
     report.total_files = len(files)
 
     dg_dir = root / ".docgraph"
@@ -288,11 +539,12 @@ def build(
     vlm_tracker = CostTracker()
     vlm_client = None
     model_clients_initialized = False
+    model_warnings: list[dict[str, str]] = []
 
     log.info(
         f"[bold]Build start[/bold] — {len(files)} files, "
         f"LLM={'lazy' if cfg.llm.enabled else 'no'} "
-        f"VLM={'lazy' if cfg.llm.enabled else 'no'} "
+        f"VLM={'lazy' if cfg.llm.vlm.enabled else 'no'} "
         f"budget={cfg.cost.budget_per_build_usd:.2f}"
     )
 
@@ -304,26 +556,61 @@ def build(
         rel = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
         active_paths.add(rel)
         rec = manifest.files.get(rel) or FileRecord(path=rel)
-        h = file_hash(path)
+        file_quality = report.quality if path.suffix.lower() == ".pdf" else None
+        try:
+            h = file_hash(path)
+            stat = path.stat()
+            desired_fingerprint = _file_build_fingerprint(
+                path,
+                root,
+                cfg,
+                source_hash=h,
+                quality=file_quality,
+                parser_failure_policy=effective_failure_policy,
+            )
+        except Exception as e:
+            rec.last_run = _utcnow()
+            rec.stage_log = {"source": StageRecord(ok=False, error=str(e))}
+            rec.status = "error"
+            rec.error = str(e)
+            report.errors += 1
+            report.status = "failed"
+            if rec.doc_id:
+                active_doc_ids.add(rec.doc_id)
+            report.per_file.append({"path": rel, "status": "error", "error": str(e)})
+            manifest.files[rel] = rec
+            save_manifest(root, manifest)
+            log.error(f"[red]error[/red]   {rel}  — {e}")
+            continue
 
         current_id_format = bool(rec.doc_id and rec.doc_id.endswith(f"::{source_path_token(rel)}"))
+        extract_complete = bool(rec.stage_log.get("extract") and rec.stage_log["extract"].ok)
         if (
             not force
             and current_id_format
-            and rec.hash == h
-            and rec.status in ("extracted", "linked", "embedded")
+            and rec.indexed_hash == h
+            and rec.build_fingerprint == desired_fingerprint
+            and rec.status == "extracted"
+            and extract_complete
+            and not rec.warnings
         ):
             log.info(f"[cyan]skip[/cyan]    {rel}")
             report.skipped += 1
             if rec.doc_id:
                 active_doc_ids.add(rec.doc_id)
             report.per_file.append({"path": rel, "status": "skipped"})
+            if rec.quality_status == "degraded":
+                report.degraded += 1
+                _degrade(report, "parser", rec.fallback_reason or f"{rel} used parser fallback")
+            for warning in rec.warnings:
+                _degrade(report, warning["stage"], warning["error"])
             continue
 
-        rec.hash = h
-        rec.mtime = path.stat().st_mtime
-        rec.size = path.stat().st_size
         rec.last_run = _utcnow()
+        rec.stage_log = {}
+        rec.hash = h
+        rec.mtime = stat.st_mtime
+        rec.size = stat.st_size
 
         try:
             parsed = _stage_parse(
@@ -331,7 +618,7 @@ def build(
                 cfg,
                 root,
                 rec,
-                quality=report.quality,
+                quality=file_quality,
                 dependency_policy=effective_dependency_policy,
                 parser_failure_policy=effective_failure_policy,
                 dependency_cache=dependency_cache,
@@ -342,22 +629,49 @@ def build(
                 vlm_tracker = llm_client.tracker if llm_client is not None else CostTracker()
                 vlm_client = _build_vlm_client(root, cfg, cache_dir, tracker=vlm_tracker)
                 model_clients_initialized = True
-            extract_res = _stage_extract(
-                parsed, cfg, rec, llm_client, vlm_client, root, doc_id=parsed.doc_id
-            )
+                if cfg.llm.enabled and llm_client is None:
+                    warning = {"stage": "llm", "error": "LLM is enabled but unavailable"}
+                    model_warnings.append(warning)
+                    _degrade(report, warning["stage"], warning["error"])
+                if cfg.llm.vlm.enabled and vlm_client is None:
+                    warning = {"stage": "vlm", "error": "VLM is enabled but unavailable"}
+                    model_warnings.append(warning)
+                    _degrade(report, warning["stage"], warning["error"])
+            extract_cost_before = vlm_tracker.cost_usd
+            extract_res = _stage_extract(parsed, cfg, rec, llm_client, vlm_client, root)
+            rec.stage_log["extract"].cost_usd = round(vlm_tracker.cost_usd - extract_cost_before, 6)
             with store.transaction():
                 _stage_store_blocks(parsed, store, rec)  # L0 无损版面落库
                 n_chunks = _stage_store_chunks(parsed, store, rec)  # L1 切块 + FTS 落库
                 _stage_store(extract_res, store, rec)
             rec.status = "extracted"
+            rec.indexed_hash = h
+            rec.build_fingerprint = _file_build_fingerprint(
+                path,
+                root,
+                cfg,
+                source_hash=h,
+                quality=file_quality,
+                parser_failure_policy=effective_failure_policy,
+            )
+            rec.last_success = _utcnow()
             rec.doc_id = parsed.doc_id
             active_doc_ids.add(parsed.doc_id)
             rec.parser = parsed.parser
+            rec.parser_version = parsed.parser_version
             rec.error = None
+            rec.warnings = list(model_warnings)
             report.parsed += 1
             index_changed = True
             if rec.quality_status == "degraded":
                 report.degraded += 1
+                _degrade(report, "parser", rec.fallback_reason or f"{rel} used parser fallback")
+            if extract_res.stats.failed:
+                _degrade(
+                    report,
+                    "extract",
+                    f"{rel}: {extract_res.stats.failed} extractor operation(s) failed",
+                )
             report.extracted += 1
             report.nodes_total += len(extract_res.nodes)
             report.edges_total += len(extract_res.edges)
@@ -382,6 +696,7 @@ def build(
             rec.status = "error"
             rec.error = str(e)
             report.errors += 1
+            report.status = "failed"
             if rec.doc_id:
                 active_doc_ids.add(rec.doc_id)
             report.per_file.append({"path": rel, "status": "error", "error": str(e)})
@@ -401,9 +716,22 @@ def build(
                 index_changed = True
         save_manifest(root, manifest)
 
-    # Linker stage
-    if cfg.extractors.enabled and report.nodes_total > 0:
+    # Corpus-wide derived relation stage. It has its own invalidation and retry state.
+    linker_key = _linker_fingerprint(store, cfg, manifest)
+    linker_state = manifest.derived.get("linker")
+    linker_needed = (
+        linker_state is None
+        or linker_state.status != "ok"
+        or (linker_state.fingerprint != linker_key)
+    )
+    if linker_needed and store.count_nodes() > 0:
         try:
+            if cfg.llm.enabled and not model_clients_initialized:
+                llm_client = _build_llm_client(root, cfg, cache_dir)
+                model_clients_initialized = True
+                if llm_client is None:
+                    _degrade(report, "llm", "LLM is enabled but unavailable")
+            linker_cost_before = llm_client.tracker.cost_usd if llm_client is not None else 0.0
             link_rep = run_linker(root, cfg, store, manifest, llm_client=llm_client)
             report.linker_edges += (
                 link_rep.belongs_to_edges
@@ -414,15 +742,68 @@ def build(
                 + link_rep.supersedes_edges
                 + link_rep.fed_alias_edges
             )
+            report.llm_calls += link_rep.llm_ie_calls
+            llm_unavailable = bool(
+                cfg.llm.enabled and (llm_client is None or getattr(llm_client, "disabled", False))
+            )
+            for audit_warning in link_rep.warnings:
+                _degrade(report, "linker_audit", audit_warning)
+            linker_warnings = [
+                *(["LLM is enabled but unavailable"] if llm_unavailable else []),
+                *link_rep.warnings,
+            ]
+            manifest.derived["linker"] = DerivedStageRecord(
+                fingerprint=_linker_fingerprint(store, cfg, manifest),
+                status="degraded" if linker_warnings else "ok",
+                last_run=_utcnow(),
+                error="; ".join(linker_warnings) or None,
+                items=report.linker_edges,
+                cost_usd=round(
+                    (llm_client.tracker.cost_usd if llm_client is not None else 0.0)
+                    - linker_cost_before,
+                    6,
+                ),
+            )
         except Exception as e:
+            manifest.derived["linker"] = DerivedStageRecord(
+                fingerprint=linker_state.fingerprint if linker_state else None,
+                status="error",
+                last_run=_utcnow(),
+                error=str(e),
+            )
+            _degrade(report, "linker", e)
             log.warning(f"[link] linker failed: {e}")
+    elif linker_needed:
+        with store.transaction():
+            store.clear_derived_graph_items(set(linker_versions()))
+        manifest.derived["linker"] = DerivedStageRecord(
+            fingerprint=_linker_fingerprint(store, cfg, manifest),
+            status="ok",
+            last_run=_utcnow(),
+        )
+    else:
+        log.info("Linker skip — graph inputs and linker configuration are unchanged")
 
     # Embedding stage
-    embedding_needed = index_changed
+    embedding_active = embeddings_enabled(cfg.embeddings)
+    embedding_key = _embedding_fingerprint(cfg)
+    embedding_state = manifest.derived.get("embedding")
+    embedding_semantics_changed = bool(
+        embedding_active
+        and (embedding_state is None or embedding_state.fingerprint != embedding_key)
+    )
+    embedding_retry_needed = bool(
+        embedding_active and embedding_state is not None and embedding_state.status != "ok"
+    )
+    embedding_needed = embedding_active and (
+        index_changed or embedding_semantics_changed or embedding_retry_needed
+    )
     vstore = None
-    if not embedding_needed:
+    if embedding_active and not embedding_needed:
         vstore = build_vector_store(cfg.storage, dg_dir, create=True)
-        if vstore is not None:
+        if vstore is None:
+            embedding_needed = True
+        else:
             try:
                 vstore.init_schema()
                 embedding_needed = _embedding_missing_for_config(store, vstore, cfg)
@@ -430,35 +811,76 @@ def build(
                 log.warning(f"[embed] vector store check failed: {e}")
                 embedding_needed = True
 
-    if embedding_needed:
-        try:
+    try:
+        if not embedding_active:
+            manifest.derived["embedding"] = DerivedStageRecord(
+                fingerprint="disabled",
+                status="ok",
+                last_run=_utcnow(),
+            )
+            log.info("Embedding disabled — using FTS/LIKE retrieval")
+        elif embedding_needed:
             vstore = vstore or build_vector_store(cfg.storage, dg_dir, create=True)
             if vstore is None:
                 raise RuntimeError("vector store is disabled")
             vstore.init_schema()
             encoder = build_encoder(cfg.embeddings)
-            emb_rep = embed_graph(store, vstore, encoder)
+            emb_rep = embed_graph(
+                store,
+                vstore,
+                encoder,
+                only_missing=not embedding_semantics_changed,
+            )
+            if _embedding_missing_for_config(store, vstore, cfg):
+                raise RuntimeError("embedding provider returned an incomplete index")
             report.embedded_nodes = emb_rep.nodes_embedded
             report.embedded_chunks = emb_rep.chunks_embedded
-        except Exception as e:
+            manifest.derived["embedding"] = DerivedStageRecord(
+                fingerprint=embedding_key,
+                status="ok",
+                last_run=_utcnow(),
+                items=vstore.count(),
+            )
+        else:
+            manifest.derived["embedding"] = DerivedStageRecord(
+                fingerprint=embedding_key,
+                status="ok",
+                last_run=_utcnow(),
+                items=vstore.count() if vstore is not None else 0,
+            )
+            log.info("Embedding skip — no index changes and configured vectors are present")
+    except Exception as e:
+        manifest.derived["embedding"] = DerivedStageRecord(
+            # Preserve the current semantic identity for ordinary partial
+            # failures so the next build can fill only missing items. A failed
+            # semantic migration must retry the full rewrite because old and
+            # new vectors can share the same model name/content hash.
+            fingerprint=None if embedding_semantics_changed else embedding_key,
+            status="error",
+            last_run=_utcnow(),
+            error=str(e),
+        )
+        _degrade(report, "embedding", e)
+        if embedding_active:
             log.warning(f"[embed] embedding failed: {e}")
-    else:
-        log.info("Embedding skip — no index changes and configured vectors are present")
+    finally:
+        if vstore is not None:
+            vstore.close()
 
     if llm_client:
         report.llm_cost_usd = round(llm_client.tracker.cost_usd, 4)
     elif vlm_tracker:
         report.llm_cost_usd = round(vlm_tracker.cost_usd, 4)
 
-    report.duration_s = round(time.time() - t0, 2)
+    _finalize_build(root, manifest, report, started_at=started_at, started_monotonic=t0)
     log.info(
-        f"[bold]Build done[/bold] in {report.duration_s}s — "
-        f"parsed={report.parsed} degraded={report.degraded} "
+        f"[bold]Build {report.status}[/bold] in {report.duration_s}s — "
+        f"parsed={report.parsed} parser_fallbacks={report.degraded} "
         f"skipped={report.skipped} errors={report.errors} "
-        f"nodes+={report.nodes_total} edges+={report.edges_total} "
-        f"blocks+={report.blocks_total} chunks+={report.chunks_total} "
-        f"linker+={report.linker_edges} "
-        f"embedded_nodes+={report.embedded_nodes} embedded_chunks+={report.embedded_chunks} "
+        f"nodes_indexed={report.nodes_total} edges_indexed={report.edges_total} "
+        f"blocks_indexed={report.blocks_total} chunks_indexed={report.chunks_total} "
+        f"linker_upserted={report.linker_edges} "
+        f"embedded_nodes={report.embedded_nodes} embedded_chunks={report.embedded_chunks} "
         f"llm_calls={report.llm_calls} llm_cost=${report.llm_cost_usd:.4f}"
     )
     return report
@@ -467,17 +889,11 @@ def build(
 def _embedding_missing_for_config(
     store: SQLiteGraphStore, vstore: Any, cfg: DocGraphConfig
 ) -> bool:
-    """Return true when the current embedding model has no vectors yet.
-
-    This keeps an all-skipped build fast while still rebuilding vectors when a
-    user changes the embedding provider/model/dimension.
-    """
+    """Return true unless every expected item has the current content hash."""
     model = _expected_embedding_model(cfg)
-    if store.count_nodes() > 0 and not vstore.stored_node_hashes(model):
-        return True
-    if store.list_chunks(limit=1) and not vstore.stored_item_hashes("chunk", model):
-        return True
-    return False
+    return vstore.stored_node_hashes(model) != desired_node_hashes(
+        store
+    ) or vstore.stored_item_hashes("chunk", model) != desired_chunk_hashes(store)
 
 
 def _expected_embedding_model(cfg: DocGraphConfig) -> str:
@@ -489,6 +905,26 @@ def _expected_embedding_model(cfg: DocGraphConfig) -> str:
     if provider in {"openai", "openai_compat"}:
         return cfg.embeddings.model or "text-embedding-3-small"
     return provider
+
+
+def _embedding_fingerprint(cfg: DocGraphConfig) -> str:
+    """Identify every setting that can change vector semantics without storing secrets."""
+    provider = (cfg.embeddings.provider or "none").strip().lower()
+    endpoint = cfg.embeddings.base_url
+    if endpoint is None:
+        endpoint = os.environ.get(cfg.embeddings.base_url_env) or os.environ.get(
+            cfg.embeddings.base_url_fallback_env
+        )
+    return _fingerprint(
+        {
+            "pipeline": EMBEDDING_PIPELINE_VERSION,
+            "provider": provider,
+            "model": _expected_embedding_model(cfg),
+            "dim": cfg.embeddings.dim,
+            "endpoint": endpoint if provider in {"openai", "openai_compat"} else None,
+            "vector_backend": cfg.storage.vector_backend,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -795,24 +1231,35 @@ def _stage_extract(
     llm_client: LLMClient | None,
     vlm_client: Any | None,
     root: Path,
-    doc_id: str,
 ) -> ExtractResult:
     t0 = time.time()
-    classes = extractor_registry.resolve_order(cfg.extractors.enabled)
+    unknown = [name for name in cfg.extractors.enabled if extractor_registry.get(name) is None]
+    known = [name for name in cfg.extractors.enabled if name not in unknown]
+    merged = ExtractResult()
+    errors = [f"unknown extractor: {name}" for name in unknown]
+    merged.stats.failed = len(errors)
+    try:
+        classes = extractor_registry.resolve_order(known)
+    except Exception as e:
+        classes = []
+        errors.append(str(e))
+        merged.stats.failed += 1
     if not classes:
         rec.stage_log["extract"] = StageRecord(
             duration_s=round(time.time() - t0, 3),
-            ok=True,
+            ok=not errors,
+            error="; ".join(errors) or None,
         )
-        return ExtractResult()
+        return merged
 
-    merged = ExtractResult()
     for cls in classes:
         # 构造 extractor 实例 + 上下文
         try:
             inst = cls()
         except Exception as e:
             log.warning(f"[extract] could not instantiate {cls.__name__}: {e}")
+            merged.stats.failed += 1
+            errors.append(f"{cls.__name__}: {e}")
             continue
 
         ctx = ExtractContext(
@@ -835,21 +1282,25 @@ def _stage_extract(
             )
         except Exception as e:
             log.warning(f"[extract] extractor {inst.name} failed: {e}")
+            merged.stats.failed += 1
+            errors.append(f"{inst.name}: {e}")
             continue
         merged.nodes.extend(res.nodes)
         merged.edges.extend(res.edges)
-        merged.chunks.extend(res.chunks)
         merged.stats.nodes_emitted += res.stats.nodes_emitted
         merged.stats.edges_emitted += res.stats.edges_emitted
         merged.stats.duration_s += res.stats.duration_s
         merged.stats.llm_calls += res.stats.llm_calls
+        merged.stats.cost_usd += res.stats.cost_usd
         merged.stats.failed += res.stats.failed
 
     rec.stage_log["extract"] = StageRecord(
         duration_s=round(time.time() - t0, 3),
-        ok=True,
+        ok=merged.stats.failed == 0,
+        error="; ".join(errors) or None,
         nodes=len(merged.nodes),
         edges=len(merged.edges),
+        cost_usd=merged.stats.cost_usd,
     )
     return merged
 

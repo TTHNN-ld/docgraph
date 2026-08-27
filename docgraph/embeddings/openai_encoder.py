@@ -78,7 +78,7 @@ class OpenAIEmbeddingProvider:
 
 
 def try_make_openai_embedding(**kwargs) -> OpenAIEmbeddingProvider | None:
-    """构造但延迟连接：若没有 API key 就返回 None，让上层降级到 HashEncoder。"""
+    """构造但延迟连接；缺少 API key 时返回 None 供上层降级为文本检索。"""
     try:
         enc = OpenAIEmbeddingProvider(**kwargs)
         if not enc.api_key:

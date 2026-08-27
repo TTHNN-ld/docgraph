@@ -6,14 +6,17 @@
 - 失败写入 manifest 并继续其他文件，但整体命令最终返回非零。
 - L2 extractor 失败只降级 L2，不阻断 L0/L1。
 - 完整构建清理已删除文档；局部 `--doc` 不做全局删除对账。
-
-当前 linker 和 embedding 失败只记录 warning，尚未统一计入 `BuildReport.errors`。自动化除检查退出码外，还应运行 strict doctor 并检查这些 warning；缺口见 [Roadmap](../project/roadmap.md)。
+- `success` 表示所有需要执行的阶段完成；`degraded` 表示 L0/L1 可用但可选能力降级；`failed` 表示至少一个输入文件未完成权威层提交。
+- 普通构建允许 degraded 返回 0；要求完整 L2/关系/向量的自动化使用 `docgraph build --strict`。
+- Linker 失败保留上一份完整关系结果；Embedding 失败保留可重建状态，并在后续构建继续检查和恢复。
+- 同项目构建使用非阻塞锁。已有构建运行时，新命令直接返回失败；watcher 会保留事件并在锁释放后重试。
 
 ## 日常检查
 
 ```bash
 docgraph setup
 docgraph build
+docgraph build --strict
 docgraph doctor --strict
 docgraph l2 audit --strict
 docgraph status
@@ -40,10 +43,10 @@ docgraph l2 eval \
 
 ## 日志、缓存和成本
 
-- manifest 保存 parser 尝试、fallback、状态、错误和阶段统计。
+- manifest 区分最近尝试来源和最后成功索引，保存构建指纹、parser 尝试、fallback、整体结果及 Linker/Embedding 状态。
 - `.docgraph/cache/llm/`、`vlm/` 保存模型响应；向量和 parser 缓存均可重建。
-- LLM/VLM 调用应有 timeout、缓存和成本预算。
-- 切换模型、prompt 或 embedding provider 后，必须验证缓存键和向量刷新行为。
+- LLM/VLM 调用有 timeout、缓存和共享成本预算；并发请求先预留估算额度，缓存命中不受已用尽预算影响。
+- 切换 Parser、模型、prompt、Extractor，或 embedding provider/model/dim/endpoint/backend 后，构建指纹会触发相应重建；上线前仍应通过代表性文档验证结果质量。
 
 ## 人工审核
 

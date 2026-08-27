@@ -1,6 +1,6 @@
-"""PyMuPDF Parser —— M6 智能路由版本。
+"""核心安装中的轻量 PyMuPDF Parser。
 
-M6 升级：
+能力：
 - 每页 PageQuality 评估
 - 低质页（扫描 / 表格密集 / 图密集）自动渲染为 PNG 供 VLM 兜底
 - 不再写死 figures=[]：识别到 figure caption 时把整页或裁切区作为 ParsedFigure

@@ -205,7 +205,7 @@ class DocMetadata(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-# === L0 高保真版面层（layered-architecture.md §3.1）===
+# === L0 高保真版面层（docs/architecture/data-layers.md）===
 
 
 class BlockKind(str, Enum):
@@ -380,7 +380,7 @@ class Edge(BaseModel):
     src: str
     dst: str
     kind: EdgeKind
-    confidence: float = 1.0
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence: Evidence
     attrs: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=_utcnow)
@@ -394,7 +394,7 @@ class Edge(BaseModel):
 class Chunk(BaseModel):
     """检索用文本片段（L1）。
 
-    block_ids 指回 L0 版面块（layered-architecture §3.2 契约：可回溯）。
+    block_ids 指回 L0 版面块，满足 L1 到 L0 的可回溯契约。
     """
 
     id: str
@@ -430,7 +430,6 @@ class ExtractStats(BaseModel):
 class ExtractResult(BaseModel):
     nodes: list[Node] = Field(default_factory=list)
     edges: list[Edge] = Field(default_factory=list)
-    chunks: list[Chunk] = Field(default_factory=list)
     stats: ExtractStats = Field(default_factory=ExtractStats)
 
 

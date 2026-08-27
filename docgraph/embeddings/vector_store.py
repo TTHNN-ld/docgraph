@@ -1,8 +1,8 @@
-"""向量存储（M2 简化版）—— 用 SQLite 普通表 + Python 端余弦计算。
+"""使用 SQLite 普通表和 Python 端余弦计算的轻量向量存储。
 
 之所以不直接上 sqlite-vec：
 - sqlite-vec 在 Python 3.13 上的发行尚不稳定，强依赖会增加项目门槛
-- 当前节点数（10k-100k）下，Python 端计算余弦相似度足够快（< 100ms）
+- 核心安装保持零原生扩展依赖，适合本地中小规模索引
 - 通过 VectorStore 接口隔离，将来切 sqlite-vec / faiss 都不影响业务层
 """
 
@@ -17,10 +17,9 @@ from pathlib import Path
 class VectorStore:
     """轻量向量存储。
 
-    历史上只有节点级 `vec_nodes`。M7 L1 引入 chunk 检索后，新增通用
-    `vec_items(namespace, item_id, model, vector)`，用于 chunk / 后续其它可索引
-    对象。底层仍是本地 SQLite + O(N) 余弦，保持零服务依赖；后续可在这里替换
-    sqlite-vec / Faiss，而不影响查询层。
+    `vec_nodes` 保存节点向量，`vec_items(namespace, item_id, ...)` 保存 chunk
+    等通用对象。底层是本地 SQLite + O(N) 余弦；更大规模可切换到已有的
+    LanceDB 后端，而不影响查询层。
     """
 
     def __init__(self, db_path: Path) -> None:
@@ -134,8 +133,16 @@ class VectorStore:
         vector: list[float],
         content_hash: str | None = None,
     ) -> None:
+        self.upsert_many([(node_id, model, vector, content_hash)])
+
+    def upsert_many(
+        self,
+        entries: list[tuple[str, str, list[float], str | None]],
+    ) -> None:
+        if not entries:
+            return
         c = self._connect()
-        c.execute(
+        c.executemany(
             """
             INSERT INTO vec_nodes (node_id, model, dim, vector, content_hash)
             VALUES (?, ?, ?, ?, ?)
@@ -145,7 +152,10 @@ class VectorStore:
               vector = excluded.vector,
               content_hash = excluded.content_hash
             """,
-            (node_id, model, len(vector), json.dumps(vector), content_hash),
+            [
+                (node_id, model, len(vector), json.dumps(vector), content_hash)
+                for node_id, model, vector, content_hash in entries
+            ],
         )
         c.commit()
 
@@ -157,8 +167,17 @@ class VectorStore:
         vector: list[float],
         content_hash: str | None = None,
     ) -> None:
+        self.upsert_items_many(namespace, [(item_id, model, vector, content_hash)])
+
+    def upsert_items_many(
+        self,
+        namespace: str,
+        entries: list[tuple[str, str, list[float], str | None]],
+    ) -> None:
+        if not entries:
+            return
         c = self._connect()
-        c.execute(
+        c.executemany(
             """
             INSERT INTO vec_items (namespace, item_id, model, dim, vector, content_hash)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -168,7 +187,10 @@ class VectorStore:
               vector = excluded.vector,
               content_hash = excluded.content_hash
             """,
-            (namespace, item_id, model, len(vector), json.dumps(vector), content_hash),
+            [
+                (namespace, item_id, model, len(vector), json.dumps(vector), content_hash)
+                for item_id, model, vector, content_hash in entries
+            ],
         )
         c.commit()
 
@@ -300,8 +322,11 @@ class VectorStore:
         query_vec: list[float],
         model: str,
         top_k: int = 10,
+        allowed_ids: set[str] | None = None,
     ) -> list[tuple[str, float]]:
         rows = self.all_items_for_model(namespace, model)
+        if allowed_ids is not None:
+            rows = [(item_id, vector) for item_id, vector in rows if item_id in allowed_ids]
         if not rows:
             return []
         results: list[tuple[str, float]] = []

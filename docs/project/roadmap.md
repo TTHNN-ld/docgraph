@@ -1,6 +1,6 @@
 # Roadmap
 
-> 更新于 2026-08-26。本文件只记录当前状态和后续优先级；历史需求见[需求记录](./requirements-history.md)，重大设计取舍见 [RFC](../decisions/README.md)。
+> 更新于 2026-08-27。本文件只记录当前状态和后续优先级；历史需求见[需求记录](./requirements-history.md)，重大设计取舍见 [RFC](../decisions/README.md)。
 
 ## 当前基线
 
@@ -10,6 +10,7 @@
 - L0 blocks、L1 chunks、FTS、可插拔向量索引和 L0 回溯链。
 - schema registry 与表格优先的 L2 抽取；L2 provenance、candidate/fact 状态和结构校验。
 - 文件级增量构建、删除对账、parser fallback、manifest 审计。
+- 基于实现与语义配置的构建指纹、项目级写锁、可回滚 Linker、向量完整性恢复，以及 success/degraded/failed 完成状态。
 - CLI、6 工具 MCP stdio、Web UI、跨项目只读 federation、IP-XACT/SystemRDL 基础导出。
 - `doctor --strict`、`l2 audit` 和 `l2 eval` 质量入口。
 
@@ -25,9 +26,8 @@
 
 1. 建立可公开复现的 L2 golden 数据集，并按实体类型维护 precision、recall、F1 与失败样例。
 2. 提升复杂 PDF、DOCX 图片和表格的 L0 证据完整性，同时保持轻量默认安装。
-3. 收紧构建完成条件：把 linker、embedding 等派生阶段的失败状态和恢复路径做成可审计闭环。
-4. 校准跨文档实体合并、candidate/fact 晋升和人工 review 的真实工作流。
-5. 为导出和 federation 增加端到端兼容性测试，明确稳定支持的子集。
+3. 校准跨文档实体合并、candidate/fact 晋升和人工 review 的真实工作流。
+4. 为导出和 federation 增加端到端兼容性测试，明确稳定支持的子集。
 
 ## 暂不优先
 
@@ -42,3 +42,5 @@
 - [RFC 0016：按上下文预算提供 L1 文档视图](../decisions/0016-adaptive-l1-context.md)
 - [RFC 0017：L2 候选与事实可信状态](../decisions/0017-l2-candidate-fact-trust-model.md)
 - [RFC 0018：面向 Agent 的 MCP v2 接口](../decisions/0018-mcp-v2-agent-interface.md)
+- [RFC 0019：显式语义检索与可解释候选融合](../decisions/0019-explicit-semantic-retrieval.md)
+- [RFC 0020：分阶段失效与可恢复索引构建](../decisions/0020-stage-aware-index-build.md)

@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from dataclasses import dataclass
@@ -18,6 +17,8 @@ from docgraph.core.logger import get_logger
 from docgraph.graph.schema import Edge, EdgeKind, Evidence, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.graph.store import NodeQuery
+from docgraph.graph.traversal import iter_node_query, iter_nodes
+from docgraph.linker.common import write_jsonl_atomic
 
 log = get_logger(__name__)
 
@@ -51,11 +52,12 @@ _XREF_PATTERNS: list[tuple[re.Pattern, NodeKind]] = [
 class XRefResult:
     edges_added: int = 0
     unresolved: int = 0
+    unresolved_records: list[dict] | None = None
 
 
 class XRefLinker:
     name = "xref"
-    version = "0.1"
+    version = "0.2"
     UNRESOLVED_REL = "entities/linker.unresolved.jsonl"
 
     def run(self, store: SQLiteGraphStore, root: Path | None = None) -> XRefResult:
@@ -74,7 +76,7 @@ class XRefLinker:
         ]
 
         for kind in source_kinds:
-            nodes = store.search_nodes(NodeQuery(kind=kind, limit=10000))
+            nodes = iter_nodes(store, kind)
             for src in nodes:
                 text_pool = " ".join(
                     [
@@ -101,31 +103,32 @@ class XRefLinker:
                             continue
                         if target.id == src.id:
                             continue
-                        try:
-                            store.upsert_edge(
-                                Edge(
-                                    src=src.id,
-                                    dst=target.id,
-                                    kind=EdgeKind.REFERENCES,
-                                    confidence=0.85,
-                                    evidence=Evidence(
-                                        extractor=f"{self.name}@{self.version}",
-                                        raw_snippet=m.group(0),
-                                    ),
-                                )
+                        store.upsert_edge(
+                            Edge(
+                                src=src.id,
+                                dst=target.id,
+                                kind=EdgeKind.REFERENCES,
+                                confidence=0.85,
+                                evidence=Evidence(
+                                    extractor=f"{self.name}@{self.version}",
+                                    raw_snippet=m.group(0),
+                                ),
                             )
-                            edges_added += 1
-                        except Exception:
-                            pass
+                        )
+                        edges_added += 1
 
-        if unresolved and root is not None:
+        if root is not None:
             self._write_unresolved(root, unresolved)
 
         log.info(
             f"[link] xref: {edges_added} edges added, {len(unresolved)} unresolved "
             f"({round(time.time() - t0, 2)}s)"
         )
-        return XRefResult(edges_added=edges_added, unresolved=len(unresolved))
+        return XRefResult(
+            edges_added=edges_added,
+            unresolved=len(unresolved),
+            unresolved_records=unresolved,
+        )
 
     @staticmethod
     def _find_target(
@@ -134,18 +137,14 @@ class XRefLinker:
         key: str,
         prefer_doc: str | None,
     ):
-        results = store.search_nodes(NodeQuery(kind=kind, fuzzy=key, limit=10))
-        if not results:
-            return None
-        # 同文档命中优先（xref 引用通常指同文档章节/图表）
-        same_doc = [n for n in results if n.doc_id == prefer_doc]
+        same_doc = list(iter_node_query(store, NodeQuery(kind=kind, fuzzy=key, doc_id=prefer_doc)))
         if same_doc:
             same_doc.sort(key=lambda n: not (n.qualified_name or "").startswith(key))
             return same_doc[0]
         # 跨文档只接受 qualified_name 严格匹配 key 的，避免 "3.2" 模糊命中无关章节
         strict = [
             n
-            for n in results
+            for n in iter_node_query(store, NodeQuery(kind=kind, fuzzy=key))
             if (n.qualified_name or "") == key
             or (n.qualified_name or "").startswith(key + " ")
             or (n.qualified_name or "").startswith(key + "-")
@@ -156,8 +155,4 @@ class XRefLinker:
 
     @staticmethod
     def _write_unresolved(root: Path, records: list[dict]) -> None:
-        p = root / ".docgraph" / "entities" / "linker.unresolved.jsonl"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a", encoding="utf-8") as f:
-            for r in records:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        write_jsonl_atomic(root / ".docgraph" / XRefLinker.UNRESOLVED_REL, records)

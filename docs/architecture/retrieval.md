@@ -30,7 +30,11 @@ Agent 不控制字符预算、候选池或内部检索模式。这些是服务�
 
 ## 检索与取证
 
-检索候选来自可用的 FTS5、LIKE 和语义索引，再结合名称、章节和 chunk 类型重排。返回结果会说明实际使用的 `retrieval_methods` 和剩余候选数，但不会声称候选足以回答问题。
+检索首先用完整问题和提取出的关键词查询 FTS5/LIKE。配置真实 embedding 时，再在同一文档范围内补充高于最低相似度的语义候选。不同通道的原始分数不可直接比较，因此先用排名融合（RRF），再结合正文词项、标题、章节、表头、caption 和 chunk 类型重排。
+
+默认未配置 embedding，只走 FTS5/LIKE。内置 `hash` 只是词项哈希，可用于测试，但不作为独立语义召回通道。BGE-M3 和 OpenAI-compatible provider 才会让 `retrieval_methods` 出现 `semantic`。provider 不可用或查询编码失败时，本次查询降级为文本检索；已经入库的 L1 不受影响。
+
+返回结果会说明实际使用的 `retrieval_methods`、每条结果的 `rank_reasons` 和剩余候选数，但不会声称候选足以回答问题。语义候选没有文本片段时仍返回完整 L1 chunk，而不是模型生成的摘要。
 
 `chunks[].text` 保持入库后的完整 L1 文本，不由 MCP 再总结或改写。只有需要表格单元格、图片、公式、bbox、阅读顺序或来源复核时，才把 chunk ID 交给 `docgraph_read`。批量读取会去重共同引用的 blocks 和 entities。
 
@@ -63,7 +67,7 @@ MCP host
   → MCP tool handler
   → QueryEngine
      ├─ SQLiteGraphStore：L0、L1/FTS、L2
-     └─ VectorStore + EmbeddingProvider：可选语义候选
+     └─ VectorStore + EmbeddingProvider：显式配置后提供语义候选
   → 预算、排序、去重和来源关联
   → outputSchema 对应的 structuredContent
 ```
@@ -72,4 +76,4 @@ SDK 负责协议协商、工具发现、schema、错误封装和生命周期；D
 
 可修正的输入或查询错误以 MCP `isError=true` 返回。意外异常由 SDK 隐藏内部细节并写入 stderr，避免污染 stdio 协议输出。
 
-接口参数见 [MCP 工具参考](../reference/mcp-tools.md)，host 配置见 [MCP 接入](../guides/mcp.md)，数据硬约束见[分层数据契约](./data-layers.md)。当前接口决策见 [RFC 0018](../decisions/0018-mcp-v2-agent-interface.md)；L1 预算与完整性设计沿用 [RFC 0016](../decisions/0016-adaptive-l1-context.md)。
+接口参数见 [MCP 工具参考](../reference/mcp-tools.md)，host 配置见 [MCP 接入](../guides/mcp.md)，数据硬约束见[分层数据契约](./data-layers.md)。当前接口决策见 [RFC 0018](../decisions/0018-mcp-v2-agent-interface.md)，候选融合见 [RFC 0019](../decisions/0019-explicit-semantic-retrieval.md)；L1 预算与完整性设计沿用 [RFC 0016](../decisions/0016-adaptive-l1-context.md)。

@@ -1,4 +1,5 @@
 """Smoke tests for schema + SQLite store + extractors."""
+
 from __future__ import annotations
 
 import tempfile
@@ -19,11 +20,10 @@ from docgraph.graph.schema import (
     NodeKind,
     ParsedDoc,
     ParsedPage,
-    TextBlock,
     TocEntry,
 )
 from docgraph.graph.sqlite_store import SQLiteGraphStore
-from docgraph.graph.store import NodeQuery
+from docgraph.graph.store import EdgeQuery, NodeQuery
 
 
 @pytest.fixture()
@@ -40,9 +40,7 @@ def test_make_ids():
     assert doc_id == "stm32f407::datasheet@rev9"
     node_id = make_node_id("stm32f407", NodeKind.REGISTER, "TIM1.CR1")
     assert node_id == "stm32f407::reg:TIM1.CR1"
-    node_id2 = make_node_id(
-        "stm32f407", NodeKind.REGISTER, "TIM1.CR1", doc_id=doc_id
-    )
+    node_id2 = make_node_id("stm32f407", NodeKind.REGISTER, "TIM1.CR1", doc_id=doc_id)
     assert node_id2 == "stm32f407::reg:TIM1.CR1#stm32f407::datasheet@rev9"
 
 
@@ -161,11 +159,15 @@ def test_store_node_upsert_merges_multisource_l2_evidence(tmp_store: SQLiteGraph
 
 def test_store_edge_and_neighbors(tmp_store: SQLiteGraphStore):
     reg = Node(
-        id="stm32::reg:CR1", kind=NodeKind.REGISTER, name="CR1",
+        id="stm32::reg:CR1",
+        kind=NodeKind.REGISTER,
+        name="CR1",
         doc_id="stm32::ds",
     )
     bf = Node(
-        id="stm32::bf:CR1.CEN", kind=NodeKind.BITFIELD, name="CEN",
+        id="stm32::bf:CR1.CEN",
+        kind=NodeKind.BITFIELD,
+        name="CEN",
         doc_id="stm32::ds",
     )
     tmp_store.upsert_node(reg)
@@ -183,8 +185,115 @@ def test_store_edge_and_neighbors(tmp_store: SQLiteGraphStore):
     assert any(e.kind == EdgeKind.HAS_BITFIELD for e in sub.edges)
 
 
+def test_store_preserves_zero_confidence_and_queries_edges(tmp_store: SQLiteGraphStore):
+    for node_id in ("A", "B"):
+        tmp_store.upsert_node(Node(id=node_id, kind=NodeKind.MODULE, name=node_id, doc_id="doc"))
+    tmp_store.upsert_edge(
+        Edge(
+            src="A",
+            dst="B",
+            kind=EdgeKind.DEPENDS_ON,
+            confidence=0.0,
+            evidence=Evidence(extractor="test"),
+        )
+    )
+
+    edges = tmp_store.search_edges(EdgeQuery(confidence_lt=0.1))
+
+    assert len(edges) == 1
+    assert edges[0].confidence == 0.0
+    tmp_store.delete_edge("A", "B", EdgeKind.DEPENDS_ON)
+    assert tmp_store.search_edges(EdgeQuery()) == []
+
+
+def test_store_edge_upsert_merges_sources_without_lowering_confidence(
+    tmp_store: SQLiteGraphStore,
+):
+    for node_id in ("A", "B"):
+        tmp_store.upsert_node(Node(id=node_id, kind=NodeKind.MODULE, name=node_id, doc_id="doc"))
+    tmp_store.upsert_edge(
+        Edge(
+            src="A",
+            dst="B",
+            kind=EdgeKind.CONNECTS_TO,
+            confidence=0.9,
+            evidence=Evidence(extractor="table_entity", chunk_ids=["table-chunk"], pages=[1]),
+            attrs={"source": "table_entity", "source_chunk_ids": ["table-chunk"]},
+        )
+    )
+    tmp_store.upsert_edge(
+        Edge(
+            src="A",
+            dst="B",
+            kind=EdgeKind.CONNECTS_TO,
+            confidence=0.5,
+            evidence=Evidence(extractor="llm_ie", chunk_ids=["text-chunk"], pages=[2]),
+            attrs={"source": "llm_ie", "source_chunk_ids": ["text-chunk"]},
+        )
+    )
+
+    edge = tmp_store.get_edge("A", "B", EdgeKind.CONNECTS_TO)
+
+    assert edge is not None
+    assert edge.confidence == 0.9
+    assert edge.evidence.chunk_ids == ["table-chunk", "text-chunk"]
+    assert edge.evidence.pages == [1, 2]
+    assert edge.attrs["source"] == "table_entity"
+    assert edge.attrs["sources"] == ["table_entity", "llm_ie"]
+
+
+def test_neighbors_are_deduplicated_and_do_not_reference_omitted_nodes(
+    tmp_store: SQLiteGraphStore,
+):
+    for node_id in ("A", "B", "C"):
+        tmp_store.upsert_node(Node(id=node_id, kind=NodeKind.MODULE, name=node_id, doc_id="doc"))
+    for src, dst in (("A", "B"), ("B", "C")):
+        tmp_store.upsert_edge(
+            Edge(
+                src=src,
+                dst=dst,
+                kind=EdgeKind.CONTAINS,
+                evidence=Evidence(extractor="test"),
+            )
+        )
+
+    full = tmp_store.neighbors("A", depth=2, limit=10)
+    bounded = tmp_store.neighbors("A", depth=2, limit=2)
+
+    assert [(edge.src, edge.dst) for edge in full.edges] == [("A", "B"), ("B", "C")]
+    bounded_ids = {node.id for node in bounded.nodes}
+    assert bounded_ids == {"A", "B"}
+    assert all(edge.src in bounded_ids and edge.dst in bounded_ids for edge in bounded.edges)
+
+
+def test_entity_source_lookup_uses_exact_json_ids(tmp_store: SQLiteGraphStore):
+    tmp_store.upsert_node(
+        Node(
+            id="long-ref",
+            kind=NodeKind.TERM,
+            name="long-ref",
+            doc_id="doc",
+            evidence=Evidence(extractor="test", chunk_ids=["chunk-10"]),
+            attrs={"source_block_ids": ["block-10"]},
+        )
+    )
+    tmp_store.upsert_node(
+        Node(
+            id="exact-ref",
+            kind=NodeKind.TERM,
+            name="exact-ref",
+            doc_id="doc",
+            evidence=Evidence(extractor="test", chunk_ids=["chunk-1"]),
+            attrs={"source_block_ids": ["block-1"]},
+        )
+    )
+
+    assert [node.id for node in tmp_store.get_entities_for_chunk("chunk-1")] == ["exact-ref"]
+    assert [node.id for node in tmp_store.get_entities_for_block("block-1")] == ["exact-ref"]
+
+
 def test_store_search(tmp_store: SQLiteGraphStore):
-    for i, name in enumerate(["TIM1_CR1", "TIM1_CR2", "TIM2_CR1"]):
+    for name in ("TIM1_CR1", "TIM1_CR2", "TIM2_CR1"):
         tmp_store.upsert_node(
             Node(
                 id=f"stm32::reg:{name}",
@@ -222,7 +331,7 @@ def test_section_extractor_uses_toc():
 def test_table_entity_extractor_counts():
     """无 LLM 时 TableEntityExtractor 返回空结果，不崩溃。"""
     from docgraph.extractors.table_entity import TableEntityExtractor
-    parsed = ParsedDoc(doc_id="stm32::ds", source_path="x.pdf",
-                        pages=[ParsedPage(page_no=1)])
+
+    parsed = ParsedDoc(doc_id="stm32::ds", source_path="x.pdf", pages=[ParsedPage(page_no=1)])
     res = TableEntityExtractor().extract(parsed, ExtractContext(family="stm32"))
     assert res.nodes == []

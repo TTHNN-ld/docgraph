@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import Edge, EdgeKind, Evidence, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
-from docgraph.graph.store import NodeQuery
+from docgraph.graph.traversal import iter_nodes
 
 log = get_logger(__name__)
 
@@ -31,7 +31,7 @@ class FederationResult:
 
 class FederationLinker:
     name = "federation"
-    version = "0.1"
+    version = "0.2"
     TARGET_KINDS = (NodeKind.REGISTER, NodeKind.PIN, NodeKind.PARAMETER)
 
     def run(
@@ -39,6 +39,7 @@ class FederationLinker:
         store: SQLiteGraphStore,
         *,
         doc_priorities: dict[str, int],
+        doc_instances: dict[str, str] | None = None,
     ) -> FederationResult:
         """doc_priorities: doc_id → priority (越大越权威)。"""
         t0 = time.time()
@@ -46,13 +47,14 @@ class FederationLinker:
         alias_edges = 0
 
         for kind in self.TARGET_KINDS:
-            nodes = store.search_nodes(NodeQuery(kind=kind, limit=10000))
-            buckets: dict[str, list] = defaultdict(list)
+            nodes = iter_nodes(store, kind)
+            buckets: dict[tuple[str, str], list] = defaultdict(list)
             for n in nodes:
-                key = (n.qualified_name or n.name).upper()
-                buckets[key].append(n)
+                name_key = (n.qualified_name or n.name).upper()
+                instance = (doc_instances or {}).get(n.doc_id) or _family_from_doc_id(n.doc_id)
+                buckets[(name_key, instance)].append(n)
 
-            for key, group in buckets.items():
+            for (key, instance), group in buckets.items():
                 if len(group) < 2:
                     continue
                 # 同 family 不同 doc 才算联邦
@@ -76,24 +78,25 @@ class FederationLinker:
                         edge_kind = EdgeKind.ALIAS_OF
                         confidence = 0.9
                         alias_edges += 1
-                    try:
-                        store.upsert_edge(
-                            Edge(
-                                src=primary.id,
-                                dst=other.id,
-                                kind=edge_kind,
-                                confidence=confidence,
-                                evidence=Evidence(
-                                    extractor=f"{self.name}@{self.version}",
-                                    raw_snippet=f"federation merge for {key}",
-                                ),
-                            )
+                    store.upsert_edge(
+                        Edge(
+                            src=primary.id,
+                            dst=other.id,
+                            kind=edge_kind,
+                            confidence=confidence,
+                            evidence=Evidence(
+                                extractor=f"{self.name}@{self.version}",
+                                raw_snippet=f"federation merge for {key} instance={instance}",
+                            ),
                         )
-                    except Exception:
-                        pass
+                    )
 
         log.info(
             f"[link] federation: {sup_edges} SUPERSEDES, {alias_edges} ALIAS_OF "
             f"({round(time.time() - t0, 2)}s)"
         )
         return FederationResult(supersedes_edges=sup_edges, alias_edges=alias_edges)
+
+
+def _family_from_doc_id(doc_id: str) -> str:
+    return doc_id.split("::", 1)[0] if "::" in doc_id else ""

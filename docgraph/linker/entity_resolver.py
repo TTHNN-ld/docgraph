@@ -1,16 +1,15 @@
-"""EntityResolver —— 实体消歧（M2：Stage 1+2 规则）。
+"""EntityResolver —— 基于名称和来源范围的实体消歧。
 
 策略：
 - Stage 1：完全相同的 qualified_name + 同 family → merge 候选
 - Stage 2：归一后相同（去前缀 / 大小写 / 下划线↔连字符）→ alias
-- Stage 3：LLM 兜底（M3 实施）
+- LLM 关系推断由独立 LLMIELinker 负责
 
 输出：在图里写 ALIAS_OF 边；同时写 .docgraph/entities/linker.merged.jsonl 审计日志。
 """
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from collections import defaultdict
@@ -21,7 +20,8 @@ from docgraph.core.ids import doc_name_from_doc_id, infer_chip_model
 from docgraph.core.logger import get_logger
 from docgraph.graph.schema import Edge, EdgeKind, Evidence, Node, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
-from docgraph.graph.store import NodeQuery
+from docgraph.graph.traversal import iter_nodes
+from docgraph.linker.common import write_jsonl_atomic
 
 log = get_logger(__name__)
 
@@ -30,6 +30,7 @@ log = get_logger(__name__)
 class ResolveResult:
     alias_edges: int = 0
     groups: int = 0
+    audit_records: list[dict] | None = None
 
 
 _NORM_RE = re.compile(r"[\s_\-./]+")
@@ -58,7 +59,7 @@ def _instance_key(doc_id: str) -> str:
 
 class EntityResolver:
     name = "entity_resolver"
-    version = "0.1"
+    version = "0.2"
 
     # 哪些 kind 参与归并（"硬名称"实体，跨文档同义时建 ALIAS_OF）
     # 扩展覆盖：interrupt/memory_map/interface/module 也参与，因为跨文档
@@ -77,45 +78,56 @@ class EntityResolver:
 
     AUDIT_REL = "entities/linker.merged.jsonl"
 
-    def run(self, store: SQLiteGraphStore, root: Path | None = None) -> ResolveResult:
+    def run(
+        self,
+        store: SQLiteGraphStore,
+        root: Path | None = None,
+        *,
+        doc_instances: dict[str, str] | None = None,
+        doc_priorities: dict[str, int] | None = None,
+    ) -> ResolveResult:
         t0 = time.time()
         alias_edges = 0
         audit: list[dict] = []
 
         for kind in self.TARGET_KINDS:
-            nodes = store.search_nodes(NodeQuery(kind=kind, limit=10000))
+            nodes = iter_nodes(store, kind)
             buckets: dict[tuple[str, str], list[Node]] = defaultdict(list)
             for n in nodes:
                 name_key = normalize(n.qualified_name or n.name)
                 # 消歧实例键：chip_model（推断得出）相同才算"同一实例"。
                 # chip_model 推断不出时回退到 family（doc_id 前缀），兼容旧项目。
-                inst = _instance_key(n.doc_id)
+                inst = (doc_instances or {}).get(n.doc_id) or _instance_key(n.doc_id)
                 buckets[(name_key, inst)].append(n)
             for (name_key, inst), group in buckets.items():
                 if len(group) < 2:
                     continue
-                # 主节点：按 doc 的 priority 决定（无法直接拿到 priority，用 page 较前 + 名字较短）
-                primary = sorted(group, key=lambda n: (n.location.page or 9999, len(n.name)))[0]
+                primary = sorted(
+                    group,
+                    key=lambda n: (
+                        -(doc_priorities or {}).get(n.doc_id, 10),
+                        n.location.page or 9999,
+                        len(n.name),
+                        n.id,
+                    ),
+                )[0]
                 for other in group:
                     if other.id == primary.id:
                         continue
                     # ALIAS_OF 双向
-                    try:
-                        store.upsert_edge(
-                            Edge(
-                                src=other.id,
-                                dst=primary.id,
-                                kind=EdgeKind.ALIAS_OF,
-                                confidence=0.95,
-                                evidence=Evidence(
-                                    extractor=f"{self.name}@{self.version}:rule",
-                                    raw_snippet=f"normalized={name_key} instance={inst}",
-                                ),
-                            )
+                    store.upsert_edge(
+                        Edge(
+                            src=other.id,
+                            dst=primary.id,
+                            kind=EdgeKind.ALIAS_OF,
+                            confidence=0.95,
+                            evidence=Evidence(
+                                extractor=f"{self.name}@{self.version}:rule",
+                                raw_snippet=f"normalized={name_key} instance={inst}",
+                            ),
                         )
-                        alias_edges += 1
-                    except Exception:
-                        pass
+                    )
+                    alias_edges += 1
                 audit.append(
                     {
                         "name_key": name_key,
@@ -126,19 +138,15 @@ class EntityResolver:
                     }
                 )
 
-        if audit and root is not None:
+        if root is not None:
             self._write_audit(root, audit)
 
         log.info(
             f"[link] entity-resolve: {alias_edges} alias edges, "
             f"{len(audit)} merge groups ({round(time.time() - t0, 2)}s)"
         )
-        return ResolveResult(alias_edges=alias_edges, groups=len(audit))
+        return ResolveResult(alias_edges=alias_edges, groups=len(audit), audit_records=audit)
 
     @staticmethod
     def _write_audit(root: Path, records: list[dict]) -> None:
-        p = root / ".docgraph" / "entities" / "linker.merged.jsonl"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a", encoding="utf-8") as f:
-            for r in records:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        write_jsonl_atomic(root / ".docgraph" / EntityResolver.AUDIT_REL, records)

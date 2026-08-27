@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from docgraph.core.config import DocGraphConfig
-from docgraph.watcher import _detect_changes, _walk_watched, _watched_files
+from docgraph.watcher import _detect_changes, _snapshot_mtimes, _walk_watched, _watched_files
 
 
 def test_walk_watched_accepts_every_core_document_format(tmp_path: Path) -> None:
@@ -41,3 +41,13 @@ def test_detect_changes_reports_removed_sources(tmp_path: Path) -> None:
 
     assert changed == [str(source)]
     assert previous == {}
+
+
+def test_snapshot_mtimes_ignores_files_removed_during_scan(tmp_path: Path) -> None:
+    present = tmp_path / "present.md"
+    missing = tmp_path / "missing.md"
+    present.write_text("content", encoding="utf-8")
+
+    snapshot = _snapshot_mtimes([present, missing])
+
+    assert snapshot == {str(present): present.stat().st_mtime}

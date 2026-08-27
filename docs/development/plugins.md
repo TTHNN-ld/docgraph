@@ -90,4 +90,4 @@ extractors:
 - 模型超时、无效输出和预算耗尽只降级 L2。
 - 失败路径可观察且可恢复。
 
-1.0 前只承诺[分层数据契约](../architecture/data-layers.md)，不承诺内部 constructor/helper 永久稳定。插件还必须声明模型下载、外部服务、成本和数据外发行为。
+稳定边界以[分层数据契约](../architecture/data-layers.md)和本页列出的 entry point 为准；内部 constructor/helper 不属于兼容承诺。插件还必须声明模型下载、外部服务、成本和数据外发行为。

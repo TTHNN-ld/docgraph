@@ -24,8 +24,7 @@ sys.path.insert(0, str(_project_root))
 from docgraph.core.dotenv import autoload_env
 from docgraph.core.config import project_root_from_cwd, load_config
 from docgraph.core.logger import set_level
-from docgraph.embeddings.factory import build_encoder
-from docgraph.embeddings.vector_factory import build_vector_store
+from docgraph.embeddings.factory import open_query_embeddings
 from docgraph.graph.schema import NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.query.engine import QueryEngine
@@ -345,11 +344,7 @@ def main():
 
     store = SQLiteGraphStore(dg_dir / "graph.db")
     store.init_schema()
-    vstore = build_vector_store(cfg.storage, dg_dir, create=False)
-    encoder = None
-    if vstore:
-        vstore.init_schema()
-        encoder = build_encoder(cfg.embeddings)
+    vstore, encoder = open_query_embeddings(cfg.embeddings, cfg.storage, dg_dir)
     qe = QueryEngine(store, vstore=vstore, encoder=encoder)
     dg = DocGraphRetriever(qe)
     base = BaseRetriever(dg_dir / "graph.db")

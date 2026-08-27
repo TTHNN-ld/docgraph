@@ -16,7 +16,7 @@ Pydantic 默认值先加载，再递归合并：
 - 扫描 `docs/` 和 `spec/` 下的 PDF、DOCX、XLSX/XLSM、MD/Markdown。
 - PDF 使用 `auto`/`balanced`，可选后端不可用时回退到 PyMuPDF。
 - 启用 `section`、`table_entity`；LLM/VLM 关闭。
-- embedding 使用本地 `hash`，图和向量分别使用 SQLite、`sqlite_json`。
+- 默认不构建向量，检索使用 FTS5 和 LIKE；图存储使用 SQLite。
 
 `docgraph init` 默认只创建 `.docgraph/` 和缺失的用户配置；传入 `--name` 或 `--family` 时才写最小项目配置。
 
@@ -65,7 +65,7 @@ extractors:
 | `chip_model` | 芯片实例标识 |
 | `supersedes` | 显式覆盖来源列表，当前仅保存在解析元数据 |
 
-当前 EntityResolver 尚未完整使用显式 `chip_model`，FederationLinker 也未按 `supersedes` 列表做字段级覆盖；多芯片和勘误场景需要核对实际关系。见[联邦机制](../architecture/federation.md)。
+EntityResolver 使用显式 `chip_model` 隔离实例，并用 `priority` 选择规范节点。FederationLinker 尚未按 `supersedes` 列表做字段级覆盖；勘误场景仍需核对实际关系。见[联邦机制](../architecture/federation.md)。
 
 ## Parser
 
@@ -76,7 +76,6 @@ extractors:
 | `primary` | 按格式 | PDF 可用 `auto` |
 | `fallback` | `[]` | 显式后端顺序 |
 | `quality` | `balanced` | fast、balanced、accurate |
-| `per_page_timeout` | `60` | 后端可选的页级超时提示 |
 | `device` | `cpu` | cpu、cuda、mps |
 | `ocr_device` | `null` | MinerU OCR device 覆盖 |
 
@@ -131,16 +130,17 @@ llm:
   provider: openai_compat
   providers:
     openai_compat:
-      api_key: sk-...
+      api_key_env: TEXT_LLM_API_KEY
       base_url: https://text.example.com/v1
   tiers:
     fast: model-fast
     balanced: model-balanced
     accurate: model-accurate
   vlm:
+    enabled: true
     provider: openai_compat
     model: vision-model
-    api_key: sk-...
+    api_key_env: VLM_API_KEY
     base_url: https://vision.example.com/v1
     figure_limit: 8
 
@@ -148,7 +148,7 @@ cost:
   budget_per_build_usd: 5.0
 ```
 
-文本 provider 支持 anthropic、openai/openai_compat 及兼容注册名。VLM 凭证独立配置；不要默认复用文本模型密钥。环境变量仍可用于 CI 或临时覆盖。
+在项目或用户 `.env` 中设置 `TEXT_LLM_API_KEY` 和 `VLM_API_KEY`。文本 provider 支持 anthropic、openai/openai_compat 及兼容注册名。VLM 独立启用并要求自己的 provider、model 和凭证，不复用文本模型配置；因此只启用 VLM 而关闭文本 LLM 也可以工作。`budget_per_build_usd` 是两者共享的构建预算：并发请求按估算费用预留额度，响应后按实际费用结算。它用于阻止新的超预算请求，不是账单系统的精确上限。
 
 模型结果默认是需要核验的 L2 candidate。启用远程服务前确认文档允许外发。
 
@@ -156,9 +156,9 @@ cost:
 
 ```yaml
 embeddings:
-  provider: hash       # hash | bge_m3 | openai | openai_compat
-  model: text-embedding-3-small
-  dim: 1536
+  provider: bge_m3     # none | bge_m3 | openai | openai_compat
+  model: BAAI/bge-m3
+  dim: 1024
   api_key_env: EMBEDDING_API_KEY
 
 storage:
@@ -166,7 +166,9 @@ storage:
   vector_backend: sqlite_json   # sqlite_json | lancedb
 ```
 
-`hash` 是零外部服务默认值。远程 embedding 初始化失败会回退到 hash，实际 provider 应从构建日志确认。
+`none` 是默认值，此时 L1 仍可通过 FTS5/LIKE 检索。已有用户配置中的 `provider: hash` 会按配置优先级继续生效，需要关闭时改成 `none`。`bge_m3` 提供本地多语言语义召回，需要 `uv sync --extra embeddings`；`openai`/`openai_compat` 使用远程服务。配置的 provider 不可用时，查询明确降级为文本检索，不会静默改用另一种向量。
+
+`hash` 仍可显式用于测试和离线链路验证，但它只是词项哈希，不是语义模型，也不会作为独立语义召回通道。修改 provider、model、dim、远程 endpoint 或向量后端后再次运行 `uv run docgraph build`，系统会刷新语义不再兼容的向量，并核对每个节点和 chunk 的 ID、内容 hash 与维度；服务返回数量或维度不完整时构建会降级，不接受部分成功。
 
 ## 检查
 

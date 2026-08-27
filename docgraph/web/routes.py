@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from docgraph.graph.schema import Chunk, EdgeKind, Node, NodeKind
-from docgraph.graph.store import NodeQuery
+from docgraph.graph.store import EdgeQuery, NodeQuery
 
 
 def _nav_counts(store) -> dict[str, int]:
@@ -437,20 +437,18 @@ def register_routes(app: FastAPI) -> None:
         store = app.state.store
         wanted_kinds = None
         if kinds:
-            wanted_kinds = {NodeKind(k.strip()) for k in kinds.split(",") if k.strip()}
-        selected_kinds = [
-            kind for kind in NodeKind
-            if wanted_kinds is None or kind in wanted_kinds
-        ]
+            try:
+                wanted_kinds = {NodeKind(kind.strip()) for kind in kinds.split(",") if kind.strip()}
+            except ValueError:
+                return JSONResponse({"error": "invalid_node_kind"}, status_code=400)
+        selected_kinds = [kind for kind in NodeKind if wanted_kinds is None or kind in wanted_kinds]
         nodes_list: list[Node] = []
         if selected_kinds:
             # 按类型均分名额，避免 enum 靠前的高基数 kind（如 signal）挤掉其余类型。
             per_kind = max(1, limit // len(selected_kinds))
             taken: dict[NodeKind, int] = {}
             for kind in selected_kinds:
-                ns = store.search_nodes(
-                    NodeQuery(kind=kind, doc_id=doc_id, limit=per_kind)
-                )
+                ns = store.search_nodes(NodeQuery(kind=kind, doc_id=doc_id, limit=per_kind))
                 nodes_list.extend(ns)
                 taken[kind] = len(ns)
             leftover = limit - len(nodes_list)
@@ -471,35 +469,37 @@ def register_routes(app: FastAPI) -> None:
                     if leftover <= 0:
                         break
 
-        wanted_edges = None
+        wanted_edges: list[EdgeKind] | None = None
         if edge_kinds:
-            wanted_edges = {e.strip() for e in edge_kinds.split(",") if e.strip()}
+            requested = {e.strip() for e in edge_kinds.split(",") if e.strip()}
+            unknown = requested - {kind.value for kind in EdgeKind}
+            if unknown:
+                return JSONResponse(
+                    {"error": "invalid_edge_kind", "values": sorted(unknown)},
+                    status_code=400,
+                )
+            wanted_edges = [kind for kind in EdgeKind if kind.value in requested]
 
-        # 收集所有相关边
         node_ids = {n.id for n in nodes_list}
-        edges_out = []
-        conn = store._connect()  # type: ignore[attr-defined]
-        rows = (
-            conn.execute(
-                f"SELECT src, dst, kind, confidence FROM edges "
-                f"WHERE src IN ({','.join('?' for _ in node_ids)}) "
-                f"AND dst IN ({','.join('?' for _ in node_ids)})",
-                list(node_ids) + list(node_ids),
-            ).fetchall()
-            if node_ids
-            else []
-        )
-        for r in rows:
-            if wanted_edges and r["kind"] not in wanted_edges:
-                continue
-            edges_out.append(
-                {
-                    "src": r["src"],
-                    "dst": r["dst"],
-                    "kind": r["kind"],
-                    "confidence": r["confidence"],
-                }
+        edge_limit = max(1, limit * 10)
+        edges = store.search_edges(
+            EdgeQuery(
+                node_ids=sorted(node_ids),
+                kinds=wanted_edges,
+                limit=edge_limit + 1,
             )
+        )
+        edges_truncated = len(edges) > edge_limit
+        edges = edges[:edge_limit]
+        edges_out = [
+            {
+                "src": edge.src,
+                "dst": edge.dst,
+                "kind": edge.kind.value,
+                "confidence": edge.confidence,
+            }
+            for edge in edges
+        ]
 
         return {
             "nodes": [
@@ -512,6 +512,7 @@ def register_routes(app: FastAPI) -> None:
                 for n in nodes_list
             ],
             "edges": edges_out,
+            "edges_truncated": edges_truncated,
         }
 
 

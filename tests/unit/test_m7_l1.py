@@ -992,7 +992,10 @@ def test_query_engine_includes_semantic_chunk_hits(tmp_path):
     ])
     vstore = VectorStore(tmp_path / "v.db")
     vstore.init_schema()
-    enc = HashEncoder(dim=64)
+    class SemanticTestEncoder(HashEncoder):
+        name = "semantic-test"
+
+    enc = SemanticTestEncoder(dim=64)
     assert embed_chunks(store, vstore, enc) == 1
 
     hits = QueryEngine(store, vstore=vstore, encoder=enc).search_chunks(
@@ -1004,6 +1007,98 @@ def test_query_engine_includes_semantic_chunk_hits(tmp_path):
     assert any(str(r).startswith("semantic:") for r in hits[0]["rank_reasons"])
     store.close()
     vstore.close()
+
+
+def test_hash_vectors_are_not_used_as_independent_semantic_recall(tmp_path):
+    from docgraph.embeddings.hash_encoder import HashEncoder
+    from docgraph.embeddings.indexer import embed_chunks
+    from docgraph.embeddings.vector_store import VectorStore
+    from docgraph.graph.schema import Chunk
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.query.engine import QueryEngine
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_chunks(
+        [Chunk(id="unrelated", doc_id="d", text="clock reset", block_ids=[])]
+    )
+    vectors = VectorStore(tmp_path / "v.db")
+    vectors.init_schema()
+    encoder = HashEncoder(dim=1)  # force collisions to make the regression deterministic
+    embed_chunks(store, vectors, encoder)
+
+    result = QueryEngine(store, vectors, encoder).search_chunks_with_meta("banana")
+
+    assert result["hits"] == []
+    assert "semantic" not in result["methods"]
+    vectors.close()
+    store.close()
+
+
+def test_text_retrieval_extracts_chinese_technical_terms(tmp_path):
+    from docgraph.graph.schema import Chunk
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.query.engine import QueryEngine
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_chunks(
+        [
+            Chunk(
+                id="irq",
+                doc_id="d",
+                text="中断控制器的配置方法与屏蔽寄存器。",
+                block_ids=[],
+            )
+        ]
+    )
+
+    hits = QueryEngine(store).search_chunks("如何配置中断")
+
+    assert [hit["chunk_id"] for hit in hits] == ["irq"]
+    assert "term-overlap" in " ".join(hits[0]["rank_reasons"])
+    store.close()
+
+
+def test_semantic_recall_filters_low_scores_and_applies_document_scope(tmp_path):
+    from docgraph.graph.schema import Chunk
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.query.engine import QueryEngine
+
+    class Encoder:
+        name = "semantic-test"
+        model = "semantic-test"
+        dim = 1
+
+        def encode(self, _texts):
+            return [[1.0]]
+
+    class VectorSearch:
+        def search_items(self, _namespace, _vector, _model, top_k, allowed_ids=None):
+            assert top_k >= 2
+            assert allowed_ids == {"target", "noise"}
+            return [("target", 0.8), ("noise", 0.1)]
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_chunks(
+        [
+            Chunk(id="target", doc_id="selected", text="alpha", block_ids=[]),
+            Chunk(id="noise", doc_id="selected", text="beta", block_ids=[]),
+            Chunk(id="outside", doc_id="other", text="gamma", block_ids=[]),
+        ]
+    )
+
+    result = QueryEngine(store, VectorSearch(), Encoder()).search_chunks_with_meta(
+        "unmatched paraphrase",
+        doc_ids=["selected"],
+        limit=2,
+        candidate_limit=2,
+    )
+
+    assert [hit["chunk_id"] for hit in result["hits"]] == ["target"]
+    assert result["methods"] == ["semantic"]
+    store.close()
 
 
 def test_query_engine_context_with_blocks_uses_l2_source_links(tmp_path):

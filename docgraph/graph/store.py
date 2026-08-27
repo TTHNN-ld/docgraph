@@ -22,6 +22,15 @@ class NodeQuery(BaseModel):
     offset: int = 0
 
 
+class EdgeQuery(BaseModel):
+    """Edge query conditions. ``None`` means the field is not filtered."""
+
+    node_ids: list[str] | None = None
+    kinds: list[EdgeKind] | None = None
+    confidence_lt: float | None = Field(default=None, ge=0.0, le=1.0)
+    limit: int = Field(default=500, ge=1)
+
+
 class Subgraph(BaseModel):
     nodes: list[Node] = Field(default_factory=list)
     edges: list[Edge] = Field(default_factory=list)
@@ -45,6 +54,11 @@ class GraphStore(Protocol):
 
     # --- edge ---
     def upsert_edge(self, edge: Edge) -> None: ...
+    def get_edge(self, src: str, dst: str, kind: EdgeKind) -> Edge | None: ...
+    def search_edges(self, query: EdgeQuery) -> list[Edge]: ...
+    def delete_edge(self, src: str, dst: str, kind: EdgeKind) -> None: ...
+    def clear_derived_graph_items(self, producers: set[str]) -> tuple[int, int]: ...
+    def graph_content_fingerprint(self) -> str: ...
     def neighbors(
         self,
         id: str,

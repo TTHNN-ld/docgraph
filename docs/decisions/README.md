@@ -17,5 +17,7 @@
 | [0016](./0016-adaptive-l1-context.md) | 按上下文预算提供 L1 文档视图 | Accepted |
 | [0017](./0017-l2-candidate-fact-trust-model.md) | L2 候选与事实可信状态模型 | Accepted |
 | [0018](./0018-mcp-v2-agent-interface.md) | 面向 Agent 的 MCP v2 接口 | Accepted |
+| [0019](./0019-explicit-semantic-retrieval.md) | 显式语义检索与可解释候选融合 | Accepted |
+| [0020](./0020-stage-aware-index-build.md) | 分阶段失效与可恢复索引构建 | Accepted |
 
 RFC 是决策历史，不应被当作当前使用说明。稳定结论需同步到对应架构文档，当前工作状态由 [Roadmap](../project/roadmap.md)维护。
