@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "docgraph-core"
-version = "1.0.0"
+version = "2.0.1"
 description = "Document Knowledge Graph engine for chip specs — like codegraph for docs."
 readme = "README.md"
 license = { text = "Apache-2.0" }
