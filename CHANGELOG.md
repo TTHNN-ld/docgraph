@@ -2,7 +2,7 @@
 
 Notable changes to DocGraph are recorded here.
 
-## 2.0.1 - 2026-08-28
+## 1.0.1 - 2026-08-28
 
 ### Breaking Changes
 

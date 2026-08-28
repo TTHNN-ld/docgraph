@@ -953,7 +953,7 @@ wheels = [
 
 [[package]]
 name = "docgraph-core"
-version = "2.0.1"
+version = "1.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "markdown-it-py" },
