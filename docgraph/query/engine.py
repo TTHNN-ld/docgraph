@@ -64,14 +64,6 @@ class TermDetail(BaseModel):
     node: Node
 
 
-class ContextBundle(BaseModel):
-    task: str
-    nodes: list[Node] = Field(default_factory=list)
-    edges: list[Edge] = Field(default_factory=list)
-    semantic_hits: list[dict] = Field(default_factory=list)
-    providers: list[str] = Field(default_factory=list)
-
-
 class ImpactReport(BaseModel):
     root: Node
     affected: list[Node] = Field(default_factory=list)
@@ -93,7 +85,7 @@ class ContextRequestError(ValueError):
         self.code = code
 
 
-_CONTEXT_CURSOR_VERSION = 1
+_CONTEXT_CURSOR_VERSION = 2
 _CONTEXT_MAX_CHARS = 80_000
 _CONTEXT_MAX_CHUNKS = 160
 _CONTEXT_MAX_ENRICHMENT_CHARS = 20_000
@@ -115,10 +107,12 @@ class QueryEngine:
         store: SQLiteGraphStore,
         vstore: VectorStore | None = None,
         encoder: EmbeddingProvider | None = None,
+        semantic_warning: str | None = None,
     ) -> None:
         self.store = store
         self.vstore = vstore
         self.encoder = encoder
+        self.semantic_warning = semantic_warning
 
     # ------- status -------
 
@@ -153,6 +147,22 @@ class QueryEngine:
         use_semantic: bool = True,
         doc_ids: list[str] | None = None,
     ) -> list[Node]:
+        return self.search_with_meta(
+            query,
+            kind=kind,
+            limit=limit,
+            use_semantic=use_semantic,
+            doc_ids=doc_ids,
+        )["nodes"]
+
+    def search_with_meta(
+        self,
+        query: str,
+        kind: NodeKind | None = None,
+        limit: int = 20,
+        use_semantic: bool = True,
+        doc_ids: list[str] | None = None,
+    ) -> dict:
         scope = self._resolve_context_scope(doc_ids)
 
         def find(**filters) -> list[Node]:
@@ -171,27 +181,38 @@ class QueryEngine:
         # 1. 精确 name
         exact = find(name=query)
         if exact:
-            return exact
+            return {"nodes": exact, "warnings": []}
         # 2. alias
         alias = find(alias=query)
         if alias:
-            return alias
+            return {"nodes": alias, "warnings": []}
         # 3. qualified_name 精确
         qual = find(qualified_name=query)
         if qual:
-            return qual
+            return {"nodes": qual, "warnings": []}
         # 4. fuzzy
         fuzzy = find(fuzzy=query)
         if fuzzy:
-            return fuzzy
+            return {"nodes": fuzzy, "warnings": []}
         # 5. 向量语义
         if use_semantic and self._semantic_retrieval_enabled():
-            semantic = self._semantic_search(query, kind=kind, top_k=max(limit * 4, limit))
-            if scope is not None:
-                allowed = set(scope)
-                semantic = [node for node in semantic if node.doc_id in allowed]
-            return semantic[:limit]
-        return []
+            allowed_node_ids = (
+                self.store.list_node_ids(scope, kind=kind)
+                if scope is not None or kind is not None
+                else None
+            )
+            semantic, semantic_error = self._semantic_search(
+                query,
+                kind=kind,
+                top_k=max(limit * 4, limit),
+                allowed_ids=allowed_node_ids,
+            )
+            return {
+                "nodes": semantic[:limit],
+                "warnings": [semantic_error] if semantic_error else [],
+            }
+        warnings = [self.semantic_warning] if use_semantic and self.semantic_warning else []
+        return {"nodes": [], "warnings": warnings}
 
     def node(self, id: str) -> Node | None:
         return self.store.get_node(id)
@@ -216,14 +237,12 @@ class QueryEngine:
         """Return a stable section outline for one document."""
         self._resolve_context_scope([doc_id])
         if section_id is None:
-            nodes = self.store.search_nodes(
-                NodeQuery(kind=NodeKind.SECTION, doc_id=doc_id, limit=limit)
-            )
+            nodes = self.store.list_sections(doc_id, limit=limit)
         else:
             root = self.store.get_node(section_id)
             if root is None or root.kind != NodeKind.SECTION or root.doc_id != doc_id:
                 return []
-            sub = self.store.neighbors(
+            sub = self.store.outgoing(
                 root.id,
                 edge_kinds=[EdgeKind.CONTAINS],
                 depth=depth,
@@ -288,60 +307,6 @@ class QueryEngine:
             # 也按别名查
             nodes = self.store.search_nodes(NodeQuery(alias=term, kind=NodeKind.TERM, limit=10))
         return [TermDetail(node=n) for n in nodes]
-
-    # ------- 高级 -------
-
-    def context(self, task: str, max_nodes: int = 20) -> ContextBundle:
-        """根据 task 文本拉一束"相关包"：图谱命中 + 向量命中 + 一阶邻居。"""
-        providers = []
-        nodes_map: dict[str, Node] = {}
-        edges_map: dict[tuple[str, str, str], Edge] = {}
-        semantic_hits: list[dict] = []
-
-        # 1. 试图把 task 当成名字精确查
-        for tok in _tokenize_task(task):
-            for n in self.store.search_nodes(NodeQuery(name=tok, limit=3)):
-                nodes_map[n.id] = n
-            for n in self.store.search_nodes(NodeQuery(qualified_name=tok, limit=3)):
-                nodes_map[n.id] = n
-        if nodes_map:
-            providers.append("name-hit")
-
-        # 2. 向量检索
-        if self._semantic_retrieval_enabled():
-            hits = self._semantic_search_raw(task, top_k=max_nodes)
-            if hits:
-                providers.append("semantic")
-            for nid, score in hits:
-                if nid in nodes_map:
-                    continue
-                fetched_node = self.store.get_node(nid)
-                if fetched_node is None:
-                    continue
-                nodes_map[fetched_node.id] = fetched_node
-                semantic_hits.append({"id": fetched_node.id, "score": round(score, 4)})
-
-        # 3. 拉一阶邻居丰富上下文
-        seeds = list(nodes_map.values())[: max_nodes // 2]
-        for seed in seeds:
-            sub = self.store.neighbors(seed.id, depth=1, limit=10)
-            for n in sub.nodes:
-                if n.id != seed.id and n.id not in nodes_map and len(nodes_map) < max_nodes:
-                    nodes_map[n.id] = n
-            for e in sub.edges:
-                key = (e.src, e.dst, e.kind.value)
-                edges_map[key] = e
-
-        if nodes_map and "neighbors" not in providers:
-            providers.append("neighbors")
-
-        return ContextBundle(
-            task=task,
-            nodes=list(nodes_map.values())[:max_nodes],
-            edges=list(edges_map.values()),
-            semantic_hits=semantic_hits,
-            providers=providers,
-        )
 
     def trace(self, from_id: str, to_id: str, max_depth: int = 5) -> list[Path]:
         """BFS 找最短路径。"""
@@ -413,9 +378,17 @@ class QueryEngine:
         return self.store.search_nodes(NodeQuery(fuzzy=name, kind=kind, limit=3))
 
     def _semantic_search(
-        self, query: str, kind: NodeKind | None = None, top_k: int = 10
-    ) -> list[Node]:
-        hits = self._semantic_search_raw(query, top_k=top_k * 3)
+        self,
+        query: str,
+        kind: NodeKind | None = None,
+        top_k: int = 10,
+        allowed_ids: set[str] | None = None,
+    ) -> tuple[list[Node], str | None]:
+        hits, warning = self._semantic_search_raw(
+            query,
+            top_k=top_k * 3,
+            allowed_ids=allowed_ids,
+        )
         out: list[Node] = []
         for nid, _ in hits:
             n = self.store.get_node(nid)
@@ -426,22 +399,39 @@ class QueryEngine:
             out.append(n)
             if len(out) >= top_k:
                 break
-        return out
+        return out, warning
 
-    def _semantic_search_raw(self, query: str, top_k: int = 20) -> list[tuple[str, float]]:
+    def _semantic_search_raw(
+        self,
+        query: str,
+        top_k: int = 20,
+        allowed_ids: set[str] | None = None,
+    ) -> tuple[list[tuple[str, float]], str | None]:
         if not self._semantic_retrieval_enabled():
-            return []
+            return [], self.semantic_warning
         try:
             assert self.encoder is not None
             assert self.vstore is not None
             vec = self.encoder.encode([query])[0]
-            return [
-                (item_id, score)
-                for item_id, score in self.vstore.search(vec, self.encoder.model, top_k=top_k)
-                if math.isfinite(score) and score >= _MIN_SEMANTIC_SCORE
-            ]
-        except Exception:
-            return []
+            if allowed_ids is None:
+                raw_hits = self.vstore.search(vec, self.encoder.model, top_k=top_k)
+            else:
+                raw_hits = self.vstore.search(
+                    vec,
+                    self.encoder.model,
+                    top_k=top_k,
+                    allowed_ids=allowed_ids,
+                )
+            return (
+                [
+                    (item_id, score)
+                    for item_id, score in raw_hits
+                    if math.isfinite(score) and score >= _MIN_SEMANTIC_SCORE
+                ],
+                None,
+            )
+        except Exception as exc:
+            return [], f"Semantic entity retrieval failed; lexical matching was used ({exc})."
 
     def _semantic_retrieval_enabled(self) -> bool:
         if self.vstore is None or self.encoder is None:
@@ -565,6 +555,7 @@ class QueryEngine:
         cursor: str | None = None,
     ) -> dict:
         """Return a transparent, budgeted L1 view without summarizing chunks."""
+        cursor_data = _decode_context_cursor(cursor) if cursor else None
         requested_mode = (mode or "auto").strip().lower()
         if requested_mode not in {"auto", "full", "search"}:
             raise ContextRequestError("invalid_mode", "mode must be one of: auto, full, search")
@@ -576,6 +567,11 @@ class QueryEngine:
             minimum=0,
             maximum=_CONTEXT_MAX_ENRICHMENT_CHARS,
         )
+        if doc_ids is None and cursor_data is not None:
+            cursor_doc_ids = cursor_data.get("doc_ids")
+            if cursor_doc_ids is not None and not isinstance(cursor_doc_ids, list):
+                raise ContextRequestError("invalid_cursor", "cursor document scope is malformed")
+            doc_ids = cursor_doc_ids
         scope = self._resolve_context_scope(doc_ids)
         stats = self.store.chunk_corpus_stats(scope)
         if stats["total_chunks"] == 0:
@@ -592,7 +588,6 @@ class QueryEngine:
             else:
                 effective_mode = "search"
                 reason = "corpus_exceeds_budget"
-        cursor_data = _decode_context_cursor(cursor) if cursor else None
         normalized_task = (task or "").strip()
         if not normalized_task and cursor_data is not None and cursor_data.get("kind") == "search":
             normalized_task = str(cursor_data.get("task") or "").strip()
@@ -747,6 +742,7 @@ class QueryEngine:
                     "kind": "full",
                     "snapshot": stats["snapshot"],
                     "request_key": request_key,
+                    "doc_ids": scope,
                     "after": list(_chunk_sort_key(selected[-1])),
                 }
             )
@@ -785,46 +781,69 @@ class QueryEngine:
         cursor_data: dict | None,
         request_key: str,
     ) -> dict:
-        offset = 0
+        search: dict
         if cursor_data is not None:
             if cursor_data.get("kind") != "search":
                 raise ContextRequestError("cursor_mismatch", "cursor is not a search-mode cursor")
-            offset = int(cursor_data.get("offset", 0))
-            if offset < 0:
-                raise ContextRequestError("invalid_cursor", "search cursor offset is invalid")
-
-        search = self.search_chunks_with_meta(
-            task,
-            limit=_CONTEXT_CANDIDATE_LIMIT,
-            doc_ids=scope,
-            candidate_limit=_CONTEXT_CANDIDATE_LIMIT,
-        )
+            candidates = _decode_search_candidates(cursor_data.get("remaining"))
+            methods = cursor_data.get("methods", [])
+            if not isinstance(methods, list) or not all(
+                isinstance(method, str) for method in methods
+            ):
+                raise ContextRequestError("invalid_cursor", "search cursor methods are malformed")
+            warnings = cursor_data.get("warnings", [])
+            if not isinstance(warnings, list) or not all(
+                isinstance(warning, str) for warning in warnings
+            ):
+                raise ContextRequestError("invalid_cursor", "search cursor warnings are malformed")
+            candidate_total = cursor_data.get("candidate_total")
+            if not isinstance(candidate_total, int) or candidate_total < len(candidates):
+                raise ContextRequestError(
+                    "invalid_cursor", "search cursor candidate count is malformed"
+                )
+            search = {
+                "hits": candidates,
+                "methods": methods,
+                "candidate_chunks": candidate_total,
+                "candidate_pool_truncated": bool(cursor_data.get("pool_truncated", False)),
+                "warnings": warnings,
+            }
+        else:
+            search = self.search_chunks_with_meta(
+                task,
+                limit=_CONTEXT_CANDIDATE_LIMIT,
+                doc_ids=scope,
+                candidate_limit=_CONTEXT_CANDIDATE_LIMIT,
+            )
         candidates = search["hits"]
         selected_chunks: list[Chunk] = []
         selected_hits: list[dict] = []
         returned_chars = 0
+        consumed = 0
         response_chunk_limit = min(max_chunks, _CONTEXT_SEARCH_PAGE_CHUNKS)
-        for hit in candidates[offset:]:
+        for hit in candidates:
             if len(selected_chunks) >= response_chunk_limit:
                 break
             chunk = self.store.get_chunk(hit["chunk_id"])
             if chunk is None:
+                consumed += 1
                 continue
             if returned_chars + len(chunk.text) > max_chars:
                 break
             selected_chunks.append(chunk)
             selected_hits.append(hit)
             returned_chars += len(chunk.text)
-        if candidates[offset:] and not selected_chunks:
-            first = self.store.get_chunk(candidates[offset]["chunk_id"])
+            consumed += 1
+        if candidates and not selected_chunks and consumed < len(candidates):
+            first = self.store.get_chunk(candidates[consumed]["chunk_id"])
             size = len(first.text) if first is not None else 0
             raise ContextRequestError(
                 "budget_too_small",
                 f"max_chars={max_chars} cannot fit the next candidate chunk ({size} chars)",
             )
 
-        consumed = offset + len(selected_hits)
-        unreturned_candidates = max(len(candidates) - consumed, 0)
+        remaining = candidates[consumed:]
+        unreturned_candidates = len(remaining)
         next_cursor = None
         if unreturned_candidates:
             next_cursor = _encode_context_cursor(
@@ -833,8 +852,13 @@ class QueryEngine:
                     "kind": "search",
                     "snapshot": stats["snapshot"],
                     "request_key": request_key,
-                    "offset": consumed,
                     "task": task,
+                    "doc_ids": scope,
+                    "remaining": _encode_search_candidates(remaining),
+                    "methods": search["methods"],
+                    "candidate_total": search["candidate_chunks"],
+                    "pool_truncated": search["candidate_pool_truncated"],
+                    "warnings": search["warnings"],
                 }
             )
         views = []
@@ -851,11 +875,12 @@ class QueryEngine:
             "returned_chunks": len(selected_chunks),
             "returned_chars": returned_chars,
             "response_chunk_limit": response_chunk_limit,
-            "candidate_chunks": len(candidates),
+            "candidate_chunks": search["candidate_chunks"],
             "unreturned_candidates": unreturned_candidates,
             "corpus_chunks_not_returned": max(stats["total_chunks"] - len(selected_chunks), 0),
             "retrieval_methods": search["methods"],
             "candidate_pool_truncated": search["candidate_pool_truncated"],
+            "warnings": search["warnings"],
             "truncated": bool(unreturned_candidates or search["candidate_pool_truncated"]),
             "next_cursor": next_cursor,
         }
@@ -889,99 +914,6 @@ class QueryEngine:
             enrichments.append(item)
             used += size
         return enrichments, truncated
-
-    def context_with_blocks(self, task: str, max_nodes: int = 20) -> dict:
-        """Evidence-first context for agents.
-
-        L2 graph nodes are useful candidates, but agent answers should be grounded
-        in L1 chunks and original L0 blocks. This method returns both in one
-        bundle so MCP clients do not have to infer how to backtrace evidence.
-        """
-        bundle = self.context(task, max_nodes=max_nodes)
-
-        chunks: dict[str, dict] = {}
-        blocks: dict[str, dict] = {}
-        nodes: list[dict] = []
-        chunk_hits = self.search_chunks(task, limit=min(max_nodes, 10))
-
-        def add_chunk(chunk_id: str) -> None:
-            if chunk_id in chunks:
-                return
-            chunk = self.store.get_chunk(chunk_id)
-            if chunk is None:
-                return
-            chunks[chunk_id] = {
-                "id": chunk.id,
-                "kind": chunk.kind,
-                "doc_id": chunk.doc_id,
-                "page": chunk.page,
-                "page_start": chunk.page_start or chunk.page,
-                "page_end": chunk.page_end or chunk.page,
-                "section_id": chunk.section_id,
-                "section_node_id": chunk.section_node_id,
-                "text": (chunk.text or "")[:2000],
-                "block_ids": chunk.block_ids,
-                "attrs": chunk.attrs,
-            }
-            for block in self.store.get_blocks(chunk.block_ids[:8]):
-                blocks.setdefault(block.id, _block_brief(block))
-
-        def add_block_id(block_id: str) -> None:
-            if block_id in blocks:
-                return
-            got = self.store.get_blocks([block_id])
-            if got:
-                blocks[block_id] = _block_brief(got[0])
-
-        for n in bundle.nodes[:max_nodes]:
-            source_block_ids = n.attrs.get("source_block_ids") or n.attrs.get("block_ids") or []
-            source_chunk_ids = n.attrs.get("source_chunk_ids") or n.evidence.chunk_ids or []
-            n_info = {
-                "id": n.id,
-                "kind": n.kind.value,
-                "name": n.name,
-                "qualified_name": n.qualified_name,
-                "doc_id": n.doc_id,
-                "page": n.location.page,
-                "summary": n.summary,
-                "source": n.attrs.get("source") or n.evidence.extractor,
-                "extraction_confidence": n.attrs.get("extraction_confidence"),
-                "needs_source_check": needs_source_check(n),
-                "source_block_ids": source_block_ids,
-                "source_chunk_ids": source_chunk_ids,
-            }
-            nodes.append(n_info)
-            for chunk_id in source_chunk_ids[:4]:
-                add_chunk(chunk_id)
-            for block_id in source_block_ids[:8]:
-                add_block_id(block_id)
-
-        # Semantic hits may be node vectors or chunk vectors depending on the
-        # configured store; add chunks opportunistically when the ID resolves.
-        for hit in chunk_hits:
-            add_chunk(hit["chunk_id"])
-
-        for hit in bundle.semantic_hits[:3]:
-            chunk_id = hit.get("id") or hit.get("chunk_id")
-            if not chunk_id:
-                continue
-            add_chunk(chunk_id)
-
-        return {
-            "task": task,
-            "usage_policy": (
-                "Treat L2 nodes and edges as candidates. Ground final answers in "
-                "the returned L1 chunks / L0 blocks; verify nodes marked "
-                "needs_source_check before using them as facts."
-            ),
-            "nodes": nodes,
-            "edges": [e.model_dump() for e in bundle.edges],
-            "chunk_hits": chunk_hits,
-            "semantic_hits": bundle.semantic_hits,
-            "providers": bundle.providers,
-            "chunks": list(chunks.values()),
-            "blocks": list(blocks.values()),
-        }
 
     def search_chunks(
         self,
@@ -1043,7 +975,7 @@ class QueryEngine:
                 current_rank = candidate[rank_field]
                 candidate[rank_field] = rank if current_rank is None else min(current_rank, rank)
         allowed_chunk_ids = self.store.list_chunk_ids(doc_ids) if doc_ids is not None else None
-        semantic_hits = self._semantic_chunk_search_raw(
+        semantic_hits, semantic_error = self._semantic_chunk_search_raw(
             query,
             top_k=candidate_limit,
             allowed_ids=allowed_chunk_ids,
@@ -1062,9 +994,10 @@ class QueryEngine:
             candidate["semantic_rank"] = rank
             candidate["semantic_score"] = semantic_score
 
+        chunks_by_id = {chunk.id: chunk for chunk in self.store.get_chunks(list(candidates))}
         ranked: list[tuple[float, dict]] = []
         for cid, meta in candidates.items():
-            c = self.store.get_chunk(cid)
+            c = chunks_by_id.get(cid)
             if c is None:
                 continue
             if scope is not None and c.doc_id not in scope:
@@ -1107,7 +1040,7 @@ class QueryEngine:
                     },
                 )
             )
-        ranked.sort(key=lambda item: item[0], reverse=True)
+        ranked.sort(key=lambda item: (-item[0], item[1]["chunk_id"]))
         pool_truncated = (
             text_pool_truncated
             or len(semantic_hits) >= candidate_limit
@@ -1122,6 +1055,11 @@ class QueryEngine:
             "methods": methods,
             "candidate_chunks": len(ranked),
             "candidate_pool_truncated": pool_truncated,
+            "warnings": [
+                warning
+                for warning in (self.semantic_warning, semantic_error)
+                if warning is not None
+            ],
         }
 
     def _semantic_chunk_search_raw(
@@ -1129,9 +1067,9 @@ class QueryEngine:
         query: str,
         top_k: int = 20,
         allowed_ids: set[str] | None = None,
-    ) -> list[tuple[str, float]]:
+    ) -> tuple[list[tuple[str, float]], str | None]:
         if not self._semantic_retrieval_enabled():
-            return []
+            return [], None
         try:
             assert self.encoder is not None
             assert self.vstore is not None
@@ -1143,13 +1081,19 @@ class QueryEngine:
                 top_k=top_k,
                 allowed_ids=allowed_ids,
             )
-            return [
-                (item_id, score)
-                for item_id, score in hits
-                if math.isfinite(score) and score >= _MIN_SEMANTIC_SCORE
-            ]
-        except Exception:
-            return []
+            return (
+                [
+                    (item_id, score)
+                    for item_id, score in hits
+                    if math.isfinite(score) and score >= _MIN_SEMANTIC_SCORE
+                ],
+                None,
+            )
+        except Exception as exc:
+            return (
+                [],
+                f"Semantic retrieval failed for this query; lexical retrieval was used ({exc}).",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1213,6 +1157,46 @@ def _decode_context_cursor(cursor: str) -> dict:
     return data
 
 
+def _encode_search_candidates(candidates: list[dict]) -> list[list]:
+    """Keep the opaque cursor compact while freezing retrieval order and scores."""
+    return [
+        [
+            candidate["chunk_id"],
+            candidate["score"],
+            candidate.get("rank_reasons", []),
+        ]
+        for candidate in candidates
+    ]
+
+
+def _decode_search_candidates(value: object) -> list[dict]:
+    if not isinstance(value, list) or len(value) > _CONTEXT_CANDIDATE_LIMIT:
+        raise ContextRequestError("invalid_cursor", "search cursor candidates are malformed")
+    candidates: list[dict] = []
+    for item in value:
+        if not isinstance(item, list) or len(item) != 3:
+            raise ContextRequestError("invalid_cursor", "search cursor candidate is malformed")
+        chunk_id, score, reasons = item
+        if (
+            not isinstance(chunk_id, str)
+            or not chunk_id
+            or isinstance(score, bool)
+            or not isinstance(score, int | float)
+            or not math.isfinite(float(score))
+            or not isinstance(reasons, list)
+            or not all(isinstance(reason, str) for reason in reasons)
+        ):
+            raise ContextRequestError("invalid_cursor", "search cursor candidate is malformed")
+        candidates.append(
+            {
+                "chunk_id": chunk_id,
+                "score": float(score),
+                "rank_reasons": reasons,
+            }
+        )
+    return candidates
+
+
 def _chunk_sort_key(chunk) -> tuple[str, int, int, str]:
     page_start = chunk.page_start if chunk.page_start is not None else chunk.page or 0
     page_end = chunk.page_end if chunk.page_end is not None else chunk.page or 0
@@ -1253,14 +1237,6 @@ def _entity_enrichment(node: Node) -> dict:
         }
     )
     return item
-
-
-def _tokenize_task(task: str) -> list[str]:
-    import re
-
-    # 大写下划线的标识符容易是 register/pin 名
-    tokens = re.findall(r"[A-Z][A-Z0-9_]{2,}", task)
-    return tokens[:6]
 
 
 def _retrieval_terms(query: str, limit: int = 12) -> list[str]:
@@ -1436,20 +1412,6 @@ def needs_source_check(node: Node) -> bool:
     # Table normalizer / regex extractor without explicit confidence:
     # trust by default (deterministic extraction from structured data)
     return False
-
-
-def _block_brief(block: Block) -> dict:
-    return {
-        "id": block.id,
-        "doc_id": block.doc_id,
-        "page": block.page,
-        "kind": block.kind.value,
-        "text": (block.text or "")[:2000] if block.text else None,
-        "table": block.table.model_dump() if block.table else None,
-        "image_path": block.image_path,
-        "section_path": block.section_path,
-        "attrs": block.attrs,
-    }
 
 
 def _block_view(block: Block) -> dict:

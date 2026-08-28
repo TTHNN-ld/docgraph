@@ -26,7 +26,7 @@ from docgraph.core.dotenv import autoload_env
 from docgraph.core.logger import get_logger, set_level
 from docgraph.core.manifest import load_manifest
 from docgraph.core.pipeline import build as run_build
-from docgraph.embeddings.factory import open_query_embeddings
+from docgraph.embeddings.factory import open_ready_query_embeddings
 from docgraph.graph.schema import NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.quality.l2 import audit_l2_candidates
@@ -70,8 +70,8 @@ def _print_json(data: object) -> None:
 
 def _open_project() -> tuple[Path, SQLiteGraphStore, QueryEngine]:
     root, store, cfg = _open_graph_store()
-    vstore, encoder = open_query_embeddings(cfg.embeddings, cfg.storage, docgraph_dir(root))
-    qe = QueryEngine(store, vstore=vstore, encoder=encoder)
+    vstore, encoder, warning = open_ready_query_embeddings(cfg, root, store)
+    qe = QueryEngine(store, vstore=vstore, encoder=encoder, semantic_warning=warning)
     return root, store, qe
 
 
@@ -1005,20 +1005,27 @@ def glossary(term: str) -> None:
 @graph_app.command()
 def context(task: str) -> None:
     _root, store, qe = _open_project()
-    cb = qe.context(task)
+    result = qe.agent_query(task=task)
     store.close()
     console.print(f"[bold]Context[/bold] for: {task}")
-    console.print(f"  providers: {', '.join(cb.providers)}")
     console.print(
-        f"  nodes: {len(cb.nodes)}  edges: {len(cb.edges)}  semantic_hits: {len(cb.semantic_hits)}"
+        f"  coverage: {result['selection']['coverage']}  "
+        f"methods: {', '.join(result['selection']['retrieval_methods']) or 'ordered L1'}"
     )
-    if cb.nodes:
+    if result["chunks"]:
         tbl = Table(show_header=True, header_style="bold")
-        for col in ("id", "kind", "name"):
+        for col in ("id", "doc_id", "page", "text"):
             tbl.add_column(col)
-        for n in cb.nodes[:15]:
-            tbl.add_row(n.id, n.kind.value, n.name)
+        for chunk in result["chunks"]:
+            tbl.add_row(
+                chunk["id"],
+                chunk["doc_id"],
+                str(chunk.get("page") or ""),
+                chunk["text"][:160].replace("\n", " "),
+            )
         console.print(tbl)
+    if result["selection"]["next_cursor"]:
+        console.print("[dim]More candidates are available through the MCP query cursor.[/dim]")
 
 
 @graph_app.command()
@@ -1209,68 +1216,6 @@ def migrate(
         console.print(f"Would apply: {applied}")
     else:
         console.print(f"[green]Applied:[/green] {applied}")
-
-
-# ---------------------------------------------------------------------------
-# federate
-# ---------------------------------------------------------------------------
-
-
-federate_app = typer.Typer(
-    help="Federation management — mount other docgraph projects as read-only."
-)
-admin_app.add_typer(federate_app, name="federate")
-
-
-@federate_app.command("add")
-def federate_add(
-    path: Path = typer.Argument(..., help="Path to another docgraph project root"),
-    name: str = typer.Option(None, "--name", help="Federation name (defaults to family)"),
-) -> None:
-    """Mount another project as a read-only federation."""
-    from docgraph.linker.federate_mount import add_federation
-
-    root = project_root_from_cwd()
-    if not docgraph_dir(root).is_dir():
-        console.print("[red]No .docgraph/ found.[/red]")
-        raise typer.Exit(code=1)
-    try:
-        entry = add_federation(root, path, name=name)
-        console.print(f"[green]Added[/green] {entry.name} → {entry.path}")
-    except Exception as e:
-        console.print(f"[red]Failed:[/red] {e}")
-        raise typer.Exit(code=1) from e
-
-
-@federate_app.command("ls")
-def federate_ls() -> None:
-    """List all federated projects."""
-    from docgraph.linker.federate_mount import list_federations
-
-    root = project_root_from_cwd()
-    entries = list_federations(root)
-    if not entries:
-        console.print("[yellow]No federations yet.[/yellow]")
-        return
-    tbl = Table(show_header=True, header_style="bold")
-    for col in ("name", "family", "path", "added_at"):
-        tbl.add_column(col)
-    for e in entries:
-        tbl.add_row(e.name, e.family, e.path, e.added_at)
-    console.print(tbl)
-
-
-@federate_app.command("rm")
-def federate_rm(name: str) -> None:
-    """Remove a federation by name."""
-    from docgraph.linker.federate_mount import remove_federation
-
-    root = project_root_from_cwd()
-    ok = remove_federation(root, name)
-    if ok:
-        console.print(f"[green]Removed:[/green] {name}")
-    else:
-        console.print(f"[yellow]Not found:[/yellow] {name}")
 
 
 # ---------------------------------------------------------------------------

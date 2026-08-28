@@ -55,7 +55,7 @@ docgraph_query：找到相关原文
 - `paginated_l1`：这是顺序浏览中的一页；
 - `retrieval_candidates`：这是检索候选，空结果也不能证明原文没有相关信息。
 
-游标绑定原查询和索引版本。文档库重建后游标会失效，应从第一次查询重新开始。
+游标会恢复原 task 和 `doc_ids`；检索续页使用首轮冻结的候选顺序，不会再次调用 embedding。L1 重建后游标失效，应从第一次查询重新开始。
 
 ## `docgraph_read`
 

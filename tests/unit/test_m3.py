@@ -165,68 +165,6 @@ def test_migration_fresh_db_runs_baseline(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Federation
-# ---------------------------------------------------------------------------
-
-
-def test_federation_add_ls_rm(tmp_path):
-    from docgraph.graph.sqlite_store import SQLiteGraphStore
-    from docgraph.linker.federate_mount import (
-        add_federation,
-        list_federations,
-        remove_federation,
-    )
-
-    # 准备 local 项目
-    local = tmp_path / "local"
-    (local / ".docgraph").mkdir(parents=True)
-    SQLiteGraphStore(local / ".docgraph" / "graph.db").init_schema()
-    (local / "docgraph.yaml").write_text(
-        "project:\n  family: local\n", encoding="utf-8"
-    )
-
-    # 准备 remote
-    remote = tmp_path / "remote"
-    (remote / ".docgraph").mkdir(parents=True)
-    SQLiteGraphStore(remote / ".docgraph" / "graph.db").init_schema()
-    (remote / "docgraph.yaml").write_text(
-        "project:\n  family: remote-chip\n", encoding="utf-8"
-    )
-
-    entry = add_federation(local, remote)
-    assert entry.family == "remote-chip"
-    entries = list_federations(local)
-    assert len(entries) == 1
-    assert remove_federation(local, entry.name)
-    assert list_federations(local) == []
-
-
-def test_federated_store_query(tmp_path):
-    from docgraph.graph.schema import Node, NodeKind
-    from docgraph.graph.sqlite_store import SQLiteGraphStore
-    from docgraph.graph.store import NodeQuery
-    from docgraph.linker.federate_mount import FederatedGraphStore
-
-    # 两个独立 db，各放一个 register
-    a_path = tmp_path / "a.db"
-    b_path = tmp_path / "b.db"
-    a = SQLiteGraphStore(a_path); a.init_schema()
-    b = SQLiteGraphStore(b_path); b.init_schema()
-    a.upsert_node(Node(id="a::reg:R1", kind=NodeKind.REGISTER, name="R1", doc_id="da"))
-    b.upsert_node(Node(id="b::reg:R2", kind=NodeKind.REGISTER, name="R2", doc_id="db"))
-
-    fed = FederatedGraphStore(a, [b])
-    # 跨库 search
-    rs = fed.search_nodes(NodeQuery(kind=NodeKind.REGISTER, limit=10))
-    assert {n.id for n in rs} == {"a::reg:R1", "b::reg:R2"}
-    # 跨库 count
-    assert fed.count_nodes(NodeKind.REGISTER) == 2
-    # 远端 get_node
-    assert fed.get_node("b::reg:R2") is not None
-    fed.close()
-
-
-# ---------------------------------------------------------------------------
 # Config / Default config 健壮
 # ---------------------------------------------------------------------------
 

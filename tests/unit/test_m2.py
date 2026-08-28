@@ -333,7 +333,7 @@ def test_embed_and_search(tmp_store):
 # ---------------------------------------------------------------------------
 
 
-def test_context_bundle(tmp_store):
+def test_entity_search_finds_identifier_inside_agent_task(tmp_store):
     tmp_store.upsert_node(
         Node(
             id="f::reg:PWM_CTRL",
@@ -345,8 +345,8 @@ def test_context_bundle(tmp_store):
         )
     )
     qe = QueryEngine(tmp_store)
-    cb = qe.context("如何配置 PWM_CTRL 来输出 100kHz")
-    assert any(n.name == "PWM_CTRL" for n in cb.nodes)
+    matches = qe.search("PWM_CTRL")
+    assert any(node.name == "PWM_CTRL" for node in matches)
 
 
 def test_trace_path(tmp_store):

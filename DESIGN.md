@@ -21,7 +21,7 @@ DocGraph 将文档归一为可追溯证据（L0）、可检索内容（L1）和�
 | Parser、格式、增量与缓存 | [文档导入](./docs/architecture/ingestion.md) |
 | Extractor、Linker 与可信状态 | [知识图谱构建](./docs/architecture/knowledge-graph.md) |
 | 查询、取证与 MCP 契约 | [检索架构](./docs/architecture/retrieval.md) |
-| 多文档与跨项目查询 | [联邦机制](./docs/architecture/federation.md) |
+| 同项目多文档关系 | [多文档关系](./docs/architecture/federation.md) |
 | 配置和运行 | [配置指南](./docs/guides/configuration.md)、[运维指南](./docs/guides/operations.md) |
 | 第三方扩展 | [插件开发](./docs/development/plugins.md) |
 

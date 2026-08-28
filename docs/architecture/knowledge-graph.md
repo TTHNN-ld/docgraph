@@ -91,7 +91,7 @@ RelationInferLinker
 | EntityResolver | 规范化同名实体，保留原节点并建立 `alias_of` |
 | FederationLinker | 同项目 register/pin/parameter 的 priority 关系 |
 
-`supersedes` 当前只表达来源优先级，不代表逐字段验证了勘误覆盖。跨项目只读挂接属于 Query/Store 层，见[联邦机制](./federation.md)。
+`supersedes` 当前只表达来源优先级，不代表逐字段验证了勘误覆盖。当前稳定边界是同项目多文档，见[多文档关系](./federation.md)。
 
 Linker 根据图内容、实现版本、模型策略、`priority` 和 `chip_model` 独立失效。LLM IE 的读取和远程调用先完成；随后在一个短事务中替换完全由 Linker 产生的图项，任一步失败都会保留上一份完整关系结果。各 Linker 通过分页遍历全量节点和 chunk，不使用静默截断的固定总量上限。当前运行的 unresolved 和实体合并审计采用原子覆盖，不累积重复历史；审计文件写入失败会报告 degraded，但不会撤销已经提交的图。
 

@@ -233,8 +233,15 @@ class LanceDBVectorStore:
         return sum(1 for r in rows if r.get("namespace") == namespace)
 
     def search(
-        self, query_vec: list[float], model: str, top_k: int = 10
+        self,
+        query_vec: list[float],
+        model: str,
+        top_k: int = 10,
+        allowed_ids: set[str] | None = None,
     ) -> list[tuple[str, float]]:
+        if allowed_ids is not None:
+            rows = [row for row in self.all_for_model(model) if row[0] in allowed_ids]
+            return _cosine_top_k(rows, query_vec, top_k)
         native = self._native_search("vec_nodes", query_vec, model, top_k)
         if native is not None:
             return [(str(r["node_id"]), _distance_to_score(r)) for r in native]

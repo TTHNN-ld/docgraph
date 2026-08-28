@@ -667,6 +667,42 @@ def test_store_fts_search(tmp_path):
     store.close()
 
 
+def test_store_fts_orders_candidates_by_relevance_before_limit(tmp_path):
+    from docgraph.graph.schema import Chunk
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_chunks([
+        Chunk(id="low", doc_id="d", page=1, text="alpha once in a longer sentence", block_ids=[]),
+        Chunk(id="high", doc_id="d", page=2, text="alpha alpha alpha alpha", block_ids=[]),
+    ])
+
+    result = store.search_chunks_text("alpha", limit=1)
+
+    assert result["hits"][0][0] == "high"
+    assert result["methods"] == ["fts"]
+    assert result["pool_truncated"] is True
+    store.close()
+
+
+def test_store_text_search_treats_like_wildcards_as_literals(tmp_path):
+    from docgraph.graph.schema import Chunk
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    store.upsert_chunks([
+        Chunk(id="literal", doc_id="d", page=1, text="utilization is 50%", block_ids=[]),
+        Chunk(id="other", doc_id="d", page=2, text="ordinary text", block_ids=[]),
+    ])
+
+    result = store.search_chunks_text("50%")
+
+    assert [chunk_id for chunk_id, _ in result["hits"]] == ["literal"]
+    store.close()
+
+
 def test_delete_doc_removes_chunk_fts_rows(tmp_path):
     from docgraph.graph.schema import Chunk
     from docgraph.graph.sqlite_store import SQLiteGraphStore
@@ -1101,7 +1137,72 @@ def test_semantic_recall_filters_low_scores_and_applies_document_scope(tmp_path)
     store.close()
 
 
-def test_query_engine_context_with_blocks_uses_l2_source_links(tmp_path):
+def test_entity_semantic_scope_is_applied_before_vector_top_k(tmp_path):
+    from docgraph.graph.schema import Node, NodeKind
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.query.engine import QueryEngine
+
+    class Encoder:
+        name = "semantic-test"
+        model = "semantic-test"
+        dim = 1
+
+        def encode(self, _texts):
+            return [[1.0]]
+
+    class VectorSearch:
+        def search(self, _vector, _model, top_k, allowed_ids=None):
+            assert top_k >= 3
+            assert allowed_ids == {"target"}
+            return [("target", 0.9)]
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    for index in range(20):
+        store.upsert_node(
+            Node(
+                id=f"outside-{index}",
+                doc_id="other",
+                kind=NodeKind.TERM,
+                name=f"outside-{index}",
+            )
+        )
+    store.upsert_node(
+        Node(id="target", doc_id="selected", kind=NodeKind.TERM, name="target")
+    )
+
+    result = QueryEngine(store, VectorSearch(), Encoder()).search(
+        "semantic paraphrase",
+        kind=NodeKind.TERM,
+        limit=1,
+        doc_ids=["selected"],
+    )
+
+    assert [node.id for node in result] == ["target"]
+    store.close()
+
+
+def test_entity_semantic_failure_is_reported_as_lexical_degradation(tmp_path):
+    from docgraph.graph.sqlite_store import SQLiteGraphStore
+    from docgraph.query.engine import QueryEngine
+
+    class Encoder:
+        name = "semantic-test"
+        model = "semantic-test"
+
+        def encode(self, _texts):
+            raise RuntimeError("provider timeout")
+
+    store = SQLiteGraphStore(tmp_path / "g.db")
+    store.init_schema()
+    result = QueryEngine(store, object(), Encoder()).search_with_meta("paraphrase")
+
+    assert result["nodes"] == []
+    assert "provider timeout" in result["warnings"][0]
+    store.close()
+
+
+def test_agent_query_and_fetch_preserve_l2_source_links(tmp_path):
     from docgraph.graph.schema import (
         Block,
         BlockKind,
@@ -1151,11 +1252,13 @@ def test_query_engine_context_with_blocks_uses_l2_source_links(tmp_path):
         summary="Control register",
     ))
 
-    ctx = QueryEngine(store).context_with_blocks("Implement CTRL", max_nodes=5)
-    assert ctx["nodes"][0]["source_block_ids"] == ["d#p1#b0"]
-    assert ctx["nodes"][0]["needs_source_check"] is False  # table_entity is deterministic
-    assert ctx["chunks"][0]["id"] == "d#c1"
-    assert ctx["blocks"][0]["id"] == "d#p1#b0"
+    engine = QueryEngine(store)
+    result = engine.agent_query(task="Implement CTRL", include_entities=True)
+    evidence = engine.fetch("d#c1")
+    assert result["enrichments"][0]["source_block_ids"] == ["d#p1#b0"]
+    assert result["enrichments"][0]["source_quality"]["needs_source_check"] is False
+    assert result["chunks"][0]["id"] == "d#c1"
+    assert evidence["blocks"][0]["id"] == "d#p1#b0"
     store.close()
 
 
@@ -1242,11 +1345,12 @@ def test_fetch_flags_vlm_entities_for_source_check(tmp_path):
         )
     ])
 
-    ctx = QueryEngine(store).context_with_blocks("MSI-X doorbell", max_nodes=5)
-    assert ctx["nodes"] == []
-    assert ctx["chunk_hits"][0]["chunk_id"] == "d#c2"
-    assert ctx["chunks"][0]["id"] == "d#c2"
-    assert ctx["blocks"][0]["id"] == "d#p2#b0"
+    engine = QueryEngine(store)
+    result = engine.agent_query(task="MSI-X doorbell")
+    evidence = engine.fetch("d#c2")
+    assert result["enrichments"] == []
+    assert result["chunks"][0]["id"] == "d#c2"
+    assert evidence["blocks"][0]["id"] == "d#p2#b0"
     store.close()
 
 

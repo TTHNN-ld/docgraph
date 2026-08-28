@@ -181,6 +181,39 @@ def test_search_view_pages_large_candidate_sets(tmp_path) -> None:
     store.close()
 
 
+def test_search_cursor_restores_scope_and_does_not_rerun_retrieval(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.upsert_chunks(
+        [
+            _chunk(
+                f"selected-{index:02d}",
+                f"shared scoped term {index}",
+                doc_id="selected",
+            )
+            for index in range(25)
+        ]
+        + [
+            _chunk(f"other-{index:02d}", "shared scoped term", doc_id="other")
+            for index in range(25)
+        ]
+    )
+    engine = QueryEngine(store)
+    first = engine.agent_query(task="shared scoped term", doc_ids=["selected"])
+
+    def fail_if_retrieval_runs(*args, **kwargs):
+        raise AssertionError("cursor continuation must use the frozen candidate set")
+
+    engine.search_chunks_with_meta = fail_if_retrieval_runs  # type: ignore[method-assign]
+    second = engine.agent_query(cursor=first["selection"]["next_cursor"])
+
+    assert {chunk["doc_id"] for chunk in second["chunks"]} == {"selected"}
+    assert not (
+        {chunk["id"] for chunk in first["chunks"]} & {chunk["id"] for chunk in second["chunks"]}
+    )
+    assert second["selection"]["next_cursor"] is None
+    store.close()
+
+
 def test_full_mode_pages_without_claiming_complete_l1(tmp_path) -> None:
     store = _store(tmp_path)
     store.upsert_chunks(

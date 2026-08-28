@@ -12,7 +12,7 @@ from docgraph.core.bootstrap import bootstrap
 from docgraph.core.config import docgraph_dir, load_config, project_root_from_cwd
 from docgraph.core.dotenv import autoload_env
 from docgraph.core.logger import get_logger
-from docgraph.embeddings.factory import open_query_embeddings
+from docgraph.embeddings.factory import open_ready_query_embeddings
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.query.engine import QueryEngine
 from docgraph.version import __version__
@@ -26,8 +26,13 @@ def _build_engine(root: Path):
     bootstrap()
     store = SQLiteGraphStore(docgraph_dir(root) / "graph.db")
     store.init_schema()
-    vstore, encoder = open_query_embeddings(cfg.embeddings, cfg.storage, docgraph_dir(root))
-    return store, vstore, QueryEngine(store, vstore=vstore, encoder=encoder), cfg
+    vstore, encoder, warning = open_ready_query_embeddings(cfg, root, store)
+    return (
+        store,
+        vstore,
+        QueryEngine(store, vstore=vstore, encoder=encoder, semantic_warning=warning),
+        cfg,
+    )
 
 
 def create_app(root: Path | None = None):

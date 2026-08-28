@@ -57,7 +57,11 @@ class OpenAIEmbeddingProvider:
             from openai import OpenAI  # type: ignore
         except ImportError as e:  # pragma: no cover
             raise RuntimeError("openai package required") from e
-        kwargs: dict[str, Any] = {"api_key": self.api_key}
+        kwargs: dict[str, Any] = {
+            "api_key": self.api_key,
+            "timeout": 30.0,
+            "max_retries": 2,
+        }
         if self.base_url:
             kwargs["base_url"] = self.base_url
         self._client = OpenAI(**kwargs)

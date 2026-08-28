@@ -282,6 +282,46 @@ async def test_outline_requires_document_scope_and_exact_section_id(tmp_path) ->
 
 
 @pytest.mark.anyio
+async def test_outline_expansion_follows_contains_edges_only_outward(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+    runtime.store.upsert_chunks([_chunk("a", "section text", doc_id="doc")])
+    nodes = [
+        Node(
+            id=f"doc::section:{name}",
+            kind=NodeKind.SECTION,
+            name=name,
+            doc_id="doc",
+            location=Location(page=page, section_path=str(page)),
+            evidence=Evidence(extractor="section", chunk_ids=[]),
+        )
+        for page, name in enumerate(("parent", "root", "child"), start=1)
+    ]
+    for node in nodes:
+        runtime.store.upsert_node(node)
+    for source, target in ((nodes[0], nodes[1]), (nodes[1], nodes[2])):
+        runtime.store.upsert_edge(
+            Edge(
+                src=source.id,
+                dst=target.id,
+                kind=EdgeKind.CONTAINS,
+                evidence=Evidence(extractor="section", chunk_ids=[]),
+            )
+        )
+    server = create_server(lambda: runtime)
+
+    async with Client(server, raise_exceptions=True) as client:
+        result = await client.call_tool(
+            "docgraph_outline",
+            {"doc_id": "doc", "section_id": nodes[1].id, "depth": 2},
+        )
+
+    assert [section["name"] for section in result.structured_content["sections"]] == [
+        "root",
+        "child",
+    ]
+
+
+@pytest.mark.anyio
 async def test_documents_combines_manifest_and_index_status(tmp_path) -> None:
     runtime = _runtime(tmp_path)
     runtime.store.upsert_chunks([_chunk("a", "indexed text", doc_id="doc")])

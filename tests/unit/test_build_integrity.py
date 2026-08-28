@@ -12,6 +12,7 @@ from docgraph.core.build_lock import BuildLockedError, project_build_lock
 from docgraph.core.config import DocGraphConfig, DocsConfig, ExtractorsConfig
 from docgraph.core.ids import file_hash
 from docgraph.core.manifest import (
+    DerivedStageRecord,
     FileRecord,
     Manifest,
     StageRecord,
@@ -27,6 +28,7 @@ from docgraph.core.pipeline import (
     build,
     discover_files,
 )
+from docgraph.embeddings.factory import embedding_fingerprint, open_ready_query_embeddings
 from docgraph.embeddings.hash_encoder import HashEncoder
 from docgraph.embeddings.indexer import desired_node_hashes, embed_graph
 from docgraph.embeddings.vector_store import VectorStore
@@ -561,6 +563,35 @@ def test_embedding_fingerprint_includes_provider_endpoint() -> None:
     )
 
     assert _embedding_fingerprint(first) != _embedding_fingerprint(second)
+
+
+def test_query_runtime_rejects_incomplete_vector_index(tmp_path: Path) -> None:
+    cfg = DocGraphConfig.model_validate({"embeddings": {"provider": "hash", "dim": 16}})
+    graph_dir = tmp_path / ".docgraph"
+    store = SQLiteGraphStore(graph_dir / "graph.db")
+    store.init_schema()
+    store.upsert_chunks([Chunk(id="chunk", doc_id="doc", text="source", block_ids=[])])
+    vectors = VectorStore(graph_dir / "vectors.db")
+    vectors.init_schema()
+    vectors.close()
+    save_manifest(
+        tmp_path,
+        Manifest(
+            derived={
+                "embedding": DerivedStageRecord(
+                    fingerprint=embedding_fingerprint(cfg.embeddings, cfg.storage),
+                    status="ok",
+                )
+            }
+        ),
+    )
+
+    vstore, encoder, warning = open_ready_query_embeddings(cfg, tmp_path, store)
+
+    assert vstore is None
+    assert encoder is None
+    assert warning is not None and "incomplete or stale" in warning
+    store.close()
 
 
 def test_embedding_rejects_short_provider_response(tmp_path: Path) -> None:

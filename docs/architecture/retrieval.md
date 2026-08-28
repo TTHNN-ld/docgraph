@@ -26,13 +26,13 @@ Agent 不控制字符预算、候选池或内部检索模式。这些是服务�
 
 只有 `complete_l1` 能设置 `l1_complete=true`。检索无结果不能解释成“文档中不存在”；Agent 可以改写问题、缩小文档范围或顺序浏览。
 
-完整读取顺序固定为 `doc_id → page_start → page_end → chunk id`。游标绑定原查询、文档范围和索引版本；条件变化或索引重建后必须失效，不能静默跳页。
+完整读取顺序固定为 `doc_id → page_start → page_end → chunk id`。游标绑定原查询、文档范围和索引版本；检索游标还冻结首轮候选顺序，续页不会重新调用 embedding 或重新排名。这样即使远程模型响应波动，也不会重复或跳过候选。条件变化或 L1 重建后游标失效。
 
 ## 检索与取证
 
-检索首先用完整问题和提取出的关键词查询 FTS5/LIKE。配置真实 embedding 时，再在同一文档范围内补充高于最低相似度的语义候选。不同通道的原始分数不可直接比较，因此先用排名融合（RRF），再结合正文词项、标题、章节、表头、caption 和 chunk 类型重排。
+检索首先用完整问题和提取出的关键词查询 FTS5。FTS 候选在截断前按 BM25 排序；CJK 或 FTS 结果不足时，才用有界 LIKE 补位。配置真实 embedding 时，再在同一文档范围内补充高于最低相似度的语义候选。不同通道的原始分数不可直接比较，因此先用排名融合（RRF），再结合正文词项、标题、章节、表头、caption 和 chunk 类型重排。
 
-默认未配置 embedding，只走 FTS5/LIKE。内置 `hash` 只是词项哈希，可用于测试，但不作为独立语义召回通道。BGE-M3 和 OpenAI-compatible provider 才会让 `retrieval_methods` 出现 `semantic`。provider 不可用或查询编码失败时，本次查询降级为文本检索；已经入库的 L1 不受影响。
+默认未配置 embedding，只走 FTS5/LIKE。内置 `hash` 只是词项哈希，可用于测试，但不作为独立语义召回通道。BGE-M3 和 OpenAI-compatible provider 才会让 `retrieval_methods` 出现 `semantic`。运行时只接受状态成功、配置指纹一致且 node/chunk 内容 hash 完整匹配的向量索引；否则降级为文本检索并在 `warnings` 说明原因。查询编码临时失败也会明确降级，已经入库的 L1 不受影响。
 
 返回结果会说明实际使用的 `retrieval_methods`、每条结果的 `rank_reasons` 和剩余候选数，但不会声称候选足以回答问题。语义候选没有文本片段时仍返回完整 L1 chunk，而不是模型生成的摘要。
 

@@ -28,7 +28,7 @@
 | Confidence | 抽取/链接的置信度（0.0–1.0） |
 | Manifest | `.docgraph/manifest.json`，文件状态追踪 |
 | Family | 项目命名空间；也是 EntityResolver 无法推断芯片实例时的回退键 |
-| Federation | 同项目多文档关系，以及跨项目图数据库的只读联合查询 |
+| FederationLinker | 在同一项目内按芯片实例和来源优先级连接多份文档的 Linker |
 | ParsedDoc | Parser 输出的统一中间表示 |
 | Tier | LLM 模型分层：`fast` / `balanced` / `accurate` |
 | Walking Skeleton | 用最小端到端路径尽早验证核心架构的开发方式 |

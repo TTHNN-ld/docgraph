@@ -1,7 +1,6 @@
 """Query 模块入口。"""
 
 from docgraph.query.engine import (
-    ContextBundle,
     FigureDetail,
     ImpactReport,
     Path,
@@ -15,7 +14,6 @@ from docgraph.query.engine import (
 )
 
 __all__ = [
-    "ContextBundle",
     "FigureDetail",
     "ImpactReport",
     "Path",

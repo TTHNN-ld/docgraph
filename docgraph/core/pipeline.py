@@ -34,7 +34,12 @@ from docgraph.core.manifest import (
     load_manifest,
     save_manifest,
 )
-from docgraph.embeddings.factory import build_encoder, embeddings_enabled
+from docgraph.embeddings.factory import (
+    build_encoder,
+    embedding_fingerprint,
+    embeddings_enabled,
+    expected_embedding_model,
+)
 from docgraph.embeddings.indexer import desired_chunk_hashes, desired_node_hashes, embed_graph
 from docgraph.embeddings.vector_factory import build_vector_store
 from docgraph.extractors.base import ExtractContext
@@ -50,7 +55,6 @@ from docgraph.parsers.pdf_router import assess_pdf_parse, inspect_pdf, pdf_parse
 
 log = get_logger(__name__)
 BUILD_PIPELINE_VERSION = "2"
-EMBEDDING_PIPELINE_VERSION = "2"
 
 
 @dataclass
@@ -897,34 +901,11 @@ def _embedding_missing_for_config(
 
 
 def _expected_embedding_model(cfg: DocGraphConfig) -> str:
-    provider = (cfg.embeddings.provider or "hash").strip().lower()
-    if provider == "hash":
-        return f"hash-{cfg.embeddings.dim or 256}"
-    if provider == "bge_m3":
-        return cfg.embeddings.model or "BAAI/bge-m3"
-    if provider in {"openai", "openai_compat"}:
-        return cfg.embeddings.model or "text-embedding-3-small"
-    return provider
+    return expected_embedding_model(cfg.embeddings)
 
 
 def _embedding_fingerprint(cfg: DocGraphConfig) -> str:
-    """Identify every setting that can change vector semantics without storing secrets."""
-    provider = (cfg.embeddings.provider or "none").strip().lower()
-    endpoint = cfg.embeddings.base_url
-    if endpoint is None:
-        endpoint = os.environ.get(cfg.embeddings.base_url_env) or os.environ.get(
-            cfg.embeddings.base_url_fallback_env
-        )
-    return _fingerprint(
-        {
-            "pipeline": EMBEDDING_PIPELINE_VERSION,
-            "provider": provider,
-            "model": _expected_embedding_model(cfg),
-            "dim": cfg.embeddings.dim,
-            "endpoint": endpoint if provider in {"openai", "openai_compat"} else None,
-            "vector_backend": cfg.storage.vector_backend,
-        }
-    )
+    return embedding_fingerprint(cfg.embeddings, cfg.storage)
 
 
 # ---------------------------------------------------------------------------

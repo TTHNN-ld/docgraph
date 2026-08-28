@@ -18,7 +18,7 @@ from docgraph.core.bootstrap import bootstrap
 from docgraph.core.config import docgraph_dir, load_config, project_root_from_cwd
 from docgraph.core.dotenv import autoload_env
 from docgraph.core.manifest import load_manifest
-from docgraph.embeddings.factory import open_query_embeddings
+from docgraph.embeddings.factory import open_ready_query_embeddings
 from docgraph.graph.schema import EdgeKind, NodeKind
 from docgraph.graph.sqlite_store import SQLiteGraphStore
 from docgraph.query.engine import ContextRequestError, QueryEngine, entity_view
@@ -143,6 +143,7 @@ class AppContext:
     root: Path
     store: SQLiteGraphStore
     engine: QueryEngine
+    vstore: Any | None = None
 
 
 def _open_runtime() -> AppContext:
@@ -155,8 +156,13 @@ def _open_runtime() -> AppContext:
     store = SQLiteGraphStore(docgraph_dir(root) / "graph.db")
     store.init_schema()
 
-    vstore, encoder = open_query_embeddings(cfg.embeddings, cfg.storage, docgraph_dir(root))
-    return AppContext(root=root, store=store, engine=QueryEngine(store, vstore, encoder))
+    vstore, encoder, warning = open_ready_query_embeddings(cfg, root, store)
+    return AppContext(
+        root=root,
+        store=store,
+        engine=QueryEngine(store, vstore, encoder, semantic_warning=warning),
+        vstore=vstore,
+    )
 
 
 def _engine(ctx: Context[AppContext]) -> QueryEngine:
@@ -174,6 +180,7 @@ def _query_result(raw: dict[str, Any]) -> QueryResult:
         warnings.append("These are retrieval candidates; an empty result does not prove absence.")
     if selection.get("enrichments_truncated"):
         warnings.append("Some related entities were omitted by the entity budget.")
+    warnings.extend(selection.get("warnings", []))
     return QueryResult(
         coverage=selection["coverage"],
         l1_complete=selection["l1_complete"],
@@ -200,6 +207,8 @@ def create_server(
             yield runtime
         finally:
             runtime.store.close()
+            if runtime.vstore is not None:
+                runtime.vstore.close()
 
     server = MCPServer(
         "DocGraph",
@@ -296,7 +305,7 @@ def create_server(
         if not query.strip():
             raise ToolError("query cannot be blank")
         try:
-            nodes = _engine(ctx).search(
+            search = _engine(ctx).search_with_meta(
                 query.strip(),
                 kind=kind,
                 limit=limit + 1,
@@ -304,9 +313,10 @@ def create_server(
             )
         except ContextRequestError as exc:
             raise _as_tool_error(exc) from exc
+        nodes = search["nodes"]
         truncated = len(nodes) > limit
         entities = [entity_view(node) for node in nodes[:limit]]
-        warnings = []
+        warnings = list(search["warnings"])
         if any(item["source_quality"]["needs_source_check"] for item in entities):
             warnings.append("Some entities require verification through their source_chunk_ids.")
         return EntitySearchResult(

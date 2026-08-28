@@ -11,7 +11,7 @@
 - schema registry 与表格优先的 L2 抽取；L2 provenance、candidate/fact 状态和结构校验。
 - 文件级增量构建、删除对账、parser fallback、manifest 审计。
 - 基于实现与语义配置的构建指纹、项目级写锁、可回滚 Linker、向量完整性恢复，以及 success/degraded/failed 完成状态。
-- CLI、6 工具 MCP stdio、Web UI、跨项目只读 federation、IP-XACT/SystemRDL 基础导出。
+- CLI、6 工具 MCP stdio、Web UI、同项目多文档关系、IP-XACT/SystemRDL 基础导出。
 - `doctor --strict`、`l2 audit` 和 `l2 eval` 质量入口。
 
 已知边界：
@@ -21,13 +21,14 @@
 - 增量粒度目前是文件，不是页面或单个 extractor stage。
 - L2 的跨文档覆盖率尚未通过大规模、公开可复现的 golden set 证明。
 - Web UI 无内置认证；导出只覆盖 register/field 等基础子集。
+- 跨项目联合查询尚未定义完整的 L1、向量、文档 ID 和游标快照契约。
 
 ## 下一步优先级
 
 1. 建立可公开复现的 L2 golden 数据集，并按实体类型维护 precision、recall、F1 与失败样例。
 2. 提升复杂 PDF、DOCX 图片和表格的 L0 证据完整性，同时保持轻量默认安装。
 3. 校准跨文档实体合并、candidate/fact 晋升和人工 review 的真实工作流。
-4. 为导出和 federation 增加端到端兼容性测试，明确稳定支持的子集。
+4. 为导出增加端到端兼容性测试，明确稳定支持的子集。
 
 ## 暂不优先
 

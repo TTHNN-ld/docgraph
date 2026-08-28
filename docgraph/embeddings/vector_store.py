@@ -303,10 +303,16 @@ class VectorStore:
         return int(row["c"])
 
     def search(
-        self, query_vec: list[float], model: str, top_k: int = 10
+        self,
+        query_vec: list[float],
+        model: str,
+        top_k: int = 10,
+        allowed_ids: set[str] | None = None,
     ) -> list[tuple[str, float]]:
         """O(N) cosine similarity。N < 100k 内表现可接受。"""
         rows = self.all_for_model(model)
+        if allowed_ids is not None:
+            rows = [(node_id, vector) for node_id, vector in rows if node_id in allowed_ids]
         if not rows:
             return []
         results: list[tuple[str, float]] = []

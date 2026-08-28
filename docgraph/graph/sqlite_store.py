@@ -326,6 +326,26 @@ class SQLiteGraphStore:
         rows = conn.execute(sql, params).fetchall()
         return [self._row_to_node(r) for r in rows]
 
+    def list_node_ids(
+        self,
+        doc_ids: list[str] | None = None,
+        kind: NodeKind | None = None,
+    ) -> set[str]:
+        clauses: list[str] = []
+        params: list[str] = []
+        if doc_ids is not None:
+            if not doc_ids:
+                return set()
+            placeholders = ",".join("?" for _ in doc_ids)
+            clauses.append(f"doc_id IN ({placeholders})")
+            params.extend(doc_ids)
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind.value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._connect().execute(f"SELECT id FROM nodes {where}", params).fetchall()
+        return {str(row["id"]) for row in rows}
+
     # ------- edge -------
 
     def upsert_edge(self, edge: Edge) -> None:
@@ -529,6 +549,71 @@ class SQLiteGraphStore:
             ],
         )
 
+    def outgoing(
+        self,
+        id: str,
+        edge_kinds: list[EdgeKind] | None = None,
+        depth: int = 1,
+        limit: int = 50,
+    ) -> Subgraph:
+        """Follow directed edges only, preserving the root and bounded BFS order."""
+        if depth < 1:
+            return Subgraph()
+        kind_filter = [kind.value for kind in edge_kinds] if edge_kinds else None
+        conn = self._connect()
+        visited_nodes: dict[str, Node] = {}
+        edges_collected: dict[tuple[str, str, EdgeKind], Edge] = {}
+        queue: deque[tuple[str, int]] = deque([(id, 0)])
+        seen = {id}
+
+        while queue and len(visited_nodes) < limit:
+            current_id, current_depth = queue.popleft()
+            node = self.get_node(current_id)
+            if node is None:
+                continue
+            visited_nodes[current_id] = node
+            if current_depth >= depth:
+                continue
+            sql = "SELECT * FROM edges WHERE src = ?"
+            params: list[str] = [current_id]
+            if kind_filter:
+                placeholders = ",".join("?" for _ in kind_filter)
+                sql += f" AND kind IN ({placeholders})"
+                params.extend(kind_filter)
+            sql += " ORDER BY dst, kind"
+            for row in conn.execute(sql, params).fetchall():
+                edge = self._row_to_edge(row)
+                edges_collected.setdefault((edge.src, edge.dst, edge.kind), edge)
+                if edge.dst not in seen:
+                    seen.add(edge.dst)
+                    queue.append((edge.dst, current_depth + 1))
+
+        returned_ids = set(visited_nodes)
+        return Subgraph(
+            nodes=list(visited_nodes.values()),
+            edges=[
+                edge
+                for edge in edges_collected.values()
+                if edge.src in returned_ids and edge.dst in returned_ids
+            ],
+        )
+
+    def list_sections(self, doc_id: str, limit: int = 200) -> list[Node]:
+        rows = (
+            self._connect()
+            .execute(
+                """
+            SELECT * FROM nodes
+            WHERE doc_id = ? AND kind = ?
+            ORDER BY COALESCE(page, 1000000000), COALESCE(section_path, ''), name, id
+            LIMIT ?
+            """,
+                (doc_id, NodeKind.SECTION.value, limit),
+            )
+            .fetchall()
+        )
+        return [self._row_to_node(row) for row in rows]
+
     # ------- doc-level -------
 
     def delete_doc(self, doc_id: str) -> None:
@@ -694,6 +779,22 @@ class SQLiteGraphStore:
         row = conn.execute("SELECT * FROM chunks WHERE id = ?", (chunk_id,)).fetchone()
         return self._row_to_chunk(row) if row else None
 
+    def get_chunks(self, chunk_ids: list[str]) -> list:
+        normalized = list(dict.fromkeys(chunk_ids))
+        if not normalized:
+            return []
+        placeholders = ",".join("?" for _ in normalized)
+        rows = (
+            self._connect()
+            .execute(
+                f"SELECT * FROM chunks WHERE id IN ({placeholders})",
+                normalized,
+            )
+            .fetchall()
+        )
+        chunks = {str(row["id"]): self._row_to_chunk(row) for row in rows}
+        return [chunks[chunk_id] for chunk_id in normalized if chunk_id in chunks]
+
     def list_chunks(self, limit: int = 100000):
         conn = self._connect()
         rows = conn.execute(
@@ -852,7 +953,7 @@ class SQLiteGraphStore:
         limit: int = 20,
         doc_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Text-search chunks and report which retrieval paths produced hits."""
+        """Text-search chunks with relevance ordering and a bounded LIKE fallback."""
         import re
 
         conn = self._connect()
@@ -870,23 +971,33 @@ class SQLiteGraphStore:
             placeholders = ",".join("?" for _ in doc_ids)
             scope_sql = f" AND chunks.doc_id IN ({placeholders})"
             scope_params = list(doc_ids)
-        # 对纯 ASCII/拉丁 query 直接 MATCH；CJK 混合 query 需要 LIKE 降级
+        # unicode61 cannot segment CJK text. For Latin text FTS is the primary
+        # path; LIKE only fills a short result set instead of scanning on every
+        # probe issued by the query engine.
         if not has_cjk:
             try:
                 rows = conn.execute(
                     "SELECT chunks_fts.chunk_id, "
                     "snippet(chunks_fts, 1, '【', '】', '…', 20) AS snip "
                     "FROM chunks_fts JOIN chunks ON chunks.id = chunks_fts.chunk_id "
-                    f"WHERE chunks_fts MATCH ?{scope_sql} LIMIT ?",
-                    [q, *scope_params, limit + 1],
+                    f"WHERE chunks_fts MATCH ?{scope_sql} "
+                    "ORDER BY bm25(chunks_fts), chunks.doc_id, chunks_fts.chunk_id "
+                    "LIMIT ?",
+                    [_fts_literal_query(q), *scope_params, limit + 1],
                 ).fetchall()
-            except Exception:
+            except sqlite3.OperationalError:
                 rows = []
-        fallback = conn.execute(
-            "SELECT id AS chunk_id, substr(text,1,240) AS snip "
-            f"FROM chunks WHERE text LIKE ?{scope_sql} LIMIT ?",
-            [f"%{q}%", *scope_params, limit + 1],
-        ).fetchall()
+        fallback = []
+        if has_cjk or len(rows) <= limit:
+            escaped_q = _escape_like(q)
+            fallback = conn.execute(
+                "SELECT id AS chunk_id, substr(text,1,240) AS snip "
+                f"FROM chunks WHERE text LIKE ? ESCAPE '\\'{scope_sql} "
+                "ORDER BY "
+                "(length(lower(text)) - length(replace(lower(text), lower(?), ''))) DESC, "
+                "length(text), doc_id, id LIMIT ?",
+                [f"%{escaped_q}%", *scope_params, q, limit + 1],
+            ).fetchall()
         seen: set[str] = set()
         out: list[tuple[str, str]] = []
         raw = list(rows) + list(fallback)
@@ -1216,3 +1327,13 @@ def _dedupe_preserve_order(items: list[Any]) -> list[Any]:
         seen.add(marker)
         out.append(item)
     return out
+
+
+def _fts_literal_query(value: str) -> str:
+    """Treat agent input as text, not as executable FTS5 query syntax."""
+    escaped = value.replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
